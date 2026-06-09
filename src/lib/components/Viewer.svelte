@@ -13,10 +13,12 @@
   let timer = null;
   let frameImage = $state.raw(null); // cached decoded frame, so edits don't re-fetch it
 
-  let mode = null; // 'node' (drag a point) | 'pan'
+  let mode = null; // 'node' (drag a point) | 'select' (just selected, no move) | 'pan'
   let dragging = null;
   let panStart = null;
   let moved = false;
+
+  const DRAG_THRESH = 3; // px the pointer must move before a node actually moves
 
   // Maps image coords -> canvas device px: deviceX = imageX * s + offX. Stored each draw
   // so pointer handlers can invert it.
@@ -26,7 +28,12 @@
   const dpr = Math.min((typeof window !== "undefined" && window.devicePixelRatio) || 1, 2);
 
   $effect(() => {
-    if (canvas) ctx = canvas.getContext("2d");
+    if (!canvas) return;
+    ctx = canvas.getContext("2d");
+    // Zoom/pan is rendered inside the canvas now (not via CSS). Clear any inline
+    // transform a previous build may have left on the element (e.g. via hot-reload),
+    // which would otherwise CSS-scale the whole bitmap and blur the overlay.
+    canvas.style.transform = "none";
   });
 
   // Track the wrap's CSS size so the canvas bitmap can match it (× dpr).
@@ -126,10 +133,24 @@
     const hit = hitTestNode(lf, HIT_PX * scale)(x, y);
 
     if (hit) {
+      // A node is only draggable if it was already the selected node *before* this
+      // press. A first click just selects it, so a stray click can't nudge a point.
+      const alreadySelected = edit.selInstance === hit.instIdx && edit.selNode === hit.nodeIdx;
       edit.select(hit.instIdx, hit.nodeIdx);
-      const p = lf.instances[hit.instIdx].points[hit.nodeIdx];
-      dragging = { instIdx: hit.instIdx, nodeIdx: hit.nodeIdx, from: { xy: [...p.xy], visible: p.visible } };
-      mode = "node";
+      if (alreadySelected) {
+        const p = lf.instances[hit.instIdx].points[hit.nodeIdx];
+        dragging = {
+          instIdx: hit.instIdx,
+          nodeIdx: hit.nodeIdx,
+          from: { xy: [...p.xy], visible: p.visible },
+          sx: e.clientX,
+          sy: e.clientY,
+          active: false, // becomes true only after the pointer moves past DRAG_THRESH
+        };
+        mode = "node";
+      } else {
+        mode = "select"; // selected only; no movement this interaction
+      }
       canvas.setPointerCapture(e.pointerId);
       return;
     }
@@ -142,6 +163,10 @@
 
   function onPointerMove(e) {
     if (mode === "node") {
+      if (!dragging.active) {
+        if (Math.hypot(e.clientX - dragging.sx, e.clientY - dragging.sy) <= DRAG_THRESH) return;
+        dragging.active = true; // crossed the threshold -> this is a real drag
+      }
       const { x, y } = toImage(e);
       // preserve visibility so a hidden node stays hidden while moved
       edit.setPoint(dragging.instIdx, dragging.nodeIdx, x, y, dragging.from.visible);
@@ -158,7 +183,8 @@
 
   function onPointerUp(e) {
     if (mode === "node") {
-      edit.commitMove(dragging.instIdx, dragging.nodeIdx, dragging.from);
+      // Only record a move if the pointer actually dragged; a plain click is a no-op.
+      if (dragging.active) edit.commitMove(dragging.instIdx, dragging.nodeIdx, dragging.from);
       dragging = null;
     } else if (mode === "pan" && !moved) {
       const p = edit.selectedInstance?.points?.[edit.selNode];
