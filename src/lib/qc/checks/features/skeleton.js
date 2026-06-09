@@ -118,8 +118,13 @@ export function analyzerFromSkeleton(skeleton) {
     idx.get(e.source?.name ?? e.source),
     idx.get(e.destination?.name ?? e.destination),
   ]);
+  // Sort each pair ascending for determinism. NOTE: the Python source uses
+  // `list(sym.nodes)` over a *set*, so its intra-pair (left/right) order is arbitrary
+  // and run-dependent — which makes `min_symmetry_consistency` non-reproducible there.
+  // We pin a stable order here (see qc-checks-port.md, "symmetry parity").
   const symmetryPairs = (skeleton.symmetries ?? [])
     .map((s) => [...s.nodes].map((n) => idx.get(n.name)))
-    .filter((p) => p.length === 2);
+    .filter((p) => p.length === 2)
+    .map((p) => [Math.min(p[0], p[1]), Math.max(p[0], p[1])]);
   return new SkeletonAnalyzer(names.length, edges, symmetryPairs);
 }
