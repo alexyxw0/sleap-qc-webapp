@@ -1,5 +1,6 @@
 <script>
   import { store } from "../labelsStore.svelte.js";
+  import { edit } from "../editStore.svelte.js";
 
   // A grid of discrete, clickable frame "tiles" — one per navigable frame. Virtualized:
   // only the rows currently scrolled into view are mounted, so it stays smooth even at
@@ -92,18 +93,21 @@
       {#each cells as cell (cell.i)}
         {@const f = store.frames[cell.i]}
         {@const labeled = (f?.lf?.instances?.length ?? 0) > 0}
+        {@const modified = edit.isFrameModified(f?.lf)}
         <button
           class="cell"
           class:current={cell.i === store.index}
           class:labeled
+          class:modified
           style:left="{cell.x}px"
           style:top="{cell.y}px"
           style:width="{CELL}px"
           style:height="{CELL}px"
-          title={`frame ${cell.i + 1} · video idx ${f?.frameIdx} · ${f?.lf?.instances?.length ?? 0} instance(s)`}
+          title={`frame ${cell.i + 1} · video idx ${f?.frameIdx} · ${f?.lf?.instances?.length ?? 0} instance(s)${modified ? " · modified" : ""}`}
           onclick={() => store.setIndex(cell.i)}
         >
           <span class="num">{f?.frameIdx}</span>
+          {#if modified}<i class="moddot"></i>{/if}
         </button>
       {/each}
     </div>
@@ -112,6 +116,7 @@
   <div class="legend">
     <span><i class="sw current"></i> selected</span>
     <span><i class="sw labeled"></i> has labels</span>
+    <span><i class="sw mod"></i> modified</span>
   </div>
 </section>
 
@@ -195,6 +200,20 @@
     font-weight: 700;
     z-index: 1;
   }
+  .cell.modified {
+    border-color: #c98a2b;
+  }
+  .moddot {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #fbbf24;
+    box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.55);
+    pointer-events: none;
+  }
   .num {
     pointer-events: none;
     line-height: 1;
@@ -224,5 +243,9 @@
   .sw.labeled {
     background: #1c2a3a;
     border-color: #2c4a66;
+  }
+  .sw.mod {
+    background: #fbbf24;
+    border-color: #c98a2b;
   }
 </style>

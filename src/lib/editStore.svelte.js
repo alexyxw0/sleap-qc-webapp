@@ -19,9 +19,25 @@ class EditStore {
   dirty = $state(false);
   saving = $state(false);
   histRev = $state(0); // bump on any history change so canUndo/canRedo stay reactive
+  dirtyRev = $state(0); // bump when the set of modified frames changes
 
   #undo = [];
   #redo = [];
+  #dirtyFrames = new Set(); // LabeledFrame refs touched by per-frame edits
+
+  // Mark the current frame as modified (per-frame label edits only; skeleton edits are
+  // global and tracked by `dirty`, not per-frame).
+  #markFrameDirty() {
+    const lf = store.current?.lf;
+    if (lf && !this.#dirtyFrames.has(lf)) {
+      this.#dirtyFrames.add(lf);
+      this.dirtyRev++;
+    }
+  }
+  isFrameModified(lf) {
+    this.dirtyRev; // reactive dependency
+    return lf != null && this.#dirtyFrames.has(lf);
+  }
 
   get canUndo() {
     this.histRev;
@@ -103,6 +119,7 @@ class EditStore {
     if (!p) return;
     const to = { xy: [...p.xy], visible: p.visible };
     if (from.xy[0] === to.xy[0] && from.xy[1] === to.xy[1] && from.visible === to.visible) return;
+    this.#markFrameDirty();
     this.#commit(
       "Move point",
       () => {
@@ -125,6 +142,7 @@ class EditStore {
     const after = !before;
     p.visible = after;
     this.#bump();
+    this.#markFrameDirty();
     this.#commit(
       after ? "Show point" : "Hide point",
       () => {
@@ -159,6 +177,7 @@ class EditStore {
     });
     lf.instances.push(inst);
     this.#bump();
+    this.#markFrameDirty();
     this.select(lf.instances.indexOf(inst), 0);
     this.#commit(
       "Add instance",
@@ -182,6 +201,7 @@ class EditStore {
     lf.instances.splice(instIdx, 1);
     this.clearSelection();
     this.#bump();
+    this.#markFrameDirty();
     this.#commit(
       "Delete instance",
       () => {
@@ -333,6 +353,8 @@ class EditStore {
       a.click();
       URL.revokeObjectURL(url);
       this.dirty = false;
+      this.#dirtyFrames.clear(); // saved -> nothing is "modified since save" anymore
+      this.dirtyRev++;
     } catch (e) {
       console.error("[sleap-web] save failed:", e);
       store.error = `Save failed: ${String(e?.message ?? e)}`;
@@ -345,8 +367,10 @@ class EditStore {
     this.clearSelection();
     this.#undo = [];
     this.#redo = [];
+    this.#dirtyFrames.clear();
     this.dirty = false;
     this.histRev++;
+    this.dirtyRev++;
   }
 }
 

@@ -79,6 +79,9 @@ Every operation was validated to survive `saveSlpToBytes` → reload before the 
   (points are kept aligned across every instance), add / remove edges.
 - **Undo / redo** — `⌘/Ctrl+Z` undoes any recent change (move/visibility/add/delete/
   skeleton edit); `⇧⌘/Ctrl+Z` (or `Ctrl+Y`) redoes. Also on the toolbar (↺ / ↻).
+- **Modified-frame indicators** — frames you edit get an amber dot in the **frame grid**
+  (per-frame label edits: move/visibility/add/delete). Cleared on save / new file.
+  Selecting a node never counts as a modification — only an actual change does.
 - **Node labels** — each keypoint is labelled with its body-part name on the canvas.
   Labels are half-transparent by default (so overlapping ones stay legible) and the
   **focused** node's label becomes fully opaque and is drawn on top. The overlay is
