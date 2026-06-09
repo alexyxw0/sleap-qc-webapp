@@ -78,17 +78,20 @@ function drawPlaceholder(ctx, item) {
   );
 }
 
-function drawSkeleton(ctx, lf, skeleton) {
+function drawSkeleton(ctx, lf, skeleton, sel = {}) {
   if (!lf || !skeleton) return;
   const edges = skeleton.edges ?? [];
   const instances = lf.instances ?? [];
+  const { editing = false, selInstance = -1, selNode = -1 } = sel;
+  const r = editing ? 5.5 : 4; // bigger, grabbable handles while editing
 
   instances.forEach((instance, idx) => {
     const color = colorFor(instance, idx);
     const points = instance.points ?? [];
+    const isSel = idx === selInstance;
 
     // edges
-    ctx.lineWidth = 2;
+    ctx.lineWidth = isSel ? 3 : 2;
     ctx.strokeStyle = color;
     for (const edge of edges) {
       const si = skeleton.index(edge.source?.name ?? edge.source);
@@ -104,20 +107,55 @@ function drawSkeleton(ctx, lf, skeleton) {
     }
 
     // nodes
-    ctx.fillStyle = color;
-    for (const p of points) {
-      if (!p?.visible || Number.isNaN(p.xy?.[0])) continue;
+    points.forEach((p, ni) => {
+      if (!p?.visible || Number.isNaN(p.xy?.[0])) return;
       ctx.beginPath();
-      ctx.arc(p.xy[0], p.xy[1], 4, 0, Math.PI * 2);
+      ctx.arc(p.xy[0], p.xy[1], r, 0, Math.PI * 2);
+      ctx.fillStyle = color;
       ctx.fill();
-    }
+      if (editing && isSel) {
+        // outline handles of the selected instance
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = "rgba(255,255,255,0.85)";
+        ctx.stroke();
+      }
+      if (isSel && ni === selNode) {
+        // selection ring on the active node
+        ctx.beginPath();
+        ctx.arc(p.xy[0], p.xy[1], r + 3.5, 0, Math.PI * 2);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "#ffffff";
+        ctx.stroke();
+      }
+    });
   });
 }
 
+// Nearest visible node to (x,y) within `radius` image-px, scanning topmost instances
+// first so overlapping points resolve intuitively. Returns {instIdx,nodeIdx,dist} | null.
+export function hitTestNode(lf, radius) {
+  return (x, y) => {
+    const instances = lf?.instances ?? [];
+    let best = null;
+    for (let idx = instances.length - 1; idx >= 0; idx--) {
+      const points = instances[idx].points ?? [];
+      for (let ni = 0; ni < points.length; ni++) {
+        const p = points[ni];
+        if (!p?.visible || Number.isNaN(p.xy?.[0])) continue;
+        const dx = p.xy[0] - x;
+        const dy = p.xy[1] - y;
+        const d = Math.hypot(dx, dy);
+        if (d <= radius && (!best || d < best.dist)) best = { instIdx: idx, nodeIdx: ni, dist: d };
+      }
+    }
+    return best;
+  };
+}
+
 // Main entry: draw the (optional) frame image then the pose overlay.
-export function drawScene(ctx, image, item, skeleton) {
+export function drawScene(ctx, image, item, skeleton, sel = {}) {
   ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
   if (image) blit(ctx, image);
   else drawPlaceholder(ctx, item);
-  drawSkeleton(ctx, item?.lf, skeleton);
+  drawSkeleton(ctx, item?.lf, skeleton, sel);
 }

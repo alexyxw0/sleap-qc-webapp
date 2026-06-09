@@ -64,12 +64,33 @@ npm run build    # production build to dist/ (verified green)
 `smoke.mjs` is a Node check that the data-model fields the UI relies on exist on real
 fixtures (`node smoke.mjs`).
 
-## Scope (skeleton, not the full GUI)
+## Editing (branch `feature/label-editing`)
 
-Implemented: load, frame navigation, pose visualization, metadata. **Not yet**: editing
-(drag points, add/remove instances), tracks/skeleton editing, prediction review,
-undo/redo, suggestions, save. The data model supports the edits; they're UI work — see the
-investigation's gap analysis and design questions (DQ-F1…F5).
+Edit the labels/nodes/skeleton of individual frames and save the result as a new file.
+Every operation was validated to survive `saveSlpToBytes` → reload before the UI was built.
+
+- **Move keypoints** — click a point on the canvas to select it, drag to reposition.
+- **Show/hide a point** — `V`, or double-click the point row in the sidebar.
+- **Add / delete instances** — toolbar buttons or `Del`; a new instance drops its nodes in
+  a ring at frame center for easy dragging.
+- **Place unplaced points** — select a hidden/unset node, then click on the image to place
+  it (used after adding a skeleton node).
+- **Edit the skeleton** (sidebar, applies to all frames): rename / add / remove nodes
+  (points are kept aligned across every instance), add / remove edges.
+- **Undo / redo** — `⌘/Ctrl+Z`, `⇧⌘/Ctrl+Z` (or Ctrl+Y); command-based history.
+- **Save** — `⤓ Save .slp` downloads edited labels; `⤓ .pkg.slp` re-embeds frames when the
+  source had them. A dirty dot and an unload warning track unsaved changes.
+
+Architecture: `src/lib/editStore.svelte.js` holds selection + mutations + undo/redo + save,
+mutating the sleap-io.js model in place and bumping `store.rev`. The canvas splits
+image-fetch from overlay-draw into two `$effect`s so dragging redraws the overlay without
+re-decoding the frame. `EditToolbar` / `SkeletonEditor` are the new components.
+
+## Scope (still not the full GUI)
+
+**Not yet**: track creation/reassignment, prediction-review workflow, suggestions,
+multi-instance copy/interpolate, zoom/pan. The data model supports these; they're UI work —
+see the investigation's gap analysis and design questions (DQ-F1…F5).
 
 ## Notes / known edges
 - Pure client-side SPA — no server. Production: `@sveltejs/adapter-static` under SvelteKit

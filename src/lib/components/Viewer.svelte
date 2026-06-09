@@ -1,28 +1,28 @@
 <script>
   import { store } from "../labelsStore.svelte.js";
-  import { drawScene, frameDims } from "../draw.js";
+  import { edit } from "../editStore.svelte.js";
+  import { drawScene, frameDims, hitTestNode } from "../draw.js";
 
   let canvas = $state();
   let ctx = $state();
   let playing = $state(false);
   let timer = null;
+  let frameImage = $state.raw(null); // cached decoded frame, so edits don't re-fetch it
+  let dragging = null; // { instIdx, nodeIdx, from }
 
-  // Grab the 2D context once the canvas element binds.
+  const HIT_PX = 12; // hit radius in screen pixels
+
   $effect(() => {
     if (canvas) ctx = canvas.getContext("2d");
   });
 
-  // Redraw whenever the frame index or the model revision changes. The async image
-  // fetch is guarded by a `cancelled` flag so fast scrubbing never paints a stale
-  // frame (the out-of-order-resolution guard from the investigation).
+  // (A) Fetch the frame image — only when the frame or the attached video changes.
+  // Guarded against out-of-order async so fast scrubbing never shows a stale frame.
   $effect(() => {
-    // declare reactive deps explicitly:
-    store.index;
-    store.rev;
     const item = store.current;
-    const skeleton = store.skeleton;
+    void store.index;
+    void store.videoModel;
     if (!ctx) return;
-
     let cancelled = false;
     const ac = new AbortController();
     (async () => {
@@ -31,36 +31,110 @@
       const { w, h } = frameDims(item, image);
       if (canvas.width !== w) canvas.width = w;
       if (canvas.height !== h) canvas.height = h;
-      drawScene(ctx, image, item, skeleton);
+      frameImage = image ?? null;
     })();
-
     return () => {
       cancelled = true;
       ac.abort();
     };
   });
 
+  // (B) Draw image + pose overlay. Re-runs on edits (store.rev) and selection changes
+  // using the cached image — no re-fetch, so dragging stays smooth.
+  $effect(() => {
+    void store.rev;
+    const selI = edit.selInstance;
+    const selN = edit.selNode;
+    const item = store.current;
+    const sk = store.skeleton;
+    if (!ctx) return;
+    drawScene(ctx, frameImage, item, sk, { editing: true, selInstance: selI, selNode: selN });
+  });
+
+  // Clear selection when navigating to another frame (indices won't match).
+  $effect(() => {
+    void store.index;
+    edit.clearSelection();
+  });
+
+  // --- coordinate mapping (screen -> image space) ---
+  function toImage(e) {
+    const rect = canvas.getBoundingClientRect();
+    const sx = canvas.width / rect.width;
+    const sy = canvas.height / rect.height;
+    return { x: (e.clientX - rect.left) * sx, y: (e.clientY - rect.top) * sy, scale: sx };
+  }
+
+  function onPointerDown(e) {
+    const lf = store.current?.lf;
+    if (!lf) return;
+    const { x, y, scale } = toImage(e);
+    const hit = hitTestNode(lf, HIT_PX * scale)(x, y);
+
+    if (hit) {
+      edit.select(hit.instIdx, hit.nodeIdx);
+      const p = lf.instances[hit.instIdx].points[hit.nodeIdx];
+      dragging = { instIdx: hit.instIdx, nodeIdx: hit.nodeIdx, from: { xy: [...p.xy], visible: p.visible } };
+      canvas.setPointerCapture(e.pointerId);
+      return;
+    }
+
+    // No node hit. If the selected node is unplaced/hidden, place it here.
+    const inst = edit.selectedInstance;
+    const p = inst?.points?.[edit.selNode];
+    if (p && (!p.visible || Number.isNaN(p.xy?.[0]))) {
+      const from = { xy: [...p.xy], visible: p.visible };
+      edit.setPoint(edit.selInstance, edit.selNode, x, y, true);
+      edit.commitMove(edit.selInstance, edit.selNode, from);
+      return;
+    }
+    edit.clearSelection();
+  }
+
+  function onPointerMove(e) {
+    if (!dragging) return;
+    const { x, y } = toImage(e);
+    edit.setPoint(dragging.instIdx, dragging.nodeIdx, x, y, true);
+  }
+
+  function onPointerUp(e) {
+    if (!dragging) return;
+    edit.commitMove(dragging.instIdx, dragging.nodeIdx, dragging.from);
+    try {
+      canvas.releasePointerCapture(e.pointerId);
+    } catch {
+      /* capture may already be gone */
+    }
+    dragging = null;
+  }
+
   function togglePlay() {
     playing = !playing;
     if (playing) {
       timer = setInterval(() => {
-        if (store.index >= store.frameCount - 1) {
-          store.setIndex(0);
-        } else {
-          store.next();
-        }
+        if (store.index >= store.frameCount - 1) store.setIndex(0);
+        else store.next();
       }, 1000 / 12);
     } else {
       clearInterval(timer);
       timer = null;
     }
   }
-
-  // stop playback teardown
   $effect(() => () => clearInterval(timer));
 
   function onKey(e) {
-    if (e.target instanceof HTMLInputElement) return;
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && (e.key === "z" || e.key === "Z")) {
+      e.shiftKey ? edit.redo() : edit.undo();
+      e.preventDefault();
+      return;
+    }
+    if (mod && (e.key === "y" || e.key === "Y")) {
+      edit.redo();
+      e.preventDefault();
+      return;
+    }
     if (e.key === "ArrowRight" || e.key === "d") {
       store.next();
       e.preventDefault();
@@ -70,6 +144,14 @@
     } else if (e.key === " ") {
       togglePlay();
       e.preventDefault();
+    } else if (e.key === "v" && edit.selInstance >= 0 && edit.selNode >= 0) {
+      edit.toggleVisible(edit.selInstance, edit.selNode);
+      e.preventDefault();
+    } else if ((e.key === "Delete" || e.key === "Backspace") && edit.selInstance >= 0) {
+      edit.deleteInstance();
+      e.preventDefault();
+    } else if (e.key === "Escape") {
+      edit.clearSelection();
     }
   }
 
@@ -80,7 +162,12 @@
 
 <section class="viewer">
   <div class="canvas-wrap">
-    <canvas bind:this={canvas}></canvas>
+    <canvas
+      bind:this={canvas}
+      onpointerdown={onPointerDown}
+      onpointermove={onPointerMove}
+      onpointerup={onPointerUp}
+    ></canvas>
   </div>
 
   <div class="controls">
@@ -128,8 +215,8 @@
   canvas {
     max-width: 100%;
     max-height: 100%;
-    object-fit: contain;
-    image-rendering: auto;
+    touch-action: none; /* let pointer events drive editing, not scroll/zoom */
+    cursor: crosshair;
     box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
   }
   .controls {
