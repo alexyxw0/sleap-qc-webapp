@@ -48,7 +48,10 @@
     const item = store.current;
     const sk = store.skeleton;
     if (!ctx) return;
-    drawScene(ctx, frameImage, item, sk, { editing: true, selInstance: selI, selNode: selN });
+    // image px per on-screen px, so node markers + labels stay a constant screen size
+    const rect = canvas.getBoundingClientRect();
+    const scale = rect.width ? canvas.width / rect.width : 1;
+    drawScene(ctx, frameImage, item, sk, { editing: true, selInstance: selI, selNode: selN, scale });
   });
 
   // Clear selection when navigating to another frame (indices won't match).

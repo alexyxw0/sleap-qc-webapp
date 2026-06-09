@@ -77,7 +77,11 @@ Every operation was validated to survive `saveSlpToBytes` → reload before the 
   it (used after adding a skeleton node).
 - **Edit the skeleton** (sidebar, applies to all frames): rename / add / remove nodes
   (points are kept aligned across every instance), add / remove edges.
-- **Undo / redo** — `⌘/Ctrl+Z`, `⇧⌘/Ctrl+Z` (or Ctrl+Y); command-based history.
+- **Undo / redo** — `⌘/Ctrl+Z` undoes any recent change (move/visibility/add/delete/
+  skeleton edit); `⇧⌘/Ctrl+Z` (or `Ctrl+Y`) redoes. Also on the toolbar (↺ / ↻).
+- **Node labels** — each visible keypoint is labelled with its body-part name on the
+  canvas. The overlay (markers + labels + edges) is drawn scale-aware so it stays a
+  consistent on-screen size at any video resolution.
 - **Save** — `⤓ Save .slp` downloads edited labels; `⤓ .pkg.slp` re-embeds frames when the
   source had them. A dirty dot and an unload warning track unsaved changes.
 

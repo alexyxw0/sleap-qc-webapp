@@ -82,8 +82,16 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
   if (!lf || !skeleton) return;
   const edges = skeleton.edges ?? [];
   const instances = lf.instances ?? [];
-  const { editing = false, selInstance = -1, selNode = -1 } = sel;
-  const r = editing ? 5.5 : 4; // bigger, grabbable handles while editing
+  const names = skeleton.nodeNames ?? [];
+  const { editing = false, selInstance = -1, selNode = -1, scale = 1 } = sel;
+
+  // Sizes are specified in on-screen pixels and converted to image-space via `scale`
+  // (image px per screen px), so the overlay + labels look consistent at any video
+  // resolution / zoom.
+  const s = scale > 0 ? scale : 1;
+  const r = (editing ? 5.5 : 4) * s;
+  const fontPx = 11 * s;
+  const labelOff = r + 3 * s;
 
   instances.forEach((instance, idx) => {
     const color = colorFor(instance, idx);
@@ -91,41 +99,56 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
     const isSel = idx === selInstance;
 
     // edges
-    ctx.lineWidth = isSel ? 3 : 2;
+    ctx.lineWidth = (isSel ? 3 : 2) * s;
     ctx.strokeStyle = color;
     for (const edge of edges) {
       const si = skeleton.index(edge.source?.name ?? edge.source);
       const di = skeleton.index(edge.destination?.name ?? edge.destination);
-      const s = points[si];
-      const d = points[di];
-      if (!s || !d || !s.visible || !d.visible) continue;
-      if (Number.isNaN(s.xy?.[0]) || Number.isNaN(d.xy?.[0])) continue;
+      const a = points[si];
+      const b = points[di];
+      if (!a || !b || !a.visible || !b.visible) continue;
+      if (Number.isNaN(a.xy?.[0]) || Number.isNaN(b.xy?.[0])) continue;
       ctx.beginPath();
-      ctx.moveTo(s.xy[0], s.xy[1]);
-      ctx.lineTo(d.xy[0], d.xy[1]);
+      ctx.moveTo(a.xy[0], a.xy[1]);
+      ctx.lineTo(b.xy[0], b.xy[1]);
       ctx.stroke();
     }
 
-    // nodes
+    // nodes + labels
+    ctx.font = `${fontPx}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "left";
     points.forEach((p, ni) => {
       if (!p?.visible || Number.isNaN(p.xy?.[0])) return;
+      const [px, py] = p.xy;
+
       ctx.beginPath();
-      ctx.arc(p.xy[0], p.xy[1], r, 0, Math.PI * 2);
+      ctx.arc(px, py, r, 0, Math.PI * 2);
       ctx.fillStyle = color;
       ctx.fill();
       if (editing && isSel) {
-        // outline handles of the selected instance
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = 1.5 * s;
         ctx.strokeStyle = "rgba(255,255,255,0.85)";
         ctx.stroke();
       }
       if (isSel && ni === selNode) {
-        // selection ring on the active node
         ctx.beginPath();
-        ctx.arc(p.xy[0], p.xy[1], r + 3.5, 0, Math.PI * 2);
-        ctx.lineWidth = 2;
+        ctx.arc(px, py, r + 3.5 * s, 0, Math.PI * 2);
+        ctx.lineWidth = 2 * s;
         ctx.strokeStyle = "#ffffff";
         ctx.stroke();
+      }
+
+      // body-part label next to the node, with a dark halo for legibility
+      const name = names[ni];
+      if (name) {
+        const lx = px + labelOff;
+        const ly = py - labelOff;
+        ctx.lineWidth = 3 * s;
+        ctx.strokeStyle = "rgba(0,0,0,0.82)";
+        ctx.strokeText(name, lx, ly);
+        ctx.fillStyle = isSel && ni === selNode ? "#ffffff" : "#eaf0f7";
+        ctx.fillText(name, lx, ly);
       }
     });
   });
