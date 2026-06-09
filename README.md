@@ -119,8 +119,13 @@ A JS port of the `sleap.qc` detection pipeline (`src/lib/qc/checks/`) is wired i
   and a "stale" flag once you edit.
 - **Frame grid**: each tile gets a green→red **anomaly heat bar** (per-frame max score) and a
   red triangle for **frame-level issues** (incomplete count, duplicates, negative-with-instances).
-- **Sidebar**: a **QC card** for the current frame (max anomaly, instance count vs. expected,
-  issue list) and a per-instance **anomaly chip** in the instance panel.
+- **Sidebar**: a **QC card** for the current frame — the anomaly score + confidence, the
+  **likely issue** (what the check thinks is wrong, e.g. "Unusual edge length", "Isolated
+  node"; ported from `sleap.qc`'s `_infer_top_issue`), instance count vs. expected, and any
+  frame-level issues — plus a per-instance **anomaly chip + issue** in the instance panel.
+  The card states plainly that the anomaly is "geometrically unusual vs. the rest of this
+  file (a review hint, not a certain error)" so a high score is read as *look here*, not
+  *definitely wrong* — and the issue label lets you verify/dismiss it quickly.
 
 The detector port is validated against the real Python `sleap.qc` (Python 3.13): 17/18
 features bit-exact, ZScore ~1e-8, GMM scoring exact. See

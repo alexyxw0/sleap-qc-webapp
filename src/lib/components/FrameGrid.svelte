@@ -97,6 +97,7 @@
         {@const modified = edit.isFrameModified(f?.lf)}
         {@const qscore = qc.hasResults ? qc.frameScore(f) : null}
         {@const qissue = qc.hasResults ? hasFrameIssue(qc.frameQC(f)) : false}
+        {@const qtop = qc.hasResults ? qc.frameTopIssue(f) : null}
         <button
           class="cell"
           class:current={cell.i === store.index}
@@ -106,7 +107,7 @@
           style:top="{cell.y}px"
           style:width="{CELL}px"
           style:height="{CELL}px"
-          title={`frame ${cell.i + 1} · video idx ${f?.frameIdx} · ${f?.lf?.instances?.length ?? 0} instance(s)${modified ? " · modified" : ""}${qscore != null ? ` · anomaly ${qscore.toFixed(2)}` : ""}${qissue ? " · frame issue" : ""}`}
+          title={`frame ${cell.i + 1} · video idx ${f?.frameIdx} · ${f?.lf?.instances?.length ?? 0} instance(s)${modified ? " · modified" : ""}${qscore != null ? ` · anomaly ${qscore.toFixed(2)}${qtop?.issue ? ` (${qtop.issue})` : ""}` : ""}${qissue ? " · frame issue" : ""}`}
           onclick={() => store.setIndex(cell.i)}
         >
           <span class="num">{f?.frameIdx}</span>

@@ -6,6 +6,7 @@
 
 import { fitAndScoreLabels } from "./qc/checks/detector.js";
 import { makeQCConfig } from "./qc/checks/config.js";
+import { topIssue, confidence } from "./qc/checks/explain.js";
 import { store } from "./labelsStore.svelte.js";
 
 class QCStore {
@@ -16,8 +17,10 @@ class QCStore {
   ranAtRev = -1; // store.rev at the time QC last ran (for staleness)
 
   #instanceScores = new Map(); // "v:f:i" -> score
+  #contributions = new Map(); // "v:f:i" -> { feature: rawValue }
   #frameResults = new Map(); // "v:f" -> FrameQC
   #frameScore = new Map(); // "v:f" -> max instance score
+  #frameWorst = new Map(); // "v:f" -> instIdx of the worst instance
   #flaggedFrames = 0;
 
   get hasResults() {
@@ -62,6 +65,22 @@ class QCStore {
     if (!item) return null;
     return this.#instanceScores.get(`${this.#videoIdx(item.video)}:${item.frameIdx}:${instIdx}`) ?? null;
   }
+  /** { score, issue, feature, confidence } for an instance, or null. */
+  instanceIssue(item, instIdx) {
+    this.rev;
+    if (!item) return null;
+    const key = `${this.#videoIdx(item.video)}:${item.frameIdx}:${instIdx}`;
+    const score = this.#instanceScores.get(key);
+    if (score == null) return null;
+    return { score, confidence: confidence(score), ...topIssue(this.#contributions.get(key)) };
+  }
+  /** The issue of the worst-scoring instance in a frame, or null. */
+  frameTopIssue(item) {
+    this.rev;
+    if (!item) return null;
+    const worst = this.#frameWorst.get(`${this.#videoIdx(item.video)}:${item.frameIdx}`);
+    return worst == null ? null : this.instanceIssue(item, worst);
+  }
 
   async run() {
     if (!store.labels || this.status === "running") return;
@@ -72,11 +91,16 @@ class QCStore {
     try {
       const out = fitAndScoreLabels(store.labels, { config: makeQCConfig({ useGmm: false }) });
       this.#instanceScores = out.instanceScores;
+      this.#contributions = out.contributions;
       this.#frameResults = out.frameResults;
       this.#frameScore = new Map();
+      this.#frameWorst = new Map();
       for (const [key, s] of out.instanceScores) {
         const fk = key.slice(0, key.lastIndexOf(":"));
-        this.#frameScore.set(fk, Math.max(this.#frameScore.get(fk) ?? 0, s));
+        if (s > (this.#frameScore.get(fk) ?? -1)) {
+          this.#frameScore.set(fk, s);
+          this.#frameWorst.set(fk, Number(key.slice(key.lastIndexOf(":") + 1)));
+        }
       }
       // count flagged frames
       let flagged = 0;
@@ -101,8 +125,10 @@ class QCStore {
     this.status = "idle";
     this.error = null;
     this.#instanceScores = new Map();
+    this.#contributions = new Map();
     this.#frameResults = new Map();
     this.#frameScore = new Map();
+    this.#frameWorst = new Map();
     this.#flaggedFrames = 0;
     this.ranAtRev = -1;
     this.rev++;

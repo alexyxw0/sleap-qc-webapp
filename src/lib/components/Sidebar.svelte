@@ -78,15 +78,21 @@
   {#if qc.hasResults}
     {@const fq = qc.frameQC(item)}
     {@const fs = qc.frameScore(item)}
+    {@const ti = qc.frameTopIssue(item)}
     <section class="card qccard" class:flagged={qc.frameFlagged(item)}>
       <h3>QC · this frame{qc.stale ? " (stale)" : ""}</h3>
       <dl>
-        <dt>Max anomaly</dt>
+        <dt>Anomaly</dt>
         <dd>
           {#if fs != null}
             <span class="qchip" style:background={heatColor(fs)}>{fs.toFixed(2)}</span>
+            <span class="muted small">{ti?.confidence ?? ""}</span>
           {:else}—{/if}
         </dd>
+        {#if ti?.issue && fs != null}
+          <dt>Likely issue</dt>
+          <dd class="issuetxt">{ti.issue}</dd>
+        {/if}
         <dt>Instances</dt>
         <dd>{fq ? `${fq.actualInstanceCount} / ${fq.expectedInstanceCount} expected` : "—"}</dd>
       </dl>
@@ -96,9 +102,8 @@
           {#if fq.isNegativeWithInstances}<li>⚠ negative frame has instances</li>{/if}
           {#if fq.duplicatePairs?.length}<li>⚠ {fq.duplicatePairs.length} duplicate pair(s): {fq.duplicateReasons.join(", ")}</li>{/if}
         </ul>
-      {:else}
-        <p class="muted small">no frame-level issues</p>
       {/if}
+      <p class="muted xs">Anomaly = geometrically unusual vs. the rest of this file (a review hint, not a certain error).</p>
     </section>
   {/if}
 
@@ -167,6 +172,9 @@
             {/if}
             <button class="del" onclick={() => edit.deleteInstance(inst.i)} title="Delete instance">×</button>
           </div>
+          {#if qs != null}
+            <div class="qcissue">QC: {qc.instanceIssue(item, inst.i)?.issue}</div>
+          {/if}
           <div class="pts">
             {#each inst.points as p (p.j)}
               <button
@@ -296,6 +304,20 @@
     font-size: 0.78rem;
     color: #fbbf24;
     line-height: 1.5;
+  }
+  .issuetxt {
+    color: #e7c08a;
+    font-weight: 600;
+  }
+  .qcissue {
+    font-size: 0.72rem;
+    color: #9fb0c3;
+    margin: -0.1rem 0 0.2rem 1.3rem;
+  }
+  .muted.xs {
+    font-size: 0.68rem;
+    line-height: 1.4;
+    margin-top: 0.5rem;
   }
   .ihead {
     display: flex;
