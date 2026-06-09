@@ -1,17 +1,19 @@
 <script>
   import { store } from "./lib/labelsStore.svelte.js";
   import { edit } from "./lib/editStore.svelte.js";
+  import { view } from "./lib/viewStore.svelte.js";
   import FileUpload from "./lib/components/FileUpload.svelte";
   import Viewer from "./lib/components/Viewer.svelte";
   import Sidebar from "./lib/components/Sidebar.svelte";
   import EditToolbar from "./lib/components/EditToolbar.svelte";
 
-  // Reset the edit history whenever a different labels object is loaded (or closed).
+  // Reset edit history + view whenever a different labels object is loaded (or closed).
   let lastLabels = null;
   $effect(() => {
     if (store.labels !== lastLabels) {
       lastLabels = store.labels;
       edit.resetForNewFile();
+      view.reset();
     }
   });
 

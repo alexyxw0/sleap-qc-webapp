@@ -78,6 +78,8 @@ function drawPlaceholder(ctx, item) {
   );
 }
 
+const placed = (p) => p && !Number.isNaN(p.xy?.[0]) && p.xy?.[0] != null;
+
 function drawSkeleton(ctx, lf, skeleton, sel = {}) {
   if (!lf || !skeleton) return;
   const edges = skeleton.edges ?? [];
@@ -87,41 +89,54 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
 
   // Sizes are specified in on-screen pixels and converted to image-space via `scale`
   // (image px per screen px), so the overlay + labels look consistent at any video
-  // resolution / zoom.
+  // resolution.
   const s = scale > 0 ? scale : 1;
   const r = (editing ? 5.5 : 4) * s;
   const fontPx = 11 * s;
   const labelOff = r + 3 * s;
+  const font = `${fontPx}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+
+  const label = (name, px, py, alpha, accent) => {
+    if (!name) return;
+    ctx.globalAlpha = alpha;
+    ctx.font = font;
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "left";
+    ctx.lineWidth = 3 * s;
+    ctx.strokeStyle = "rgba(0,0,0,0.82)";
+    ctx.strokeText(name, px + labelOff, py - labelOff);
+    ctx.fillStyle = accent ? "#ffffff" : "#eaf0f7";
+    ctx.fillText(name, px + labelOff, py - labelOff);
+  };
 
   instances.forEach((instance, idx) => {
     const color = colorFor(instance, idx);
     const points = instance.points ?? [];
     const isSel = idx === selInstance;
 
-    // edges
-    ctx.lineWidth = (isSel ? 3 : 2) * s;
+    // edges — drawn between any two *placed* nodes; faint if either end is hidden
     ctx.strokeStyle = color;
     for (const edge of edges) {
-      const si = skeleton.index(edge.source?.name ?? edge.source);
-      const di = skeleton.index(edge.destination?.name ?? edge.destination);
-      const a = points[si];
-      const b = points[di];
-      if (!a || !b || !a.visible || !b.visible) continue;
-      if (Number.isNaN(a.xy?.[0]) || Number.isNaN(b.xy?.[0])) continue;
+      const a = points[skeleton.index(edge.source?.name ?? edge.source)];
+      const b = points[skeleton.index(edge.destination?.name ?? edge.destination)];
+      if (!placed(a) || !placed(b)) continue;
+      ctx.globalAlpha = a.visible && b.visible ? 1 : 0.22;
+      ctx.lineWidth = (isSel ? 3 : 2) * s;
       ctx.beginPath();
       ctx.moveTo(a.xy[0], a.xy[1]);
       ctx.lineTo(b.xy[0], b.xy[1]);
       ctx.stroke();
     }
 
-    // nodes + labels
-    ctx.font = `${fontPx}px system-ui, -apple-system, "Segoe UI", sans-serif`;
-    ctx.textBaseline = "middle";
-    ctx.textAlign = "left";
+    // nodes + labels — hidden nodes are kept visible but very transparent so they can
+    // still be found and dragged.
     points.forEach((p, ni) => {
-      if (!p?.visible || Number.isNaN(p.xy?.[0])) return;
+      if (!placed(p)) return;
       const [px, py] = p.xy;
+      const focused = isSel && ni === selNode;
+      const nodeAlpha = p.visible ? 1 : focused ? 0.6 : 0.28;
 
+      ctx.globalAlpha = nodeAlpha;
       ctx.beginPath();
       ctx.arc(px, py, r, 0, Math.PI * 2);
       ctx.fillStyle = color;
@@ -131,7 +146,8 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
         ctx.strokeStyle = "rgba(255,255,255,0.85)";
         ctx.stroke();
       }
-      if (isSel && ni === selNode) {
+      if (focused) {
+        ctx.globalAlpha = 1;
         ctx.beginPath();
         ctx.arc(px, py, r + 3.5 * s, 0, Math.PI * 2);
         ctx.lineWidth = 2 * s;
@@ -139,23 +155,26 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
         ctx.stroke();
       }
 
-      // body-part label next to the node, with a dark halo for legibility
-      const name = names[ni];
-      if (name) {
-        const lx = px + labelOff;
-        const ly = py - labelOff;
-        ctx.lineWidth = 3 * s;
-        ctx.strokeStyle = "rgba(0,0,0,0.82)";
-        ctx.strokeText(name, lx, ly);
-        ctx.fillStyle = isSel && ni === selNode ? "#ffffff" : "#eaf0f7";
-        ctx.fillText(name, lx, ly);
-      }
+      // Default label opacity: half-transparent (so overlapping labels don't fight),
+      // fainter still when the node is hidden. The focused node's label is drawn on
+      // top fully opaque in a final pass below.
+      if (!focused) label(names[ni], px, py, p.visible ? 0.5 : 0.22, false);
     });
   });
+
+  // Focused node's label, opaque and on top of everything.
+  if (selInstance >= 0 && selNode >= 0) {
+    const p = instances[selInstance]?.points?.[selNode];
+    if (placed(p)) label(names[selNode], p.xy[0], p.xy[1], 1, true);
+  }
+
+  ctx.globalAlpha = 1;
 }
 
-// Nearest visible node to (x,y) within `radius` image-px, scanning topmost instances
-// first so overlapping points resolve intuitively. Returns {instIdx,nodeIdx,dist} | null.
+// Nearest *placed* node to (x,y) within `radius` image-px, scanning topmost instances
+// first so overlapping points resolve intuitively. Hidden-but-placed nodes are included
+// (so they can still be grabbed); only unplaced (NaN) points are skipped.
+// Returns {instIdx,nodeIdx,dist} | null.
 export function hitTestNode(lf, radius) {
   return (x, y) => {
     const instances = lf?.instances ?? [];
@@ -164,7 +183,7 @@ export function hitTestNode(lf, radius) {
       const points = instances[idx].points ?? [];
       for (let ni = 0; ni < points.length; ni++) {
         const p = points[ni];
-        if (!p?.visible || Number.isNaN(p.xy?.[0])) continue;
+        if (!placed(p)) continue;
         const dx = p.xy[0] - x;
         const dy = p.xy[1] - y;
         const d = Math.hypot(dx, dy);

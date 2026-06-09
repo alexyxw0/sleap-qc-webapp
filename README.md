@@ -79,9 +79,17 @@ Every operation was validated to survive `saveSlpToBytes` → reload before the 
   (points are kept aligned across every instance), add / remove edges.
 - **Undo / redo** — `⌘/Ctrl+Z` undoes any recent change (move/visibility/add/delete/
   skeleton edit); `⇧⌘/Ctrl+Z` (or `Ctrl+Y`) redoes. Also on the toolbar (↺ / ↻).
-- **Node labels** — each visible keypoint is labelled with its body-part name on the
-  canvas. The overlay (markers + labels + edges) is drawn scale-aware so it stays a
-  consistent on-screen size at any video resolution.
+- **Node labels** — each keypoint is labelled with its body-part name on the canvas.
+  Labels are half-transparent by default (so overlapping ones stay legible) and the
+  **focused** node's label becomes fully opaque and is drawn on top. The overlay is
+  scale-aware so it's a consistent on-screen size at any video resolution.
+- **Hidden points stay editable** — toggling a point off (`V`) makes it very transparent
+  instead of removing it; it can still be selected and dragged, and stays hidden while
+  moved. (Edges to a hidden node also fade rather than vanish.)
+- **Zoom & pan** — mouse wheel or the on-canvas −/＋ controls to zoom (also `+`/`-`,
+  `0` to reset); drag empty space to pan when zoomed in. Helpful for small/dense
+  skeletons. Implemented as a reusable `viewStore` (zoom + pan) so other features can
+  drive the view later.
 - **Save** — `⤓ Save .slp` downloads edited labels; `⤓ .pkg.slp` re-embeds frames when the
   source had them. A dirty dot and an unload warning track unsaved changes.
 

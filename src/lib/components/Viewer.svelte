@@ -1,6 +1,7 @@
 <script>
   import { store } from "../labelsStore.svelte.js";
   import { edit } from "../editStore.svelte.js";
+  import { view } from "../viewStore.svelte.js";
   import { drawScene, frameDims, hitTestNode } from "../draw.js";
 
   let canvas = $state();
@@ -8,16 +9,20 @@
   let playing = $state(false);
   let timer = null;
   let frameImage = $state.raw(null); // cached decoded frame, so edits don't re-fetch it
+
+  let mode = null; // 'node' (drag a point) | 'pan'
   let dragging = null; // { instIdx, nodeIdx, from }
+  let panStart = null;
+  let moved = false;
 
   const HIT_PX = 12; // hit radius in screen pixels
+  const ZOOM_STEP = 1.25;
 
   $effect(() => {
     if (canvas) ctx = canvas.getContext("2d");
   });
 
-  // (A) Fetch the frame image — only when the frame or the attached video changes.
-  // Guarded against out-of-order async so fast scrubbing never shows a stale frame.
+  // (A) Fetch the frame image — only when the frame or attached video changes.
   $effect(() => {
     const item = store.current;
     void store.index;
@@ -39,8 +44,9 @@
     };
   });
 
-  // (B) Draw image + pose overlay. Re-runs on edits (store.rev) and selection changes
-  // using the cached image — no re-fetch, so dragging stays smooth.
+  // (B) Draw image + overlay on edits/selection. Zoom/pan is a CSS transform on the
+  // canvas element, so the overlay is sized from the *layout* width (offsetWidth,
+  // unaffected by the transform) and needs no redraw when zooming.
   $effect(() => {
     void store.rev;
     const selI = edit.selInstance;
@@ -48,19 +54,17 @@
     const item = store.current;
     const sk = store.skeleton;
     if (!ctx) return;
-    // image px per on-screen px, so node markers + labels stay a constant screen size
-    const rect = canvas.getBoundingClientRect();
-    const scale = rect.width ? canvas.width / rect.width : 1;
+    const scale = canvas.offsetWidth ? canvas.width / canvas.offsetWidth : 1;
     drawScene(ctx, frameImage, item, sk, { editing: true, selInstance: selI, selNode: selN, scale });
   });
 
-  // Clear selection when navigating to another frame (indices won't match).
+  // Clear selection when navigating to another frame.
   $effect(() => {
     void store.index;
     edit.clearSelection();
   });
 
-  // --- coordinate mapping (screen -> image space) ---
+  // screen -> image coords (uses the post-transform box, so zoom/pan are accounted for)
   function toImage(e) {
     const rect = canvas.getBoundingClientRect();
     const sx = canvas.width / rect.width;
@@ -78,37 +82,63 @@
       edit.select(hit.instIdx, hit.nodeIdx);
       const p = lf.instances[hit.instIdx].points[hit.nodeIdx];
       dragging = { instIdx: hit.instIdx, nodeIdx: hit.nodeIdx, from: { xy: [...p.xy], visible: p.visible } };
+      mode = "node";
       canvas.setPointerCapture(e.pointerId);
       return;
     }
 
-    // No node hit. If the selected node is unplaced/hidden, place it here.
-    const inst = edit.selectedInstance;
-    const p = inst?.points?.[edit.selNode];
-    if (p && (!p.visible || Number.isNaN(p.xy?.[0]))) {
-      const from = { xy: [...p.xy], visible: p.visible };
-      edit.setPoint(edit.selInstance, edit.selNode, x, y, true);
-      edit.commitMove(edit.selInstance, edit.selNode, from);
-      return;
-    }
-    edit.clearSelection();
+    // empty: pan (if zoomed) or, on a clean click, place/deselect
+    mode = "pan";
+    moved = false;
+    panStart = { cx: e.clientX, cy: e.clientY, panX: view.panX, panY: view.panY };
+    canvas.setPointerCapture(e.pointerId);
   }
 
   function onPointerMove(e) {
-    if (!dragging) return;
-    const { x, y } = toImage(e);
-    edit.setPoint(dragging.instIdx, dragging.nodeIdx, x, y, true);
+    if (mode === "node") {
+      const { x, y } = toImage(e);
+      // preserve the node's visibility so a hidden node stays hidden while moved
+      edit.setPoint(dragging.instIdx, dragging.nodeIdx, x, y, dragging.from.visible);
+    } else if (mode === "pan") {
+      const dx = e.clientX - panStart.cx;
+      const dy = e.clientY - panStart.cy;
+      if (!moved && Math.hypot(dx, dy) > 3) moved = true;
+      if (moved && view.zoom > 1) {
+        view.panX = panStart.panX + dx;
+        view.panY = panStart.panY + dy;
+      }
+    }
   }
 
   function onPointerUp(e) {
-    if (!dragging) return;
-    edit.commitMove(dragging.instIdx, dragging.nodeIdx, dragging.from);
+    if (mode === "node") {
+      edit.commitMove(dragging.instIdx, dragging.nodeIdx, dragging.from);
+      dragging = null;
+    } else if (mode === "pan" && !moved) {
+      // a clean click on empty space: place an unplaced selected node, else deselect
+      const p = edit.selectedInstance?.points?.[edit.selNode];
+      if (p && Number.isNaN(p.xy?.[0])) {
+        const { x, y } = toImage(e);
+        const from = { xy: [...p.xy], visible: p.visible };
+        edit.setPoint(edit.selInstance, edit.selNode, x, y, true);
+        edit.commitMove(edit.selInstance, edit.selNode, from);
+      } else {
+        edit.clearSelection();
+      }
+    }
     try {
       canvas.releasePointerCapture(e.pointerId);
     } catch {
       /* capture may already be gone */
     }
-    dragging = null;
+    mode = null;
+    panStart = null;
+    moved = false;
+  }
+
+  function onWheel(e) {
+    e.preventDefault();
+    e.deltaY < 0 ? view.zoomIn() : view.zoomOut();
   }
 
   function togglePlay() {
@@ -138,7 +168,16 @@
       e.preventDefault();
       return;
     }
-    if (e.key === "ArrowRight" || e.key === "d") {
+    if (e.key === "=" || e.key === "+") {
+      view.zoomIn();
+      e.preventDefault();
+    } else if (e.key === "-" || e.key === "_") {
+      view.zoomOut();
+      e.preventDefault();
+    } else if (e.key === "0") {
+      view.reset();
+      e.preventDefault();
+    } else if (e.key === "ArrowRight" || e.key === "d") {
       store.next();
       e.preventDefault();
     } else if (e.key === "ArrowLeft" || e.key === "a") {
@@ -164,13 +203,22 @@
 <svelte:window onkeydown={onKey} />
 
 <section class="viewer">
-  <div class="canvas-wrap">
+  <div class="canvas-wrap" onwheel={onWheel}>
     <canvas
       bind:this={canvas}
+      style:transform={view.transform}
+      style:cursor={view.zoom > 1 ? "grab" : "crosshair"}
       onpointerdown={onPointerDown}
       onpointermove={onPointerMove}
       onpointerup={onPointerUp}
     ></canvas>
+
+    <div class="zoomctl">
+      <button onclick={() => view.zoomOut()} disabled={view.zoom <= 1} title="Zoom out (−)">−</button>
+      <span class="pct">{view.zoomPct}%</span>
+      <button onclick={() => view.zoomIn()} title="Zoom in (+)">＋</button>
+      <button onclick={() => view.reset()} disabled={view.zoom === 1 && view.panX === 0 && view.panY === 0} title="Reset view (0)">⤢</button>
+    </div>
   </div>
 
   <div class="controls">
@@ -206,6 +254,7 @@
     height: 100%;
   }
   .canvas-wrap {
+    position: relative;
     flex: 1;
     min-height: 0;
     display: grid;
@@ -218,9 +267,47 @@
   canvas {
     max-width: 100%;
     max-height: 100%;
-    touch-action: none; /* let pointer events drive editing, not scroll/zoom */
-    cursor: crosshair;
+    touch-action: none; /* pointer events drive editing/pan, not scroll/zoom */
+    transform-origin: center center;
     box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+  }
+  .zoomctl {
+    position: absolute;
+    right: 0.6rem;
+    bottom: 0.6rem;
+    display: flex;
+    align-items: center;
+    gap: 0.2rem;
+    background: rgba(13, 18, 26, 0.85);
+    border: 1px solid #25303d;
+    border-radius: 8px;
+    padding: 0.2rem 0.3rem;
+    backdrop-filter: blur(4px);
+  }
+  .zoomctl button {
+    background: #1a212c;
+    color: #d7dee8;
+    border: 1px solid #2a3442;
+    border-radius: 5px;
+    width: 1.7rem;
+    height: 1.5rem;
+    font-size: 0.9rem;
+    cursor: pointer;
+    line-height: 1;
+  }
+  .zoomctl button:hover:not(:disabled) {
+    background: #222b38;
+  }
+  .zoomctl button:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .zoomctl .pct {
+    font-size: 0.72rem;
+    color: var(--muted);
+    min-width: 2.6rem;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
   }
   .controls {
     display: flex;
@@ -228,7 +315,7 @@
     gap: 0.4rem;
     padding: 0.7rem 0.2rem 0;
   }
-  button {
+  .controls button {
     background: #1a212c;
     color: #d7dee8;
     border: 1px solid #2a3442;
@@ -238,10 +325,10 @@
     cursor: pointer;
     line-height: 1;
   }
-  button:hover {
+  .controls button:hover {
     background: #222b38;
   }
-  button.play {
+  .controls button.play {
     background: var(--accent);
     color: #06121f;
     border-color: transparent;
