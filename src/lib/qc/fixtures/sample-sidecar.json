@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "video": { "video_idx": 0, "width": 1024, "height": 1024, "n_frames": 100 },
+  "skeleton": {
+    "nodeNames": ["head", "thorax", "abdomen", "tailtip"],
+    "edges": [[0, 1], [1, 2], [2, 3]]
+  },
+  "frames": [
+    { "video_idx": 0, "frame_idx": 0, "issues": [] },
+    { "video_idx": 0, "frame_idx": 1, "issues": ["instance_count"] }
+  ],
+  "keypoints": [
+    { "video_idx": 0, "frame_idx": 0, "track_id": "track_0", "node_idx": 3, "node_name": "tailtip",
+      "xy": [500, 510], "point_score": 0.20, "gmm_instance_score": 0.80, "spatial_mahalanobis": 4.1,
+      "temporal_residual": 12.0, "velocity_z": 3.2, "visibility_surprise": 0.10, "p_error": 0.92,
+      "reason_codes": ["temporal_jump", "gross_miss"] },
+    { "video_idx": 0, "frame_idx": 0, "track_id": "track_1", "node_idx": 3, "node_name": "tailtip",
+      "xy": [300, 280], "point_score": 0.35, "gmm_instance_score": 0.60, "spatial_mahalanobis": 3.0,
+      "temporal_residual": 6.0, "velocity_z": 1.5, "visibility_surprise": 0.05, "p_error": 0.75,
+      "reason_codes": ["jitter"] },
+    { "video_idx": 0, "frame_idx": 1, "track_id": "track_0", "node_idx": 0, "node_name": "head",
+      "xy": [505, 500], "point_score": 0.80, "gmm_instance_score": 0.40, "spatial_mahalanobis": 1.2,
+      "temporal_residual": 2.0, "velocity_z": 0.5, "visibility_surprise": 0.02, "p_error": 0.50,
+      "reason_codes": [] },
+    { "video_idx": 0, "frame_idx": 1, "track_id": "track_1", "node_idx": 0, "node_name": "head",
+      "xy": [310, 305], "point_score": 0.78, "gmm_instance_score": 0.42, "spatial_mahalanobis": 1.3,
+      "temporal_residual": 2.1, "velocity_z": 0.6, "visibility_surprise": 0.03, "p_error": 0.50,
+      "reason_codes": [] },
+    { "video_idx": 0, "frame_idx": 2, "track_id": "track_0", "node_idx": 1, "node_name": "thorax",
+      "xy": [500, 505], "point_score": 0.95, "gmm_instance_score": 0.20, "spatial_mahalanobis": 0.4,
+      "temporal_residual": 0.5, "velocity_z": 0.1, "visibility_surprise": 0.01, "p_error": 0.30,
+      "reason_codes": [], "review_state": "accepted" },
+    { "video_idx": 0, "frame_idx": 2, "track_id": "track_1", "node_idx": 2, "node_name": "abdomen",
+      "xy": [305, 295], "point_score": 0.90, "gmm_instance_score": 0.15, "spatial_mahalanobis": 0.3,
+      "temporal_residual": 0.4, "velocity_z": 0.1, "visibility_surprise": 0.01, "p_error": 0.10,
+      "reason_codes": [] }
+  ]
+}
