@@ -1,6 +1,7 @@
 <script>
   import { store } from "../labelsStore.svelte.js";
   import { edit } from "../editStore.svelte.js";
+  import { qc } from "../qcStore.svelte.js";
 </script>
 
 <div class="toolbar">
@@ -34,6 +35,20 @@
     {:else}
       <span class="keys">click a point to select · drag to move · ⌘/Ctrl+Z to undo</span>
     {/if}
+  </div>
+
+  <div class="sep"></div>
+
+  <div class="group qc">
+    <button onclick={() => qc.run()} disabled={qc.status === "running"} title="Run deterministic QC checks (anomaly + frame issues)">
+      {qc.status === "running" ? "Running QC…" : "🔍 Run QC"}
+    </button>
+    {#if qc.hasResults}
+      <span class="qcstat" class:stale={qc.stale}>
+        {qc.flaggedFrameCount} flagged{qc.stale ? " · stale" : ""}
+      </span>
+    {/if}
+    {#if qc.status === "error"}<span class="qcstat err">QC failed</span>{/if}
   </div>
 
   <div class="spacer"></div>
@@ -119,5 +134,16 @@
     border-radius: 50%;
     background: #fbbf24;
     box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.15);
+  }
+  .qcstat {
+    font-size: 0.76rem;
+    color: #9fb0c3;
+    white-space: nowrap;
+  }
+  .qcstat.stale {
+    color: #fbbf24;
+  }
+  .qcstat.err {
+    color: #fda4af;
   }
 </style>

@@ -1,6 +1,7 @@
 <script>
   import { store } from "../labelsStore.svelte.js";
   import { edit } from "../editStore.svelte.js";
+  import { qc, heatColor, hasFrameIssue } from "../qcStore.svelte.js";
   import FrameGrid from "./FrameGrid.svelte";
   import SkeletonEditor from "./SkeletonEditor.svelte";
 
@@ -73,6 +74,34 @@
   <!-- Discrete frame selector -->
   <FrameGrid />
 
+  <!-- QC results for the current frame -->
+  {#if qc.hasResults}
+    {@const fq = qc.frameQC(item)}
+    {@const fs = qc.frameScore(item)}
+    <section class="card qccard" class:flagged={qc.frameFlagged(item)}>
+      <h3>QC · this frame{qc.stale ? " (stale)" : ""}</h3>
+      <dl>
+        <dt>Max anomaly</dt>
+        <dd>
+          {#if fs != null}
+            <span class="qchip" style:background={heatColor(fs)}>{fs.toFixed(2)}</span>
+          {:else}—{/if}
+        </dd>
+        <dt>Instances</dt>
+        <dd>{fq ? `${fq.actualInstanceCount} / ${fq.expectedInstanceCount} expected` : "—"}</dd>
+      </dl>
+      {#if hasFrameIssue(fq)}
+        <ul class="issues">
+          {#if fq.isIncomplete}<li>⚠ incomplete (fewer instances than expected)</li>{/if}
+          {#if fq.isNegativeWithInstances}<li>⚠ negative frame has instances</li>{/if}
+          {#if fq.duplicatePairs?.length}<li>⚠ {fq.duplicatePairs.length} duplicate pair(s): {fq.duplicateReasons.join(", ")}</li>{/if}
+        </ul>
+      {:else}
+        <p class="muted small">no frame-level issues</p>
+      {/if}
+    </section>
+  {/if}
+
   <!-- Video / source -->
   <section class="card">
     <h3>Video</h3>
@@ -124,6 +153,7 @@
     </div>
     {#if panel.length}
       {#each panel as inst (inst.i)}
+        {@const qs = qc.hasResults ? qc.instanceScore(item, inst.i) : null}
         <div class="inst" class:sel={inst.i === edit.selInstance}>
           <div class="inst-head">
             <button class="selbtn" onclick={() => edit.select(inst.i, 0)} title="Select instance">
@@ -132,6 +162,9 @@
               {inst.track ? `· ${inst.track}` : "· untracked"}
               {inst.score != null ? `· ${inst.score.toFixed(2)}` : ""}
             </button>
+            {#if qs != null}
+              <span class="qchip sm" style:background={heatColor(qs)} title="QC anomaly score">{qs.toFixed(2)}</span>
+            {/if}
             <button class="del" onclick={() => edit.deleteInstance(inst.i)} title="Delete instance">×</button>
           </div>
           <div class="pts">
@@ -241,6 +274,28 @@
     color: #fda4af;
     font-size: 0.82rem;
     margin: 0;
+  }
+  .qccard.flagged {
+    box-shadow: inset 0 0 0 1px #7a4a2a;
+  }
+  .qchip {
+    color: #06121f;
+    font-weight: 700;
+    border-radius: 5px;
+    padding: 0.05rem 0.35rem;
+    font-size: 0.78rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .qchip.sm {
+    font-size: 0.7rem;
+    padding: 0.02rem 0.28rem;
+  }
+  .issues {
+    margin: 0.4rem 0 0;
+    padding-left: 1rem;
+    font-size: 0.78rem;
+    color: #fbbf24;
+    line-height: 1.5;
   }
   .ihead {
     display: flex;

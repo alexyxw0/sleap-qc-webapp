@@ -1,6 +1,7 @@
 <script>
   import { store } from "../labelsStore.svelte.js";
   import { edit } from "../editStore.svelte.js";
+  import { qc, heatColor, hasFrameIssue } from "../qcStore.svelte.js";
 
   // A grid of discrete, clickable frame "tiles" — one per navigable frame. Virtualized:
   // only the rows currently scrolled into view are mounted, so it stays smooth even at
@@ -94,6 +95,8 @@
         {@const f = store.frames[cell.i]}
         {@const labeled = (f?.lf?.instances?.length ?? 0) > 0}
         {@const modified = edit.isFrameModified(f?.lf)}
+        {@const qscore = qc.hasResults ? qc.frameScore(f) : null}
+        {@const qissue = qc.hasResults ? hasFrameIssue(qc.frameQC(f)) : false}
         <button
           class="cell"
           class:current={cell.i === store.index}
@@ -103,11 +106,13 @@
           style:top="{cell.y}px"
           style:width="{CELL}px"
           style:height="{CELL}px"
-          title={`frame ${cell.i + 1} · video idx ${f?.frameIdx} · ${f?.lf?.instances?.length ?? 0} instance(s)${modified ? " · modified" : ""}`}
+          title={`frame ${cell.i + 1} · video idx ${f?.frameIdx} · ${f?.lf?.instances?.length ?? 0} instance(s)${modified ? " · modified" : ""}${qscore != null ? ` · anomaly ${qscore.toFixed(2)}` : ""}${qissue ? " · frame issue" : ""}`}
           onclick={() => store.setIndex(cell.i)}
         >
           <span class="num">{f?.frameIdx}</span>
           {#if modified}<i class="moddot"></i>{/if}
+          {#if qissue}<i class="issuedot"></i>{/if}
+          {#if qscore != null}<i class="heat" style:background={heatColor(qscore)}></i>{/if}
         </button>
       {/each}
     </div>
@@ -117,6 +122,10 @@
     <span><i class="sw current"></i> selected</span>
     <span><i class="sw labeled"></i> has labels</span>
     <span><i class="sw mod"></i> modified</span>
+    {#if qc.hasResults}
+      <span><i class="sw issue"></i> QC issue</span>
+      <span class="heatkey">anomaly <i class="heatbar"></i></span>
+    {/if}
   </div>
 </section>
 
@@ -214,6 +223,26 @@
     box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.55);
     pointer-events: none;
   }
+  .issuedot {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 0;
+    height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-bottom: 8px solid #f87171;
+    pointer-events: none;
+  }
+  .heat {
+    position: absolute;
+    left: 2px;
+    right: 2px;
+    bottom: 2px;
+    height: 3px;
+    border-radius: 2px;
+    pointer-events: none;
+  }
   .num {
     pointer-events: none;
     line-height: 1;
@@ -247,5 +276,21 @@
   .sw.mod {
     background: #fbbf24;
     border-color: #c98a2b;
+  }
+  .sw.issue {
+    background: #f87171;
+    border-color: #b04a4a;
+  }
+  .heatkey {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+  .heatbar {
+    width: 34px;
+    height: 7px;
+    border-radius: 3px;
+    display: inline-block;
+    background: linear-gradient(90deg, hsl(140, 80%, 55%), hsl(70, 80%, 55%), hsl(0, 80%, 55%));
   }
 </style>
