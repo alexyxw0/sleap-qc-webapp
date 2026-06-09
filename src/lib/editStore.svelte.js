@@ -23,20 +23,27 @@ class EditStore {
 
   #undo = [];
   #redo = [];
-  #dirtyFrames = new Set(); // LabeledFrame refs touched by per-frame edits
+  // Count of currently-applied per-frame edits, keyed by LabeledFrame. A frame is
+  // "modified" iff its count > 0, so undoing edits back to the original (count -> 0)
+  // clears the badge; redo brings it back. (Skeleton edits are global and tracked by
+  // `dirty`, not per-frame.)
+  #frameEdits = new Map();
 
-  // Mark the current frame as modified (per-frame label edits only; skeleton edits are
-  // global and tracked by `dirty`, not per-frame).
-  #markFrameDirty() {
-    const lf = store.current?.lf;
-    if (lf && !this.#dirtyFrames.has(lf)) {
-      this.#dirtyFrames.add(lf);
-      this.dirtyRev++;
-    }
+  #incFrame(lf) {
+    if (!lf) return;
+    this.#frameEdits.set(lf, (this.#frameEdits.get(lf) ?? 0) + 1);
+    this.dirtyRev++;
+  }
+  #decFrame(lf) {
+    if (!lf) return;
+    const n = (this.#frameEdits.get(lf) ?? 0) - 1;
+    if (n > 0) this.#frameEdits.set(lf, n);
+    else this.#frameEdits.delete(lf);
+    this.dirtyRev++;
   }
   isFrameModified(lf) {
     this.dirtyRev; // reactive dependency
-    return lf != null && this.#dirtyFrames.has(lf);
+    return lf != null && (this.#frameEdits.get(lf) ?? 0) > 0;
   }
 
   get canUndo() {
@@ -64,10 +71,13 @@ class EditStore {
     store.rev++;
   }
 
-  #commit(label, undoFn, redoFn) {
-    this.#undo.push({ label, undo: undoFn, redo: redoFn });
+  // `frame` is the LabeledFrame a per-frame edit touched (null for global/skeleton
+  // edits), used to keep the modified-frame badges in sync with undo/redo.
+  #commit(label, undoFn, redoFn, frame = null) {
+    this.#undo.push({ label, undo: undoFn, redo: redoFn, frame });
     if (this.#undo.length > 300) this.#undo.shift();
-    this.#redo = [];
+    this.#redo = []; // discarded redo commands are already un-applied; no count change
+    if (frame) this.#incFrame(frame);
     this.dirty = true;
     this.histRev++;
   }
@@ -76,6 +86,7 @@ class EditStore {
     const c = this.#undo.pop();
     if (!c) return;
     c.undo();
+    if (c.frame) this.#decFrame(c.frame); // reverted -> one fewer applied edit on that frame
     this.#redo.push(c);
     this.dirty = true;
     this.histRev++;
@@ -84,6 +95,7 @@ class EditStore {
     const c = this.#redo.pop();
     if (!c) return;
     c.redo();
+    if (c.frame) this.#incFrame(c.frame);
     this.#undo.push(c);
     this.dirty = true;
     this.histRev++;
@@ -114,12 +126,12 @@ class EditStore {
   }
 
   commitMove(instIdx, nodeIdx, from) {
-    const inst = this.#lf?.instances?.[instIdx];
+    const lf = this.#lf;
+    const inst = lf?.instances?.[instIdx];
     const p = inst?.points?.[nodeIdx];
     if (!p) return;
     const to = { xy: [...p.xy], visible: p.visible };
     if (from.xy[0] === to.xy[0] && from.xy[1] === to.xy[1] && from.visible === to.visible) return;
-    this.#markFrameDirty();
     this.#commit(
       "Move point",
       () => {
@@ -132,17 +144,18 @@ class EditStore {
         p.visible = to.visible;
         this.#bump();
       },
+      lf,
     );
   }
 
   toggleVisible(instIdx, nodeIdx) {
-    const p = this.#lf?.instances?.[instIdx]?.points?.[nodeIdx];
+    const lf = this.#lf;
+    const p = lf?.instances?.[instIdx]?.points?.[nodeIdx];
     if (!p) return;
     const before = p.visible;
     const after = !before;
     p.visible = after;
     this.#bump();
-    this.#markFrameDirty();
     this.#commit(
       after ? "Show point" : "Hide point",
       () => {
@@ -153,6 +166,7 @@ class EditStore {
         p.visible = after;
         this.#bump();
       },
+      lf,
     );
   }
 
@@ -177,7 +191,6 @@ class EditStore {
     });
     lf.instances.push(inst);
     this.#bump();
-    this.#markFrameDirty();
     this.select(lf.instances.indexOf(inst), 0);
     this.#commit(
       "Add instance",
@@ -191,6 +204,7 @@ class EditStore {
         if (!lf.instances.includes(inst)) lf.instances.push(inst);
         this.#bump();
       },
+      lf,
     );
   }
 
@@ -201,7 +215,6 @@ class EditStore {
     lf.instances.splice(instIdx, 1);
     this.clearSelection();
     this.#bump();
-    this.#markFrameDirty();
     this.#commit(
       "Delete instance",
       () => {
@@ -213,6 +226,7 @@ class EditStore {
         if (i >= 0) lf.instances.splice(i, 1);
         this.#bump();
       },
+      lf,
     );
   }
 
@@ -353,8 +367,9 @@ class EditStore {
       a.click();
       URL.revokeObjectURL(url);
       this.dirty = false;
-      this.#dirtyFrames.clear(); // saved -> nothing is "modified since save" anymore
-      this.dirtyRev++;
+      // Per-frame badges are NOT cleared here: they track "differs from the file as
+      // loaded" so they stay in sync with undo/redo (a frame is modified iff it has
+      // applied edits). Clearing them on save would desync from the undo stack.
     } catch (e) {
       console.error("[sleap-web] save failed:", e);
       store.error = `Save failed: ${String(e?.message ?? e)}`;
@@ -367,7 +382,7 @@ class EditStore {
     this.clearSelection();
     this.#undo = [];
     this.#redo = [];
-    this.#dirtyFrames.clear();
+    this.#frameEdits.clear();
     this.dirty = false;
     this.histRev++;
     this.dirtyRev++;

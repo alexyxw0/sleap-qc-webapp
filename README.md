@@ -80,8 +80,12 @@ Every operation was validated to survive `saveSlpToBytes` → reload before the 
 - **Undo / redo** — `⌘/Ctrl+Z` undoes any recent change (move/visibility/add/delete/
   skeleton edit); `⇧⌘/Ctrl+Z` (or `Ctrl+Y`) redoes. Also on the toolbar (↺ / ↻).
 - **Modified-frame indicators** — frames you edit get an amber dot in the **frame grid**
-  (per-frame label edits: move/visibility/add/delete). Cleared on save / new file.
-  Selecting a node never counts as a modification — only an actual change does.
+  (per-frame label edits: move/visibility/add/delete). A frame is marked iff it differs
+  from how it was loaded: each edit increments a per-frame counter and **undo decrements
+  it**, so undoing a frame back to its original state clears the badge (redo restores
+  it). Selecting a node never counts. Cleared on new file. (Badges persist through a save
+  — they mean "differs from the loaded file" — while the toolbar's unsaved-changes dot
+  clears on save.)
 - **Node labels** — each keypoint is labelled with its body-part name on the canvas.
   Labels are half-transparent by default (so overlapping ones stay legible) and the
   **focused** node's label becomes fully opaque and is drawn on top. The overlay is
