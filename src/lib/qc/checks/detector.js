@@ -1,15 +1,13 @@
-// Port of sleap/qc/detector.py + the ZScoreDetector from gmm.py — orchestrates the
-// per-instance feature vector (18 features) into an anomaly score and runs the
-// frame-level checks.
+// Port of sleap/qc/detector.py + gmm.py — orchestrates the per-instance feature vector
+// (18 features) into an anomaly score and runs the frame-level checks.
 //
-// NOTE: the GMM detector path (sklearn GaussianMixture EM) is NOT ported. The Python
-// uses GMM when n_instances >= gmm_min_samples (50) and the ZScoreDetector otherwise;
-// this port always uses ZScoreDetector (`usedGmm: false`). Porting EM-GMM faithfully
-// needs a numerical parity oracle against Python — deferred. Every feature and the
-// frame-level checks are faithful; only the final anomaly aggregation differs for
-// large reference sets.
+// Detector selection mirrors Python: GaussianMixture when n_instances >= gmm_min_samples
+// (50), else the ZScoreDetector. The GMM *scoring* matches sklearn to ~1e-9 (validated by
+// loading sklearn's fitted params); the EM *fit* is a faithful re-implementation but is
+// not bit-identical to sklearn (different RNG / k-means init).
 
 import { mean, std, visibilityMask } from "./util.js";
+import { GMMDetector } from "./gmm.js";
 import { makeQCConfig, shouldUseCurvature } from "./config.js";
 import { BaselineFeatureExtractor, BASELINE_FEATURE_NAMES } from "./features/baseline.js";
 import { computeCurvature, computeConvexHull } from "./features/structural.js";
@@ -68,9 +66,17 @@ export class LabelQCDetector {
     this.featureNames = [...BASELINE_FEATURE_NAMES, ...V3_FEATURE_NAMES];
     const matrix = instances.map((p, i) => this.extractFeatures(p, this._trainingNN[i]));
 
-    // GMM path not ported -> ZScore (see module note).
-    this.detector = new ZScoreDetector(3.0).fit(matrix);
-    this.usedGmm = false;
+    // GMM for a large enough reference set, else the z-score fallback (mirrors Python).
+    if (instances.length >= this.config.gmmMinSamples && this.config.useGmm) {
+      this.detector = new GMMDetector({
+        nComponents: this.config.gmmNComponents,
+        percentileThreshold: this.config.gmmPercentileThreshold,
+      }).fit(matrix);
+      this.usedGmm = true;
+    } else {
+      this.detector = new ZScoreDetector(3.0).fit(matrix);
+      this.usedGmm = false;
+    }
 
     this.countChecker = new InstanceCountChecker(true).fit(frameCounts, videoIds);
     return this;
