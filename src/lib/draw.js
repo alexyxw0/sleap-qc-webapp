@@ -36,12 +36,10 @@ export function frameDims(item, image) {
 }
 
 function blit(ctx, image) {
-  if (typeof ImageBitmap !== "undefined" && image instanceof ImageBitmap) {
-    ctx.drawImage(image, 0, 0);
-  } else if (typeof ImageData !== "undefined" && image instanceof ImageData) {
-    ctx.putImageData(image, 0, 0);
-  } else if (image) {
-    // HTMLCanvasElement / HTMLImageElement
+  // image is normalized to an ImageBitmap (or HTMLCanvas/Image) by the store, so it
+  // can be drawn under the active transform. ImageData (which ignores transforms) is
+  // converted upstream.
+  if (image) {
     try {
       ctx.drawImage(image, 0, 0);
     } catch {
@@ -50,31 +48,34 @@ function blit(ctx, image) {
   }
 }
 
-function drawPlaceholder(ctx, item) {
-  const { width, height } = ctx.canvas;
+// Drawn in image coordinates (the caller has applied the view transform). `dims` and
+// `scale` (image px per screen px) keep the grid/text a sensible on-screen size.
+function drawPlaceholder(ctx, item, dims = {}, scale = 1) {
+  const w = dims.w ?? 1024;
+  const h = dims.h ?? 768;
   ctx.fillStyle = "#0e1218";
-  ctx.fillRect(0, 0, width, height);
-  // subtle grid so panning/zoom is visible even without pixels
+  ctx.fillRect(0, 0, w, h);
   ctx.strokeStyle = "rgba(255,255,255,0.04)";
-  ctx.lineWidth = 1;
-  for (let x = 0; x < width; x += 64) {
+  ctx.lineWidth = scale;
+  const step = 64 * scale;
+  for (let x = 0; x < w; x += step) {
     ctx.beginPath();
     ctx.moveTo(x, 0);
-    ctx.lineTo(x, height);
+    ctx.lineTo(x, h);
     ctx.stroke();
   }
-  for (let y = 0; y < height; y += 64) {
+  for (let y = 0; y < h; y += step) {
     ctx.beginPath();
     ctx.moveTo(0, y);
-    ctx.lineTo(width, y);
+    ctx.lineTo(w, y);
     ctx.stroke();
   }
   ctx.fillStyle = "rgba(255,255,255,0.35)";
-  ctx.font = "16px system-ui, sans-serif";
+  ctx.font = `${14 * scale}px system-ui, sans-serif`;
   ctx.fillText(
     `frame ${item?.frameIdx ?? "?"} — no image pixels (upload the video to see frames)`,
-    16,
-    28,
+    14 * scale,
+    24 * scale,
   );
 }
 
@@ -194,10 +195,21 @@ export function hitTestNode(lf, radius) {
   };
 }
 
-// Main entry: draw the (optional) frame image then the pose overlay.
-export function drawScene(ctx, image, item, skeleton, sel = {}) {
+// Main entry: clear, apply the view transform (zoom/pan baked into the canvas so the
+// overlay re-rasterizes crisply), draw the frame image, then the pose overlay.
+export function drawScene(ctx, image, item, skeleton, opts = {}) {
+  const { transform, dims, scale = 1 } = opts;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-  if (image) blit(ctx, image);
-  else drawPlaceholder(ctx, item);
-  drawSkeleton(ctx, item?.lf, skeleton, sel);
+  if (transform) {
+    ctx.setTransform(transform.s, 0, 0, transform.s, transform.offX, transform.offY);
+  }
+  if (image) {
+    ctx.imageSmoothingEnabled = true;
+    blit(ctx, image);
+  } else {
+    drawPlaceholder(ctx, item, dims, scale);
+  }
+  drawSkeleton(ctx, item?.lf, skeleton, opts);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
 }

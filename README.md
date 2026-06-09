@@ -88,8 +88,12 @@ Every operation was validated to survive `saveSlpToBytes` → reload before the 
   moved. (Edges to a hidden node also fade rather than vanish.)
 - **Zoom & pan** — mouse wheel or the on-canvas −/＋ controls to zoom (also `+`/`-`,
   `0` to reset); drag empty space to pan when zoomed in. Helpful for small/dense
-  skeletons. Implemented as a reusable `viewStore` (zoom + pan) so other features can
-  drive the view later.
+  skeletons. Implemented as a reusable `viewStore` (zoom + pan).
+  The zoom/pan transform is applied **inside the canvas** (and the canvas is sized to
+  the viewport × devicePixelRatio), so node markers and labels **re-rasterize crisply
+  at any zoom** instead of being CSS-upscaled. The frame photo still softens when
+  magnified (it's raster), but the overlay stays sharp. Cost is one `drawImage` + a few
+  shapes per frame — negligible.
 - **Save** — `⤓ Save .slp` downloads edited labels; `⤓ .pkg.slp` re-embeds frames when the
   source had them. A dirty dot and an unload warning track unsaved changes.
 

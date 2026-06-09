@@ -4,22 +4,42 @@
   import { view } from "../viewStore.svelte.js";
   import { drawScene, frameDims, hitTestNode } from "../draw.js";
 
+  let wrap = $state();
   let canvas = $state();
   let ctx = $state();
+  let vpW = $state(0); // wrap size in CSS px
+  let vpH = $state(0);
   let playing = $state(false);
   let timer = null;
   let frameImage = $state.raw(null); // cached decoded frame, so edits don't re-fetch it
 
   let mode = null; // 'node' (drag a point) | 'pan'
-  let dragging = null; // { instIdx, nodeIdx, from }
+  let dragging = null;
   let panStart = null;
   let moved = false;
 
+  // Maps image coords -> canvas device px: deviceX = imageX * s + offX. Stored each draw
+  // so pointer handlers can invert it.
+  let xform = { s: 1, offX: 0, offY: 0 };
+
   const HIT_PX = 12; // hit radius in screen pixels
-  const ZOOM_STEP = 1.25;
+  const dpr = Math.min((typeof window !== "undefined" && window.devicePixelRatio) || 1, 2);
 
   $effect(() => {
     if (canvas) ctx = canvas.getContext("2d");
+  });
+
+  // Track the wrap's CSS size so the canvas bitmap can match it (× dpr).
+  $effect(() => {
+    if (!wrap) return;
+    const measure = () => {
+      vpW = wrap.clientWidth;
+      vpH = wrap.clientHeight;
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(wrap);
+    return () => ro.disconnect();
   });
 
   // (A) Fetch the frame image — only when the frame or attached video changes.
@@ -33,9 +53,6 @@
     (async () => {
       const image = await store.getFrameImage(item, ac.signal);
       if (cancelled) return;
-      const { w, h } = frameDims(item, image);
-      if (canvas.width !== w) canvas.width = w;
-      if (canvas.height !== h) canvas.height = h;
       frameImage = image ?? null;
     })();
     return () => {
@@ -44,18 +61,43 @@
     };
   });
 
-  // (B) Draw image + overlay on edits/selection. Zoom/pan is a CSS transform on the
-  // canvas element, so the overlay is sized from the *layout* width (offsetWidth,
-  // unaffected by the transform) and needs no redraw when zooming.
+  // (B) Draw image + overlay. The zoom/pan transform is applied *inside* the canvas
+  // (not via CSS), so node markers and labels re-rasterize crisply at any zoom. Redraw
+  // is one drawImage + a few shapes — cheap enough to run on every zoom/pan/edit frame.
   $effect(() => {
     void store.rev;
     const selI = edit.selInstance;
     const selN = edit.selNode;
+    const z = view.zoom;
+    const px = view.panX;
+    const py = view.panY;
+    const W = vpW;
+    const H = vpH;
     const item = store.current;
     const sk = store.skeleton;
-    if (!ctx) return;
-    const scale = canvas.offsetWidth ? canvas.width / canvas.offsetWidth : 1;
-    drawScene(ctx, frameImage, item, sk, { editing: true, selInstance: selI, selNode: selN, scale });
+    if (!ctx || !W || !H) return;
+
+    const cw = Math.round(W * dpr);
+    const ch = Math.round(H * dpr);
+    if (canvas.width !== cw) canvas.width = cw;
+    if (canvas.height !== ch) canvas.height = ch;
+
+    const dims = frameDims(item, frameImage);
+    const fitCss = Math.min(W / dims.w, H / dims.h); // CSS px per image px to fit
+    const s = fitCss * z * dpr; // device px per image px
+    const offX = (cw - dims.w * s) / 2 + px * dpr;
+    const offY = (ch - dims.h * s) / 2 + py * dpr;
+    xform = { s, offX, offY };
+
+    const scale = 1 / (fitCss * z); // image px per CSS px — keeps overlay a constant screen size
+    drawScene(ctx, frameImage, item, sk, {
+      transform: { s, offX, offY },
+      dims,
+      scale,
+      editing: true,
+      selInstance: selI,
+      selNode: selN,
+    });
   });
 
   // Clear selection when navigating to another frame.
@@ -64,12 +106,17 @@
     edit.clearSelection();
   });
 
-  // screen -> image coords (uses the post-transform box, so zoom/pan are accounted for)
+  // screen -> image coords (inverts the in-canvas transform)
   function toImage(e) {
     const rect = canvas.getBoundingClientRect();
-    const sx = canvas.width / rect.width;
-    const sy = canvas.height / rect.height;
-    return { x: (e.clientX - rect.left) * sx, y: (e.clientY - rect.top) * sy, scale: sx };
+    const devPerCss = rect.width ? canvas.width / rect.width : dpr;
+    const devX = (e.clientX - rect.left) * devPerCss;
+    const devY = (e.clientY - rect.top) * devPerCss;
+    return {
+      x: (devX - xform.offX) / xform.s,
+      y: (devY - xform.offY) / xform.s,
+      scale: devPerCss / xform.s, // image px per CSS px
+    };
   }
 
   function onPointerDown(e) {
@@ -87,7 +134,6 @@
       return;
     }
 
-    // empty: pan (if zoomed) or, on a clean click, place/deselect
     mode = "pan";
     moved = false;
     panStart = { cx: e.clientX, cy: e.clientY, panX: view.panX, panY: view.panY };
@@ -97,7 +143,7 @@
   function onPointerMove(e) {
     if (mode === "node") {
       const { x, y } = toImage(e);
-      // preserve the node's visibility so a hidden node stays hidden while moved
+      // preserve visibility so a hidden node stays hidden while moved
       edit.setPoint(dragging.instIdx, dragging.nodeIdx, x, y, dragging.from.visible);
     } else if (mode === "pan") {
       const dx = e.clientX - panStart.cx;
@@ -115,7 +161,6 @@
       edit.commitMove(dragging.instIdx, dragging.nodeIdx, dragging.from);
       dragging = null;
     } else if (mode === "pan" && !moved) {
-      // a clean click on empty space: place an unplaced selected node, else deselect
       const p = edit.selectedInstance?.points?.[edit.selNode];
       if (p && Number.isNaN(p.xy?.[0])) {
         const { x, y } = toImage(e);
@@ -203,10 +248,9 @@
 <svelte:window onkeydown={onKey} />
 
 <section class="viewer">
-  <div class="canvas-wrap" onwheel={onWheel}>
+  <div class="canvas-wrap" bind:this={wrap} onwheel={onWheel}>
     <canvas
       bind:this={canvas}
-      style:transform={view.transform}
       style:cursor={view.zoom > 1 ? "grab" : "crosshair"}
       onpointerdown={onPointerDown}
       onpointermove={onPointerMove}
@@ -257,19 +301,16 @@
     position: relative;
     flex: 1;
     min-height: 0;
-    display: grid;
-    place-items: center;
     background:
       repeating-conic-gradient(#0c0f14 0% 25%, #0a0d12 0% 50%) 50% / 24px 24px;
     border-radius: 10px;
     overflow: hidden;
   }
   canvas {
-    max-width: 100%;
-    max-height: 100%;
+    display: block;
+    width: 100%;
+    height: 100%;
     touch-action: none; /* pointer events drive editing/pan, not scroll/zoom */
-    transform-origin: center center;
-    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
   }
   .zoomctl {
     position: absolute;

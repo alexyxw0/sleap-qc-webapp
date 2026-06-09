@@ -219,7 +219,11 @@ class LabelsStore {
   async #toDrawable(img) {
     if (img == null) return null;
     if (typeof ImageBitmap !== "undefined" && img instanceof ImageBitmap) return img;
-    if (typeof ImageData !== "undefined" && img instanceof ImageData) return img;
+    // Convert ImageData to an ImageBitmap so it can be drawn under a canvas transform
+    // (putImageData ignores transforms; drawImage respects them — needed for crisp zoom).
+    if (typeof ImageData !== "undefined" && img instanceof ImageData) {
+      return await createImageBitmap(img);
+    }
     if (img instanceof Uint8Array || img instanceof ArrayBuffer) {
       const blob = new Blob([img]); // createImageBitmap auto-detects PNG/JPEG
       return await createImageBitmap(blob);
