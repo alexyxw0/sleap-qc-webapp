@@ -306,6 +306,7 @@
       min="0"
       max={Math.max(0, store.frameCount - 1)}
       value={store.index}
+      style:--fill="{store.frameCount > 1 ? (store.index / (store.frameCount - 1)) * 100 : 0}%"
       oninput={(e) => store.setIndex(+e.target.value)}
     />
 
@@ -328,9 +329,11 @@
     flex: 1;
     min-height: 0;
     background:
-      repeating-conic-gradient(#0c0f14 0% 25%, #0a0d12 0% 50%) 50% / 24px 24px;
-    border-radius: 10px;
+      repeating-conic-gradient(#0b0e14 0% 25%, #090c11 0% 50%) 50% / 22px 22px;
+    border: 1px solid var(--border);
+    border-radius: var(--r);
     overflow: hidden;
+    box-shadow: var(--shadow), inset 0 0 0 1px rgba(255, 255, 255, 0.02);
   }
   canvas {
     display: block;
@@ -340,71 +343,109 @@
   }
   .zoomctl {
     position: absolute;
-    right: 0.6rem;
-    bottom: 0.6rem;
+    right: 0.7rem;
+    bottom: 0.7rem;
     display: flex;
     align-items: center;
-    gap: 0.2rem;
-    background: rgba(13, 18, 26, 0.85);
-    border: 1px solid #25303d;
-    border-radius: 8px;
-    padding: 0.2rem 0.3rem;
-    backdrop-filter: blur(4px);
+    gap: 0.25rem;
+    background: rgba(11, 15, 22, 0.72);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.25rem 0.35rem;
+    backdrop-filter: blur(10px);
+    box-shadow: var(--shadow-sm);
   }
   .zoomctl button {
-    background: #1a212c;
+    background: var(--surface-2);
     color: #d7dee8;
-    border: 1px solid #2a3442;
-    border-radius: 5px;
+    border: 1px solid var(--border);
+    border-radius: 50%;
     width: 1.7rem;
-    height: 1.5rem;
+    height: 1.7rem;
     font-size: 0.9rem;
     cursor: pointer;
     line-height: 1;
+    transition: background 0.12s, transform 0.12s;
   }
   .zoomctl button:hover:not(:disabled) {
-    background: #222b38;
+    background: var(--surface-3);
+    transform: translateY(-1px);
   }
   .zoomctl button:disabled {
-    opacity: 0.4;
+    opacity: 0.35;
     cursor: default;
   }
   .zoomctl .pct {
     font-size: 0.72rem;
     color: var(--muted);
-    min-width: 2.6rem;
+    min-width: 2.7rem;
     text-align: center;
     font-variant-numeric: tabular-nums;
   }
   .controls {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
-    padding: 0.7rem 0.2rem 0;
+    gap: 0.45rem;
+    margin-top: 0.7rem;
+    padding: 0.45rem 0.6rem;
+    background: linear-gradient(180deg, rgba(20, 26, 37, 0.7), rgba(13, 18, 27, 0.7));
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    box-shadow: var(--shadow-sm);
   }
   .controls button {
-    background: #1a212c;
+    background: linear-gradient(180deg, var(--surface-3), var(--surface-2));
     color: #d7dee8;
-    border: 1px solid #2a3442;
-    border-radius: 7px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
     padding: 0.4rem 0.6rem;
     font-size: 0.9rem;
     cursor: pointer;
     line-height: 1;
+    transition: background 0.12s, transform 0.12s, border-color 0.12s;
   }
   .controls button:hover {
-    background: #222b38;
+    background: linear-gradient(180deg, #1d2735, var(--surface-3));
+    transform: translateY(-1px);
   }
   .controls button.play {
-    background: var(--accent);
+    background: var(--accent-grad);
     color: #06121f;
     border-color: transparent;
     font-weight: 700;
-    min-width: 2.4rem;
+    min-width: 2.6rem;
+    box-shadow: var(--glow);
+  }
+  .controls button.play:hover {
+    filter: brightness(1.06);
+    transform: none;
   }
   .slider {
     flex: 1;
-    accent-color: var(--accent);
+    appearance: none;
+    -webkit-appearance: none;
+    height: 6px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2)) no-repeat,
+      var(--surface);
+    background-size: var(--fill, 0%) 100%, 100% 100%;
+    cursor: pointer;
+  }
+  .slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: #fff;
+    border: none;
+    box-shadow: 0 2px 8px -2px rgba(125, 211, 252, 0.9), 0 0 0 4px rgba(125, 211, 252, 0.18);
+  }
+  .slider::-moz-range-thumb {
+    width: 15px;
+    height: 15px;
+    border: none;
+    border-radius: 50%;
+    background: #fff;
   }
   .counter {
     font-variant-numeric: tabular-nums;
@@ -413,10 +454,11 @@
     white-space: nowrap;
   }
   .counter strong {
-    color: #eaf0f7;
+    color: var(--text);
+    font-size: 0.95rem;
   }
   .fidx {
     margin-left: 0.5rem;
-    opacity: 0.7;
+    color: var(--dim);
   }
 </style>

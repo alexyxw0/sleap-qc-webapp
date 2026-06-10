@@ -63,8 +63,9 @@
 
 <aside class="sidebar">
   <header class="head">
+    <span class="filedot"></span>
     <div class="title" title={store.fileName}>{store.fileName}</div>
-    <button class="ghost" onclick={() => store.reset()}>✕ Close</button>
+    <button class="ghost" onclick={() => store.reset()} title="Close file">✕</button>
   </header>
 
   {#if store.error}
@@ -214,46 +215,72 @@
   .head {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 0.5rem;
+    padding: 0.1rem 0.2rem;
+  }
+  .filedot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--good);
+    box-shadow: 0 0 10px 1px rgba(134, 239, 172, 0.6);
+    flex: none;
   }
   .title {
+    flex: 1;
     font-weight: 600;
     font-size: 0.9rem;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    letter-spacing: -0.01em;
   }
   .ghost {
     background: none;
-    border: 1px solid #2a3442;
+    border: 1px solid var(--border);
     color: var(--muted);
-    border-radius: 6px;
-    padding: 0.25rem 0.5rem;
+    border-radius: var(--r-xs);
+    width: 1.7rem;
+    height: 1.6rem;
     font-size: 0.78rem;
     cursor: pointer;
-    white-space: nowrap;
+    transition: color 0.12s, border-color 0.12s, background 0.12s;
   }
   .ghost:hover {
-    color: #fda4af;
+    color: var(--danger);
     border-color: #5a3540;
+    background: rgba(251, 113, 133, 0.08);
   }
   .card {
-    background: #10151d;
-    border: 1px solid #1d2632;
-    border-radius: 10px;
-    padding: 0.8rem 0.9rem;
+    background: linear-gradient(180deg, rgba(20, 26, 37, 0.55), rgba(13, 18, 27, 0.55));
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    padding: 0.85rem 0.9rem;
+    box-shadow: var(--shadow-sm), inset 0 1px 0 rgba(255, 255, 255, 0.025);
+    animation: fade-up 0.35s var(--ease) both;
   }
   .card.grow {
     flex: 1;
     min-height: 120px;
   }
   h3 {
-    margin: 0 0 0.55rem;
-    font-size: 0.82rem;
+    margin: 0 0 0.6rem;
+    font-size: 0.72rem;
+    font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.09em;
     color: #9fb0c3;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  h3::before {
+    content: "";
+    width: 3px;
+    height: 11px;
+    border-radius: 2px;
+    background: var(--accent-grad);
+    flex: none;
   }
   dl {
     margin: 0;
@@ -283,16 +310,21 @@
     font-size: 0.82rem;
     margin: 0;
   }
+  .qccard {
+    border-color: #2a3852;
+  }
   .qccard.flagged {
-    box-shadow: inset 0 0 0 1px #7a4a2a;
+    border-color: #6b4327;
+    box-shadow: var(--shadow-sm), inset 0 0 0 1px rgba(251, 146, 60, 0.18), 0 0 26px -14px rgba(251, 146, 60, 0.6);
   }
   .qchip {
     color: #06121f;
-    font-weight: 700;
-    border-radius: 5px;
-    padding: 0.05rem 0.35rem;
-    font-size: 0.78rem;
+    font-weight: 800;
+    border-radius: 999px;
+    padding: 0.08rem 0.45rem;
+    font-size: 0.76rem;
     font-variant-numeric: tabular-nums;
+    box-shadow: 0 2px 8px -3px rgba(0, 0, 0, 0.5);
   }
   .qchip.sm {
     font-size: 0.7rem;

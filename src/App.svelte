@@ -47,9 +47,10 @@
     height: 100vh;
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
-    padding: 1rem;
+    gap: 0.85rem;
+    padding: 0.85rem;
     box-sizing: border-box;
+    animation: fade-up 0.4s var(--ease) both;
   }
   .row {
     flex: 1;

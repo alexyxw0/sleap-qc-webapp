@@ -134,20 +134,36 @@
   .frames {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: 0.55rem;
+    background: linear-gradient(180deg, rgba(20, 26, 37, 0.55), rgba(13, 18, 27, 0.55));
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    padding: 0.85rem 0.9rem;
+    box-shadow: var(--shadow-sm), inset 0 1px 0 rgba(255, 255, 255, 0.025);
   }
   .head {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     justify-content: space-between;
     gap: 0.5rem;
   }
   h3 {
     margin: 0;
-    font-size: 0.82rem;
+    font-size: 0.72rem;
+    font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.09em;
     color: #9fb0c3;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  h3::before {
+    content: "";
+    width: 3px;
+    height: 11px;
+    border-radius: 2px;
+    background: var(--accent-grad);
   }
   .jump {
     font-size: 0.72rem;
@@ -156,23 +172,29 @@
   }
   .jump input {
     width: 4.5em;
-    background: #0c1118;
-    border: 1px solid #2a3442;
-    color: #e7edf4;
-    border-radius: 5px;
-    padding: 0.1rem 0.3rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: var(--r-xs);
+    padding: 0.15rem 0.35rem;
     font-size: 0.75rem;
     font-variant-numeric: tabular-nums;
+    transition: border-color 0.12s;
+  }
+  .jump input:focus {
+    border-color: var(--accent);
+    outline: none;
   }
   .viewport {
     position: relative;
     height: 240px;
     overflow-y: auto;
     overflow-x: hidden;
-    background: #0c1118;
-    border: 1px solid #1d2632;
-    border-radius: 8px;
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--r-sm);
     padding: 6px;
+    box-shadow: inset 0 2px 10px -4px rgba(0, 0, 0, 0.7);
   }
   .canvas {
     position: relative;
@@ -192,11 +214,14 @@
     overflow: hidden;
     display: grid;
     place-items: center;
-    transition: background 0.08s, border-color 0.08s;
+    transition: background 0.1s, border-color 0.1s, transform 0.1s, box-shadow 0.1s;
   }
   .cell:hover {
     border-color: var(--accent);
-    color: #cdd7e3;
+    color: #eaf2fb;
+    transform: translateY(-1px) scale(1.06);
+    box-shadow: 0 4px 12px -3px rgba(125, 211, 252, 0.45);
+    z-index: 2;
   }
   .cell.labeled {
     background: #1c2a3a;
