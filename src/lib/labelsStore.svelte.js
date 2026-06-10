@@ -17,10 +17,19 @@ class LabelsStore {
   // completion in the background, but its stale result is ignored.)
   #loadToken = 0;
 
+  // Frame-image pump state. Video decoders are stateful: firing overlapping/aborted
+  // getFrame() calls (e.g. dragging the timeline) corrupts the decode order and can leave
+  // the wrong frame on screen. So we decode ONE frame at a time and always reconcile to the
+  // latest requested frame (#imgWant) — rapid scrubbing converges without overlapping decodes.
+  #imgWant = null; // key of the frame the UI currently wants shown
+  #imgHave = undefined; // key of the frame `frameImage` currently holds
+  #imgPumping = false;
+
   // --- model (non-reactive contents; reassigned wholesale on load) ---
   labels = $state.raw(null);
   videoModel = $state.raw(null); // optional externally-uploaded video backend
   frames = $state.raw([]); // navigable list: [{ video, frameIdx, lf }]
+  frameImage = $state.raw(null); // decoded image for the current frame (kept in sync via the pump)
 
   // --- reactive scalars ---
   rev = $state(0); // bump to signal model mutated -> redraw
@@ -142,6 +151,9 @@ class LabelsStore {
     this.labels = null;
     this.videoModel = null;
     this.frames = [];
+    this.frameImage = null;
+    this.#imgWant = null;
+    this.#imgHave = undefined;
     this.index = 0;
     this.status = "loading";
     this.message = `Reading ${name} …`;
@@ -170,6 +182,9 @@ class LabelsStore {
     this.labels = null;
     this.videoModel = null;
     this.frames = [];
+    this.frameImage = null;
+    this.#imgWant = null;
+    this.#imgHave = undefined;
     this.index = 0;
     this.status = "idle";
     this.message = "";
@@ -185,6 +200,46 @@ class LabelsStore {
   // if no pixels are available (plain .slp with no embedded frames and no uploaded
   // video). Decodes raw Uint8Array (embedded PNG/JPEG) into an ImageBitmap so the
   // draw path can stay synchronous.
+  // Identity of the displayed frame: source (external video vs embedded) + video + frameIdx.
+  // Changing the attached video re-keys every frame so the image refetches.
+  #frameKey(item) {
+    if (!item) return "none";
+    const src = this.videoModel ? "ext" : "emb";
+    return `${src}:${item.video?.filename ?? ""}:${item.frameIdx}`;
+  }
+
+  /**
+   * Request that `frameImage` reflect the current frame. Safe to call on every index change;
+   * decodes are serialized and reconciled to the latest request, so the displayed image
+   * always converges to `current` (no overlapping decodes → no permanent image/overlay
+   * offset while scrubbing). Call from a reactive effect that reads index/videoModel.
+   */
+  syncFrameImage() {
+    this.#imgWant = this.#frameKey(this.current);
+    this.#pumpFrameImage();
+  }
+
+  async #pumpFrameImage() {
+    if (this.#imgPumping) return;
+    this.#imgPumping = true;
+    try {
+      // Decode toward the wanted frame, one at a time; if the user moves on mid-decode the
+      // result is discarded and we fetch the new target instead.
+      while (this.#imgWant !== this.#imgHave) {
+        const want = this.#imgWant;
+        const item = this.current; // the frame `want` refers to
+        const img = await this.getFrameImage(item);
+        if (this.#imgWant !== want) continue; // superseded during decode — refetch latest
+        this.frameImage = img ?? null;
+        this.#imgHave = want;
+      }
+    } finally {
+      this.#imgPumping = false;
+    }
+    // A request that arrived as we were exiting gets picked up here.
+    if (this.#imgWant !== this.#imgHave) this.#pumpFrameImage();
+  }
+
   async getFrameImage(item, signal) {
     if (!item) return null;
 

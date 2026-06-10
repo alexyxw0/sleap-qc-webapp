@@ -2,6 +2,102 @@
   import { store } from "../labelsStore.svelte.js";
 
   let dragging = $state(false);
+  let bg = $state(); // constellation canvas
+
+  // Ambient backdrop: a handful of pose-skeleton "constellations" drifting slowly,
+  // nodes wobbling around their cluster like tracked keypoints. Pure decoration —
+  // static single frame under prefers-reduced-motion.
+  $effect(() => {
+    if (!bg) return;
+    const ctx = bg.getContext("2d");
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let raf = 0;
+
+    const COLORS = ["#7dd3fc", "#a78bfa", "#86efac", "#fda4af", "#f3c56c"];
+    const rand = (a, b) => a + Math.random() * (b - a);
+
+    // Each creature: a hub node with limbs radiating off it (star-ish skeleton).
+    const creatures = Array.from({ length: 7 }, (_, k) => {
+      const limbs = Math.round(rand(4, 7));
+      return {
+        x: Math.random(),
+        y: Math.random(),
+        vx: rand(-0.012, 0.012),
+        vy: rand(-0.009, 0.009),
+        rot: rand(0, Math.PI * 2),
+        vrot: rand(-0.1, 0.1),
+        r: rand(34, 70),
+        color: COLORS[k % COLORS.length],
+        nodes: Array.from({ length: limbs }, (_, j) => ({
+          ang: (j / limbs) * Math.PI * 2 + rand(-0.4, 0.4),
+          len: rand(0.45, 1),
+          phase: rand(0, Math.PI * 2),
+          speed: rand(0.6, 1.6),
+        })),
+      };
+    });
+
+    const size = () => {
+      bg.width = Math.round(bg.clientWidth * dpr);
+      bg.height = Math.round(bg.clientHeight * dpr);
+    };
+    size();
+    const ro = new ResizeObserver(size);
+    ro.observe(bg);
+
+    let t = rand(0, 100);
+    let last = performance.now();
+    const frame = (now) => {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      t += dt;
+      const W = bg.width;
+      const H = bg.height;
+      ctx.clearRect(0, 0, W, H);
+      ctx.lineWidth = 1.2 * dpr;
+
+      for (const c of creatures) {
+        c.x = (c.x + c.vx * dt + 1) % 1;
+        c.y = (c.y + c.vy * dt + 1) % 1;
+        c.rot += c.vrot * dt;
+        const cx = c.x * W;
+        const cy = c.y * H;
+        ctx.strokeStyle = c.color;
+        ctx.fillStyle = c.color;
+        ctx.globalAlpha = 0.16;
+
+        const pts = c.nodes.map((n) => {
+          const wob = 1 + 0.12 * Math.sin(t * n.speed + n.phase);
+          const a = c.rot + n.ang;
+          return [cx + Math.cos(a) * c.r * n.len * wob * dpr, cy + Math.sin(a) * c.r * n.len * wob * dpr];
+        });
+        ctx.beginPath();
+        for (const [x, y] of pts) {
+          ctx.moveTo(cx, cy);
+          ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        ctx.globalAlpha = 0.34;
+        for (const [x, y] of pts) {
+          ctx.beginPath();
+          ctx.arc(x, y, 2.2 * dpr, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.beginPath();
+        ctx.arc(cx, cy, 2.8 * dpr, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+      if (!reduced) raf = requestAnimationFrame(frame);
+    };
+    raf = requestAnimationFrame(frame);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+    };
+  });
 
   function isSlp(name) {
     return /\.(pkg\.)?slp$/i.test(name);
@@ -45,6 +141,8 @@
     else handleSlp(file);
   }
 </script>
+
+<canvas class="constellation" bind:this={bg} aria-hidden="true"></canvas>
 
 <div
   class="dropzone"
@@ -138,7 +236,17 @@
 </div>
 
 <style>
+  .constellation {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 0;
+  }
   .dropzone {
+    position: relative;
+    z-index: 1;
     min-height: 100vh;
     display: grid;
     place-items: center;

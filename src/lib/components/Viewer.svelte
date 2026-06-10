@@ -2,7 +2,11 @@
   import { store } from "../labelsStore.svelte.js";
   import { edit } from "../editStore.svelte.js";
   import { view } from "../viewStore.svelte.js";
+  import { qc, heatColor } from "../qcStore.svelte.js";
+  import { ui } from "../uiStore.svelte.js";
+  import { toast } from "../toastStore.svelte.js";
   import { drawScene, frameDims, hitTestNode } from "../draw.js";
+  import HeatTimeline from "./HeatTimeline.svelte";
 
   let wrap = $state();
   let canvas = $state();
@@ -11,7 +15,6 @@
   let vpH = $state(0);
   let playing = $state(false);
   let timer = null;
-  let frameImage = $state.raw(null); // cached decoded frame, so edits don't re-fetch it
 
   let mode = null; // 'node' (drag a point) | 'select' (just selected, no move) | 'pan'
   let dragging = null;
@@ -49,23 +52,14 @@
     return () => ro.disconnect();
   });
 
-  // (A) Fetch the frame image — only when the frame or attached video changes.
+  // (A) Keep the decoded frame image in sync with the current frame. Decoding is serialized
+  // in the store (latest-wins reconciliation), so fast timeline scrubbing converges to the
+  // current frame without overlapping/aborted decodes that would desync image vs. overlay.
   $effect(() => {
-    const item = store.current;
     void store.index;
     void store.videoModel;
-    if (!ctx) return;
-    let cancelled = false;
-    const ac = new AbortController();
-    (async () => {
-      const image = await store.getFrameImage(item, ac.signal);
-      if (cancelled) return;
-      frameImage = image ?? null;
-    })();
-    return () => {
-      cancelled = true;
-      ac.abort();
-    };
+    void store.rev;
+    store.syncFrameImage();
   });
 
   // (B) Draw image + overlay. The zoom/pan transform is applied *inside* the canvas
@@ -73,6 +67,7 @@
   // is one drawImage + a few shapes — cheap enough to run on every zoom/pan/edit frame.
   $effect(() => {
     void store.rev;
+    void qc.rev;
     const selI = edit.selInstance;
     const selN = edit.selNode;
     const z = view.zoom;
@@ -84,12 +79,26 @@
     const sk = store.skeleton;
     if (!ctx || !W || !H) return;
 
+    // QC rings: red on the worst *geometric* node of flagged instances; amber on the
+    // least-confident node of low-confidence instances. Both only when concerning, so normal
+    // poses stay clean. *Nodes[instIdx] = nodeIdx to ring, or -1.
+    let worstNodes = null;
+    let uncertainNodes = null;
+    if (qc.hasResults && item) {
+      const insts = item.lf?.instances ?? [];
+      worstNodes = insts.map((_, i) => {
+        const sc = qc.instanceScore(item, i);
+        return sc != null && sc >= qc.threshold ? qc.worstNodeFor(item, i) : -1;
+      });
+      uncertainNodes = insts.map((_, i) => qc.uncertainNodeFor(item, i));
+    }
+
     const cw = Math.round(W * dpr);
     const ch = Math.round(H * dpr);
     if (canvas.width !== cw) canvas.width = cw;
     if (canvas.height !== ch) canvas.height = ch;
 
-    const dims = frameDims(item, frameImage);
+    const dims = frameDims(item, store.frameImage);
     const fitCss = Math.min(W / dims.w, H / dims.h); // CSS px per image px to fit
     const s = fitCss * z * dpr; // device px per image px
     const offX = (cw - dims.w * s) / 2 + px * dpr;
@@ -97,13 +106,15 @@
     xform = { s, offX, offY };
 
     const scale = 1 / (fitCss * z); // image px per CSS px — keeps overlay a constant screen size
-    drawScene(ctx, frameImage, item, sk, {
+    drawScene(ctx, store.frameImage, item, sk, {
       transform: { s, offX, offY },
       dims,
       scale,
       editing: true,
       selInstance: selI,
       selNode: selN,
+      worstNodes,
+      uncertainNodes,
     });
   });
 
@@ -226,7 +237,14 @@
   }
   $effect(() => () => clearInterval(timer));
 
+  function seekFlagged(dir) {
+    const i = qc.seekFlagged(store.index, dir);
+    if (i >= 0) store.setIndex(i);
+    else toast(qc.hasResults ? "No flagged frames" : "Run QC first to navigate flagged frames");
+  }
+
   function onKey(e) {
+    if (ui.overlayOpen) return; // palette/help own the keyboard while up
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
     const mod = e.ctrlKey || e.metaKey;
     if (mod && (e.key === "z" || e.key === "Z")) {
@@ -257,6 +275,12 @@
     } else if (e.key === " ") {
       togglePlay();
       e.preventDefault();
+    } else if (e.key === "n" || e.key === "N") {
+      seekFlagged(e.shiftKey ? -1 : 1);
+      e.preventDefault();
+    } else if (e.key === "p" || e.key === "P") {
+      seekFlagged(-1);
+      e.preventDefault();
     } else if (e.key === "v" && edit.selInstance >= 0 && edit.selNode >= 0) {
       edit.toggleVisible(edit.selInstance, edit.selNode);
       e.preventDefault();
@@ -269,6 +293,16 @@
   }
 
   const item = $derived(store.current);
+
+  // HUD: current-frame QC verdict for the chip overlaid on the canvas.
+  const hud = $derived.by(() => {
+    void qc.rev;
+    if (!qc.hasResults || !item) return null;
+    const s = qc.frameScore(item);
+    const flagged = qc.frameFlagged(item);
+    const issue = flagged ? qc.frameTopIssue(item)?.issue : null;
+    return { score: s, flagged, issue };
+  });
 </script>
 
 <svelte:window onkeydown={onKey} />
@@ -282,6 +316,23 @@
       onpointermove={onPointerMove}
       onpointerup={onPointerUp}
     ></canvas>
+
+    <div class="hud">
+      <span class="chip">
+        <b>{store.index + 1}</b>/{store.frameCount}
+        <span class="dim">· {item?.lf?.instances?.length ?? 0} inst</span>
+      </span>
+      {#if hud}
+        <span class="chip qc" class:flagged={hud.flagged}>
+          {#if hud.score != null}<i class="heat" style:background={heatColor(hud.score)}></i>{/if}
+          {#if hud.flagged}
+            {hud.issue ?? "frame issue"}
+          {:else}
+            looks ok
+          {/if}
+        </span>
+      {/if}
+    </div>
 
     <div class="zoomctl">
       <button onclick={() => view.zoomOut()} disabled={view.zoom <= 1} title="Zoom out (−)">−</button>
@@ -300,15 +351,7 @@
     <button onclick={() => store.next()} title="Next (→/D)">▶</button>
     <button onclick={() => store.setIndex(store.frameCount - 1)} title="Last frame">⏭</button>
 
-    <input
-      class="slider"
-      type="range"
-      min="0"
-      max={Math.max(0, store.frameCount - 1)}
-      value={store.index}
-      style:--fill="{store.frameCount > 1 ? (store.index / (store.frameCount - 1)) * 100 : 0}%"
-      oninput={(e) => store.setIndex(+e.target.value)}
-    />
+    <HeatTimeline />
 
     <div class="counter">
       <strong>{store.index + 1}</strong> / {store.frameCount}
@@ -319,6 +362,7 @@
 
 <style>
   .viewer {
+    flex: 1; /* fill the row — without this the viewer's width hangs off canvas intrinsic sizing */
     display: flex;
     flex-direction: column;
     min-width: 0;
@@ -333,7 +377,6 @@
     border: 1px solid var(--border);
     border-radius: var(--r);
     overflow: hidden;
-    box-shadow: var(--shadow), inset 0 0 0 1px rgba(255, 255, 255, 0.02);
   }
   canvas {
     display: block;
@@ -347,29 +390,28 @@
     bottom: 0.7rem;
     display: flex;
     align-items: center;
-    gap: 0.25rem;
+    gap: 0.15rem;
     background: rgba(11, 15, 22, 0.72);
     border: 1px solid var(--border);
     border-radius: 999px;
-    padding: 0.25rem 0.35rem;
+    padding: 0.2rem 0.3rem;
     backdrop-filter: blur(10px);
-    box-shadow: var(--shadow-sm);
   }
   .zoomctl button {
-    background: var(--surface-2);
-    color: #d7dee8;
-    border: 1px solid var(--border);
+    background: none;
+    color: #9fb0c3;
+    border: none;
     border-radius: 50%;
-    width: 1.7rem;
-    height: 1.7rem;
+    width: 1.6rem;
+    height: 1.6rem;
     font-size: 0.9rem;
     cursor: pointer;
     line-height: 1;
-    transition: background 0.12s, transform 0.12s;
+    transition: background 0.12s, color 0.12s;
   }
   .zoomctl button:hover:not(:disabled) {
-    background: var(--surface-3);
-    transform: translateY(-1px);
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text);
   }
   .zoomctl button:disabled {
     opacity: 0.35;
@@ -385,67 +427,80 @@
   .controls {
     display: flex;
     align-items: center;
-    gap: 0.45rem;
+    gap: 0.35rem;
     margin-top: 0.7rem;
-    padding: 0.45rem 0.6rem;
-    background: linear-gradient(180deg, rgba(20, 26, 37, 0.7), rgba(13, 18, 27, 0.7));
+    padding: 0.4rem 0.6rem;
+    background: rgba(13, 18, 27, 0.6);
     border: 1px solid var(--border);
     border-radius: var(--r);
-    box-shadow: var(--shadow-sm);
   }
   .controls button {
-    background: linear-gradient(180deg, var(--surface-3), var(--surface-2));
-    color: #d7dee8;
-    border: 1px solid var(--border);
-    border-radius: var(--r-sm);
-    padding: 0.4rem 0.6rem;
-    font-size: 0.9rem;
+    background: none;
+    color: #9fb0c3;
+    border: none;
+    border-radius: 7px;
+    padding: 0.35rem 0.55rem;
+    font-size: 0.85rem;
     cursor: pointer;
     line-height: 1;
-    transition: background 0.12s, transform 0.12s, border-color 0.12s;
+    transition: background 0.12s, color 0.12s;
   }
   .controls button:hover {
-    background: linear-gradient(180deg, #1d2735, var(--surface-3));
-    transform: translateY(-1px);
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text);
   }
   .controls button.play {
-    background: var(--accent-grad);
+    background: var(--accent);
     color: #06121f;
-    border-color: transparent;
     font-weight: 700;
-    min-width: 2.6rem;
-    box-shadow: var(--glow);
+    min-width: 2.5rem;
   }
   .controls button.play:hover {
-    filter: brightness(1.06);
-    transform: none;
+    filter: brightness(1.08);
   }
-  .slider {
-    flex: 1;
-    appearance: none;
-    -webkit-appearance: none;
-    height: 6px;
+  .hud {
+    position: absolute;
+    top: 0.7rem;
+    left: 0.7rem;
+    display: flex;
+    gap: 0.4rem;
+    pointer-events: none;
+    z-index: 3;
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    background: rgba(11, 15, 22, 0.72);
+    border: 1px solid var(--border);
     border-radius: 999px;
-    background: linear-gradient(90deg, var(--accent), var(--accent-2)) no-repeat,
-      var(--surface);
-    background-size: var(--fill, 0%) 100%, 100% 100%;
-    cursor: pointer;
+    padding: 0.22rem 0.65rem;
+    font-size: 0.74rem;
+    color: var(--muted);
+    backdrop-filter: blur(10px);
+    box-shadow: var(--shadow-sm);
+    font-variant-numeric: tabular-nums;
   }
-  .slider::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: 15px;
-    height: 15px;
-    border-radius: 50%;
-    background: #fff;
-    border: none;
-    box-shadow: 0 2px 8px -2px rgba(125, 211, 252, 0.9), 0 0 0 4px rgba(125, 211, 252, 0.18);
+  .chip b {
+    color: var(--text);
+    font-size: 0.8rem;
   }
-  .slider::-moz-range-thumb {
-    width: 15px;
-    height: 15px;
-    border: none;
+  .chip .dim {
+    color: var(--dim);
+  }
+  .chip.qc {
+    color: #b6e3c4;
+  }
+  .chip.qc.flagged {
+    color: #fcd39b;
+    border-color: rgba(251, 146, 60, 0.4);
+    box-shadow: var(--shadow-sm), 0 0 18px -6px rgba(251, 146, 60, 0.5);
+  }
+  .chip .heat {
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
-    background: #fff;
+    flex: none;
   }
   .counter {
     font-variant-numeric: tabular-nums;

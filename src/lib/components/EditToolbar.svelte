@@ -2,6 +2,12 @@
   import { store } from "../labelsStore.svelte.js";
   import { edit } from "../editStore.svelte.js";
   import { qc } from "../qcStore.svelte.js";
+  import { ui } from "../uiStore.svelte.js";
+
+  function seekFlagged(dir) {
+    const i = qc.seekFlagged(store.index, dir);
+    if (i >= 0) store.setIndex(i);
+  }
 </script>
 
 <div class="toolbar">
@@ -31,94 +37,91 @@
 
   <div class="sep"></div>
 
-  <div class="group">
-    <button onclick={() => edit.undo()} disabled={!edit.canUndo} title={edit.undoLabel ? `Undo ${edit.undoLabel}` : "Nothing to undo"}>
-      ↺ Undo
-    </button>
-    <button onclick={() => edit.redo()} disabled={!edit.canRedo} title={edit.redoLabel ? `Redo ${edit.redoLabel}` : "Nothing to redo"}>
-      ↻ Redo
-    </button>
-  </div>
+  <button class="ic" onclick={() => edit.undo()} disabled={!edit.canUndo} title={edit.undoLabel ? `Undo ${edit.undoLabel} (⌘Z)` : "Nothing to undo"} aria-label="Undo">
+    <svg viewBox="0 0 16 16"><path d="M6.5 3 3 6.5 6.5 10" /><path d="M3 6.5h6a4 4 0 0 1 0 8H7" /></svg>
+  </button>
+  <button class="ic" onclick={() => edit.redo()} disabled={!edit.canRedo} title={edit.redoLabel ? `Redo ${edit.redoLabel} (⇧⌘Z)` : "Nothing to redo"} aria-label="Redo">
+    <svg viewBox="0 0 16 16"><path d="M9.5 3 13 6.5 9.5 10" /><path d="M13 6.5H7a4 4 0 0 0 0 8h2" /></svg>
+  </button>
 
   <div class="sep"></div>
 
-  <div class="group">
-    <button onclick={() => edit.addInstance()} title="Add a new instance to this frame">＋ Instance</button>
-    <button
-      class="danger"
-      onclick={() => edit.deleteInstance()}
-      disabled={edit.selInstance < 0}
-      title="Delete the selected instance (Del)"
-    >
-      🗑 Delete
-    </button>
-  </div>
+  <button class="ic" onclick={() => edit.addInstance()} title="Add instance to this frame" aria-label="Add instance">
+    <svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10" /></svg>
+  </button>
+  <button
+    class="ic danger"
+    onclick={() => edit.deleteInstance()}
+    disabled={edit.selInstance < 0}
+    title="Delete the selected instance (Del)"
+    aria-label="Delete selected instance"
+  >
+    <svg viewBox="0 0 16 16"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M5 4.5l.6 8.5h4.8l.6-8.5" /></svg>
+  </button>
 
-  <div class="hint">
-    {#if edit.selInstance >= 0}
-      <span class="pill">#{edit.selInstance}{edit.selNode >= 0 ? ` · ${store.skeleton?.nodeNames?.[edit.selNode] ?? edit.selNode}` : ""}</span>
-      <span class="keys">drag = move · V = show/hide · Esc = deselect</span>
-    {:else}
-      <span class="keys">click a point to select · drag to move · ⌘/Ctrl+Z to undo</span>
-    {/if}
-  </div>
+  {#if edit.selInstance >= 0}
+    <span class="pill">#{edit.selInstance}{edit.selNode >= 0 ? ` · ${store.skeleton?.nodeNames?.[edit.selNode] ?? edit.selNode}` : ""}</span>
+  {/if}
 
   <div class="spacer"></div>
 
-  <div class="group qc">
-    <button class="run" onclick={() => qc.run()} disabled={qc.status === "running"} title="Run deterministic QC checks (anomaly + frame issues)">
-      {#if qc.status === "running"}<span class="spin"></span>Running…{:else}🔍 Run QC{/if}
-    </button>
-    {#if qc.hasResults}
-      <span class="qcstat" class:stale={qc.stale}>
-        <b>{qc.flaggedFrameCount}</b> flagged{qc.stale ? " · stale" : ""}
-      </span>
+  <button class="run" onclick={() => qc.run()} disabled={qc.status === "running"} title="Run QC checks (anomaly + frame issues)">
+    {#if qc.status === "running"}<span class="spin"></span>Running…{:else}Run QC{/if}
+  </button>
+  {#if qc.hasResults}
+    <span class="qcstat" class:stale={qc.stale} title={qc.stale ? "Edited since the last run — results may be stale" : ""}>
+      {qc.flaggedFrameCount} flagged{qc.stale ? " ·" : ""}
+    </span>
+    {#if qc.flaggedFrameCount > 0}
+      <button class="ic seek" onclick={() => seekFlagged(-1)} title="Previous flagged frame (P)">‹</button>
+      <button class="ic seek" onclick={() => seekFlagged(1)} title="Next flagged frame (N)">›</button>
     {/if}
-    {#if qc.status === "error"}<span class="qcstat err">QC failed</span>{/if}
-  </div>
+  {/if}
+  {#if qc.status === "error"}<span class="qcstat err">QC failed</span>{/if}
 
   <div class="sep"></div>
 
-  <div class="group save">
-    {#if edit.dirty}<span class="dot" title="Unsaved changes"></span>{/if}
-    <button class="primary" onclick={() => edit.save({ embed: false })} disabled={edit.saving} title="Download edited labels as .slp">
-      {edit.saving ? "Saving…" : "⤓ Save .slp"}
+  <button class="cmdk" onclick={() => ui.togglePalette()} title="Command palette">
+    <kbd>⌘K</kbd>
+  </button>
+
+  <div class="sep"></div>
+
+  {#if edit.dirty}<span class="dot" title="Unsaved changes"></span>{/if}
+  <button class="primary" onclick={() => edit.save({ embed: false })} disabled={edit.saving} title="Download edited labels as .slp">
+    {edit.saving ? "Saving…" : "Save .slp"}
+  </button>
+  {#if store.hasEmbedded}
+    <button class="ghost" onclick={() => edit.save({ embed: true })} disabled={edit.saving} title="Download as .pkg.slp with embedded frames">
+      .pkg.slp
     </button>
-    {#if store.hasEmbedded}
-      <button class="primary ghost" onclick={() => edit.save({ embed: true })} disabled={edit.saving} title="Download as .pkg.slp with embedded frames">
-        .pkg.slp
-      </button>
-    {/if}
-  </div>
+  {/if}
 </div>
 
 <style>
   .toolbar {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 0.6rem;
-    background: linear-gradient(180deg, rgba(22, 29, 41, 0.9), rgba(13, 18, 27, 0.9));
+    gap: 0.3rem;
+    padding: 0.45rem 0.6rem;
+    background: rgba(13, 18, 27, 0.6);
     border: 1px solid var(--border);
     border-radius: var(--r);
-    box-shadow: var(--shadow-sm), inset 0 1px 0 rgba(255, 255, 255, 0.03);
-    backdrop-filter: blur(8px);
   }
 
   .brand {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0 0.2rem 0 0.1rem;
+    padding: 0 0.3rem 0 0.1rem;
   }
   .logo {
-    width: 27px;
-    height: 27px;
-    filter: drop-shadow(0 4px 10px rgba(125, 211, 252, 0.45));
+    width: 24px;
+    height: 24px;
   }
   .wordmark {
     font-weight: 700;
-    font-size: 0.92rem;
+    font-size: 0.9rem;
     letter-spacing: 0.01em;
     color: var(--text);
   }
@@ -131,144 +134,171 @@
     margin-left: 1px;
   }
 
-  .group {
-    display: flex;
-    gap: 0.35rem;
-  }
   .sep {
     width: 1px;
-    align-self: stretch;
-    background: linear-gradient(transparent, var(--border), transparent);
-    margin: 0.1rem 0.2rem;
+    height: 1.2rem;
+    background: var(--border);
+    margin: 0 0.35rem;
+    flex: none;
   }
   .spacer {
     flex: 1;
   }
 
   button {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    background: linear-gradient(180deg, var(--surface-3), var(--surface-2));
-    color: #d7dee8;
-    border: 1px solid var(--border);
-    border-radius: var(--r-sm);
-    padding: 0.4rem 0.65rem;
-    font-size: 0.82rem;
-    font-weight: 500;
+    font: inherit;
     cursor: pointer;
-    white-space: nowrap;
-    transition: transform 0.12s var(--ease), background 0.12s, border-color 0.12s, box-shadow 0.12s;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
-  }
-  button:hover:not(:disabled) {
-    transform: translateY(-1px);
-    border-color: #2f3c4e;
-    background: linear-gradient(180deg, #1d2735, var(--surface-3));
-  }
-  button:active:not(:disabled) {
-    transform: translateY(0);
   }
   button:disabled {
-    opacity: 0.4;
+    opacity: 0.35;
     cursor: default;
   }
-  button.danger:hover:not(:disabled) {
-    background: linear-gradient(180deg, #3a1f27, #2a151b);
-    border-color: #5a3540;
+
+  /* quiet icon buttons */
+  .ic {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.9rem;
+    height: 1.9rem;
+    background: none;
+    border: none;
+    border-radius: 7px;
+    color: #9fb0c3;
+    transition: background 0.12s, color 0.12s;
+  }
+  .ic svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .ic:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text);
+  }
+  .ic.danger:hover:not(:disabled) {
+    background: rgba(251, 113, 133, 0.1);
     color: var(--danger);
   }
-
-  button.run {
-    background: var(--violet-grad);
-    border-color: transparent;
-    color: #0b0a1f;
-    font-weight: 650;
-    box-shadow: 0 6px 18px -6px rgba(129, 140, 248, 0.55);
-  }
-  button.run:hover:not(:disabled) {
-    filter: brightness(1.07);
-    background: var(--violet-grad);
-  }
-
-  button.primary {
-    background: var(--accent-grad);
-    color: #06121f;
-    border-color: transparent;
+  .ic.seek {
+    width: 1.5rem;
+    font-size: 0.95rem;
     font-weight: 700;
-    box-shadow: var(--glow);
-  }
-  button.primary:hover:not(:disabled) {
-    filter: brightness(1.06);
-    background: var(--accent-grad);
-  }
-  button.primary.ghost {
-    background: transparent;
-    color: var(--accent);
-    border: 1px solid #2c4a66;
-    box-shadow: none;
-    font-weight: 600;
-  }
-  button.primary.ghost:hover:not(:disabled) {
-    background: rgba(125, 211, 252, 0.08);
+    line-height: 1;
   }
 
-  .hint {
-    font-size: 0.76rem;
-    color: #9fb0c3;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-  }
   .pill {
-    background: rgba(125, 211, 252, 0.14);
+    background: rgba(125, 211, 252, 0.1);
     color: var(--accent);
-    border: 1px solid rgba(125, 211, 252, 0.25);
     border-radius: 999px;
-    padding: 0.08rem 0.5rem;
+    padding: 0.12rem 0.55rem;
     font-weight: 600;
     font-size: 0.72rem;
-  }
-  .keys {
-    color: var(--dim);
+    margin-left: 0.3rem;
+    white-space: nowrap;
   }
 
-  .dot {
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    background: var(--warn);
-    animation: pulse-soft 2s ease-in-out infinite;
+  .run {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    background: none;
+    border: 1px solid rgba(167, 139, 250, 0.35);
+    color: var(--accent-2);
+    border-radius: 8px;
+    padding: 0.32rem 0.7rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    transition: background 0.12s, border-color 0.12s;
   }
+  .run:hover:not(:disabled) {
+    background: rgba(167, 139, 250, 0.1);
+    border-color: rgba(167, 139, 250, 0.55);
+  }
+
   .qcstat {
     font-size: 0.76rem;
     color: var(--muted);
     white-space: nowrap;
-    background: rgba(125, 211, 252, 0.08);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    padding: 0.12rem 0.55rem;
-  }
-  .qcstat b {
-    color: var(--text);
+    padding: 0 0.25rem;
+    font-variant-numeric: tabular-nums;
   }
   .qcstat.stale {
     color: var(--warn);
-    border-color: rgba(251, 191, 36, 0.3);
-    background: rgba(251, 191, 36, 0.08);
   }
   .qcstat.err {
     color: var(--danger);
   }
 
+  .cmdk {
+    background: none;
+    border: none;
+    padding: 0.2rem 0.25rem;
+  }
+  .cmdk kbd {
+    font-family: inherit;
+    font-size: 0.68rem;
+    color: var(--muted);
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    padding: 0.14rem 0.45rem;
+    transition: color 0.12s, border-color 0.12s;
+  }
+  .cmdk:hover kbd {
+    color: var(--accent);
+    border-color: #2c4a66;
+  }
+
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--warn);
+    margin-right: 0.35rem;
+    animation: pulse-soft 2s ease-in-out infinite;
+    flex: none;
+  }
+
+  .primary {
+    background: var(--accent);
+    color: #06121f;
+    border: none;
+    border-radius: 8px;
+    padding: 0.34rem 0.8rem;
+    font-size: 0.8rem;
+    font-weight: 700;
+    transition: filter 0.12s;
+  }
+  .primary:hover:not(:disabled) {
+    filter: brightness(1.08);
+  }
+  .ghost {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: 8px;
+    padding: 0.32rem 0.7rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    transition: color 0.12s, border-color 0.12s, background 0.12s;
+  }
+  .ghost:hover:not(:disabled) {
+    color: var(--accent);
+    border-color: #2c4a66;
+    background: rgba(125, 211, 252, 0.06);
+  }
+
   .spin {
-    width: 12px;
-    height: 12px;
-    border: 2px solid rgba(11, 10, 31, 0.3);
-    border-top-color: #0b0a1f;
+    width: 11px;
+    height: 11px;
+    border: 2px solid rgba(167, 139, 250, 0.3);
+    border-top-color: var(--accent-2);
     border-radius: 50%;
     animation: spin 0.7s linear infinite;
   }

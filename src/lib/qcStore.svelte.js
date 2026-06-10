@@ -13,6 +13,7 @@ class QCStore {
   status = $state("idle"); // idle | running | done | error
   error = $state(null);
   threshold = $state(0.7);
+  uncThreshold = $state(0.6); // (stable build: confidence channel absent; kept for the shared UI)
   rev = $state(0); // bump when results change
   ranAtRev = -1; // store.rev at the time QC last ran (for staleness)
 
@@ -58,6 +59,41 @@ class QCStore {
     const s = this.frameScore(item);
     const fq = this.frameQC(item);
     return (s != null && s >= this.threshold) || hasFrameIssue(fq);
+  }
+
+  // --- Stable build: the confidence / per-node spatial channels are NOT present here
+  //     (this build runs ZScore QC only). These inert accessors let the shared UI render
+  //     without those features (their blocks are gated on hasConfidence / yield no rings). ---
+  get hasConfidence() {
+    return false;
+  }
+  frameMinConfidence() {
+    return null;
+  }
+  instanceUncertainty() {
+    return null;
+  }
+  worstNodeFor() {
+    return -1;
+  }
+  uncertainNodeFor() {
+    return -1;
+  }
+
+  /**
+   * Index (into store.frames) of the nearest flagged frame from `from`, scanning in `dir`
+   * (+1 forward / -1 back) with wrap-around. -1 when nothing is flagged. Powers N/P nav.
+   */
+  seekFlagged(from, dir = 1) {
+    this.rev;
+    const frames = store.frames;
+    const n = frames.length;
+    if (!this.hasResults || n === 0) return -1;
+    for (let step = 1; step <= n; step++) {
+      const i = (((from + dir * step) % n) + n) % n;
+      if (this.frameFlagged(frames[i])) return i;
+    }
+    return -1;
   }
   /** Anomaly score for the instIdx-th instance of a navigable item, or null. */
   instanceScore(item, instIdx) {

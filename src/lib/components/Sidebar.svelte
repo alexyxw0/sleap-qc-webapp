@@ -38,6 +38,22 @@
     return Array.isArray(s) ? { n: s[0], h: s[1], w: s[2], c: s[3] } : null;
   });
 
+  // Minimal by default: the full stats table and per-instance point lists are opt-in.
+  let moreStats = $state(false);
+  let expanded = $state(new Set()); // manually expanded instance indices
+  const isOpen = (i) => expanded.has(i) || edit.selInstance === i;
+  function toggleOpen(i) {
+    const s = new Set(expanded);
+    if (s.has(i)) s.delete(i);
+    else s.add(i);
+    expanded = s;
+  }
+  // Collapse manual expansions when navigating to another frame.
+  $effect(() => {
+    void store.index;
+    expanded = new Set();
+  });
+
   // Reactive snapshot of the current frame's instances/points — recomputes on every
   // edit (store.rev) so coordinates/visibility update live, without re-mounting the DOM.
   const panel = $derived.by(() => {
@@ -69,82 +85,81 @@
   </header>
 
   {#if store.error}
-    <p class="err">{store.error}</p>
+    <p class="err side-section">{store.error}</p>
   {/if}
 
   <!-- Discrete frame selector -->
   <FrameGrid />
 
-  <!-- QC results for the current frame -->
+  <!-- QC results for the current frame — one verdict line + issues only when present -->
   {#if qc.hasResults}
     {@const fq = qc.frameQC(item)}
     {@const fs = qc.frameScore(item)}
     {@const ti = qc.frameTopIssue(item)}
-    <section class="card qccard" class:flagged={qc.frameFlagged(item)}>
-      <h3>QC · this frame{qc.stale ? " (stale)" : ""}</h3>
-      <dl>
-        <dt>Anomaly</dt>
-        <dd>
-          {#if fs != null}
-            <span class="qchip" style:background={heatColor(fs)}>{fs.toFixed(2)}</span>
-            <span class="muted small">{ti?.confidence ?? ""}</span>
-          {:else}—{/if}
-        </dd>
-        {#if ti?.issue && fs != null}
-          <dt>Likely issue</dt>
-          <dd class="issuetxt">{ti.issue}</dd>
+    {@const flagged = qc.frameFlagged(item)}
+    <section
+      class="side-section"
+      title="Anomaly = geometrically unusual vs. the rest of this file. Confidence = the model's own per-keypoint certainty. Both are review hints, not certain errors."
+    >
+      <h3 class="side-h">QC — this frame{qc.stale ? " · stale" : ""}</h3>
+      <div class="qcrow">
+        {#if fs != null}
+          <span class="qchip" style:background={heatColor(fs)}>{fs.toFixed(2)}</span>
         {/if}
-        <dt>Instances</dt>
-        <dd>{fq ? `${fq.actualInstanceCount} / ${fq.expectedInstanceCount} expected` : "—"}</dd>
-      </dl>
+        <span class="verdict" class:flagged>
+          {#if flagged}
+            {ti?.issue ?? "frame issue"}{ti?.worstNodeName ? ` · ${ti.worstNodeName}` : ""}
+          {:else}
+            looks ok
+          {/if}
+        </span>
+        {#if qc.hasConfidence}
+          {@const mc = qc.frameMinConfidence(item)}
+          {#if mc != null && mc <= 1 - qc.uncThreshold}
+            <span class="conf" title="Lowest model confidence in this frame">conf {mc.toFixed(2)}</span>
+          {/if}
+        {/if}
+      </div>
       {#if hasFrameIssue(fq)}
         <ul class="issues">
-          {#if fq.isIncomplete}<li>⚠ incomplete (fewer instances than expected)</li>{/if}
-          {#if fq.isNegativeWithInstances}<li>⚠ negative frame has instances</li>{/if}
-          {#if fq.duplicatePairs?.length}<li>⚠ {fq.duplicatePairs.length} duplicate pair(s): {fq.duplicateReasons.join(", ")}</li>{/if}
+          {#if fq.isIncomplete}<li>{fq.actualInstanceCount} / {fq.expectedInstanceCount} expected instances</li>{/if}
+          {#if fq.isNegativeWithInstances}<li>negative frame has instances</li>{/if}
+          {#if fq.duplicatePairs?.length}<li>{fq.duplicatePairs.length} duplicate pair(s): {fq.duplicateReasons.join(", ")}</li>{/if}
         </ul>
       {/if}
-      <p class="muted xs">Anomaly = geometrically unusual vs. the rest of this file (a review hint, not a certain error).</p>
     </section>
   {/if}
 
-  <!-- Video / source -->
-  <section class="card">
-    <h3>Video</h3>
-    {#if videoShape}
-      <dl>
-        <dt>Resolution</dt>
-        <dd>{videoShape.w} × {videoShape.h}{videoShape.c ? ` × ${videoShape.c}` : ""}</dd>
-        <dt>Frames</dt>
-        <dd>{videoShape.n ?? "—"}</dd>
-        <dt>Embedded</dt>
-        <dd>{store.hasEmbedded ? "yes (.pkg.slp)" : "no"}</dd>
-      </dl>
-    {:else}
-      <p class="muted">No video metadata.</p>
+  <!-- File: one summary line; the full stats table is opt-in -->
+  <section class="side-section">
+    <div class="fhead">
+      <h3 class="side-h">File</h3>
+      <button class="more" onclick={() => (moreStats = !moreStats)}>{moreStats ? "less" : "more"}</button>
+    </div>
+    {#if totals}
+      <p class="fsummary">{totals.labeledFrames} frames · {totals.instances} instances</p>
     {/if}
-
-    {#if store.videoModel}
-      <p class="muted small">video: {store.videoName}</p>
+    {#if moreStats}
+      <dl>
+        {#if videoShape}
+          <dt>Resolution</dt>
+          <dd>{videoShape.w} × {videoShape.h}</dd>
+          <dt>Video frames</dt>
+          <dd>{videoShape.n ?? "—"}</dd>
+        {/if}
+        {#if totals}
+          <dt>Tracks</dt>
+          <dd>{totals.tracks}</dd>
+          <dt>Videos</dt>
+          <dd>{totals.videos}</dd>
+          <dt>Skeletons</dt>
+          <dd>{totals.skeletons}</dd>
+        {/if}
+        <dt>Source</dt>
+        <dd>{store.hasEmbedded ? "embedded (.pkg.slp)" : store.videoModel ? store.videoName : "external video"}</dd>
+      </dl>
     {/if}
   </section>
-
-  <!-- Counts -->
-  {#if totals}
-    <section class="card">
-      <h3>Labels</h3>
-      <dl>
-        <dt>Labeled frames</dt>
-        <dd>{totals.labeledFrames}</dd>
-        <dt>Instances</dt>
-        <dd>{totals.instances}</dd>
-        <dt>Tracks</dt>
-        <dd>{totals.tracks}</dd>
-        <dt>Videos</dt>
-        <dd>{totals.videos}</dd>
-      </dl>
-    </section>
-  {/if}
 
   <!-- Skeleton editor (nodes + edges) -->
   {#if skeleton}
@@ -152,48 +167,59 @@
   {/if}
 
   <!-- Current-frame instances (interactive) -->
-  <section class="card grow">
+  <section class="side-section grow">
     <div class="ihead">
-      <h3>This frame · {panel.length} instance(s)</h3>
+      <h3 class="side-h">This frame · {panel.length} instance{panel.length === 1 ? "" : "s"}</h3>
       <button class="addbtn" onclick={() => edit.addInstance()}>＋ Instance</button>
     </div>
     {#if panel.length}
       {#each panel as inst (inst.i)}
         {@const qs = qc.hasResults ? qc.instanceScore(item, inst.i) : null}
+        {@const open = isOpen(inst.i)}
         <div class="inst" class:sel={inst.i === edit.selInstance}>
           <div class="inst-head">
+            <button class="chev" class:open onclick={() => toggleOpen(inst.i)} title={open ? "Hide points" : "Show points"}>
+              ▸
+            </button>
             <button class="selbtn" onclick={() => edit.select(inst.i, 0)} title="Select instance">
               <span class="dot" style:background={dotColor(inst.i)}></span>
               #{inst.i}
               {inst.track ? `· ${inst.track}` : "· untracked"}
-              {inst.score != null ? `· ${inst.score.toFixed(2)}` : ""}
             </button>
             {#if qs != null}
               <span class="qchip sm" style:background={heatColor(qs)} title="QC anomaly score">{qs.toFixed(2)}</span>
             {/if}
             <button class="del" onclick={() => edit.deleteInstance(inst.i)} title="Delete instance">×</button>
           </div>
-          {#if qs != null}
-            <div class="qcissue">QC: {qc.instanceIssue(item, inst.i)?.issue}</div>
+          {#if qs != null && qs >= qc.threshold}
+            {@const ii = qc.instanceIssue(item, inst.i)}
+            <div class="qcissue">
+              {ii?.issue}{ii?.worstNodeName ? ` · ${ii.worstNodeName}` : ""}
+              {#if ii?.lowConfidence}
+                <span class="lowconf">· low conf: {ii.leastConfNodeName} ({ii.leastConfScore?.toFixed(2)})</span>
+              {/if}
+            </div>
           {/if}
-          <div class="pts">
-            {#each inst.points as p (p.j)}
-              <button
-                class="pt"
-                class:hidden={!p.visible}
-                class:psel={inst.i === edit.selInstance && p.j === edit.selNode}
-                onclick={() => edit.select(inst.i, p.j)}
-                ondblclick={() => edit.toggleVisible(inst.i, p.j)}
-                title="Click to select · double-click to show/hide"
-              >
-                <span class="pname">{p.name}</span>
-                <span class="pxy">
-                  {p.placed ? `${p.x.toFixed(1)}, ${p.y.toFixed(1)}` : "—"}
-                  <i class="vis" class:on={p.visible}></i>
-                </span>
-              </button>
-            {/each}
-          </div>
+          {#if open}
+            <div class="pts">
+              {#each inst.points as p (p.j)}
+                <button
+                  class="pt"
+                  class:hidden={!p.visible}
+                  class:psel={inst.i === edit.selInstance && p.j === edit.selNode}
+                  onclick={() => edit.select(inst.i, p.j)}
+                  ondblclick={() => edit.toggleVisible(inst.i, p.j)}
+                  title="Click to select · double-click to show/hide"
+                >
+                  <span class="pname">{p.name}</span>
+                  <span class="pxy">
+                    {p.placed ? `${p.x.toFixed(1)}, ${p.y.toFixed(1)}` : "—"}
+                    <i class="vis" class:on={p.visible}></i>
+                  </span>
+                </button>
+              {/each}
+            </div>
+          {/if}
         </div>
       {/each}
     {:else}
@@ -203,33 +229,36 @@
 </aside>
 
 <style>
+  /* One continuous flat panel: sections divided by hairlines, no per-card chrome. */
   .sidebar {
     width: 320px;
     flex: 0 0 320px;
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
     overflow-y: auto;
-    padding-right: 0.25rem;
+    background: rgba(13, 18, 27, 0.6);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    animation: fade-up 0.35s var(--ease) both;
   }
   .head {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.1rem 0.2rem;
+    padding: 0.7rem 0.95rem;
   }
   .filedot {
-    width: 8px;
-    height: 8px;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
     background: var(--good);
-    box-shadow: 0 0 10px 1px rgba(134, 239, 172, 0.6);
+    box-shadow: 0 0 8px 1px rgba(134, 239, 172, 0.5);
     flex: none;
   }
   .title {
     flex: 1;
     font-weight: 600;
-    font-size: 0.9rem;
+    font-size: 0.88rem;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -237,119 +266,139 @@
   }
   .ghost {
     background: none;
-    border: 1px solid var(--border);
-    color: var(--muted);
+    border: none;
+    color: var(--dim);
     border-radius: var(--r-xs);
-    width: 1.7rem;
+    width: 1.6rem;
     height: 1.6rem;
-    font-size: 0.78rem;
+    font-size: 0.75rem;
     cursor: pointer;
-    transition: color 0.12s, border-color 0.12s, background 0.12s;
+    transition: color 0.12s, background 0.12s;
   }
   .ghost:hover {
     color: var(--danger);
-    border-color: #5a3540;
     background: rgba(251, 113, 133, 0.08);
   }
-  .card {
-    background: linear-gradient(180deg, rgba(20, 26, 37, 0.55), rgba(13, 18, 27, 0.55));
-    border: 1px solid var(--border);
-    border-radius: var(--r);
-    padding: 0.85rem 0.9rem;
-    box-shadow: var(--shadow-sm), inset 0 1px 0 rgba(255, 255, 255, 0.025);
-    animation: fade-up 0.35s var(--ease) both;
-  }
-  .card.grow {
+  .grow {
     flex: 1;
     min-height: 120px;
-  }
-  h3 {
-    margin: 0 0 0.6rem;
-    font-size: 0.72rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.09em;
-    color: #9fb0c3;
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-  }
-  h3::before {
-    content: "";
-    width: 3px;
-    height: 11px;
-    border-radius: 2px;
-    background: var(--accent-grad);
-    flex: none;
   }
   dl {
     margin: 0;
     display: grid;
     grid-template-columns: auto 1fr;
-    gap: 0.2rem 0.75rem;
-    font-size: 0.85rem;
+    gap: 0.18rem 0.85rem;
+    font-size: 0.8rem;
   }
   dt {
-    color: var(--muted);
+    color: var(--dim);
   }
   dd {
     margin: 0;
     text-align: right;
+    color: #c3cedb;
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .muted {
     color: var(--muted);
-    font-size: 0.85rem;
+    font-size: 0.82rem;
     margin: 0.25rem 0 0;
   }
-  .small {
-    font-size: 0.78rem;
+  .fhead {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+  .fhead .side-h {
+    margin: 0;
+  }
+  .more {
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: 0.7rem;
+    color: var(--dim);
+    cursor: pointer;
+    transition: color 0.12s;
+  }
+  .more:hover {
+    color: var(--accent);
+  }
+  .fsummary {
+    margin: 0.35rem 0 0;
+    font-size: 0.8rem;
+    color: #c3cedb;
+    font-variant-numeric: tabular-nums;
+  }
+  .fsummary + dl {
+    margin-top: 0.45rem;
+  }
+  .chev {
+    background: none;
+    border: none;
+    padding: 0 0.1rem;
+    color: var(--dim);
+    font-size: 0.66rem;
+    cursor: pointer;
+    flex: none;
+    transition: transform 0.15s var(--ease), color 0.12s;
+  }
+  .chev.open {
+    transform: rotate(90deg);
+  }
+  .chev:hover {
+    color: var(--text);
   }
   .err {
     color: #fda4af;
     font-size: 0.82rem;
     margin: 0;
   }
-  .qccard {
-    border-color: #2a3852;
+  .qcrow {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
   }
-  .qccard.flagged {
-    border-color: #6b4327;
-    box-shadow: var(--shadow-sm), inset 0 0 0 1px rgba(251, 146, 60, 0.18), 0 0 26px -14px rgba(251, 146, 60, 0.6);
+  .verdict {
+    flex: 1;
+    font-size: 0.82rem;
+    color: #9cb8a6;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .verdict.flagged {
+    color: #e7c08a;
+    font-weight: 600;
+  }
+  .conf {
+    font-size: 0.72rem;
+    color: var(--warn);
+    font-variant-numeric: tabular-nums;
   }
   .qchip {
     color: #06121f;
     font-weight: 800;
     border-radius: 999px;
     padding: 0.08rem 0.45rem;
-    font-size: 0.76rem;
+    font-size: 0.74rem;
     font-variant-numeric: tabular-nums;
-    box-shadow: 0 2px 8px -3px rgba(0, 0, 0, 0.5);
   }
   .qchip.sm {
-    font-size: 0.7rem;
+    font-size: 0.68rem;
     padding: 0.02rem 0.28rem;
   }
   .issues {
-    margin: 0.4rem 0 0;
+    margin: 0.45rem 0 0;
     padding-left: 1rem;
-    font-size: 0.78rem;
-    color: #fbbf24;
+    font-size: 0.76rem;
+    color: #d9b25c;
     line-height: 1.5;
-  }
-  .issuetxt {
-    color: #e7c08a;
-    font-weight: 600;
-  }
-  .qcissue {
-    font-size: 0.72rem;
-    color: #9fb0c3;
-    margin: -0.1rem 0 0.2rem 1.3rem;
-  }
-  .muted.xs {
-    font-size: 0.68rem;
-    line-height: 1.4;
-    margin-top: 0.5rem;
   }
   .ihead {
     display: flex;
@@ -358,24 +407,26 @@
     gap: 0.5rem;
     margin-bottom: 0.4rem;
   }
-  .ihead h3 {
+  .ihead .side-h {
     margin: 0;
   }
   .addbtn {
-    background: #18212d;
-    border: 1px solid #2a3442;
+    background: none;
+    border: 1px solid var(--border);
     color: var(--accent);
     border-radius: 6px;
-    padding: 0.2rem 0.5rem;
-    font-size: 0.76rem;
+    padding: 0.18rem 0.5rem;
+    font-size: 0.74rem;
     cursor: pointer;
     white-space: nowrap;
+    transition: background 0.12s, border-color 0.12s;
   }
   .addbtn:hover {
-    background: #1f2937;
+    background: rgba(125, 211, 252, 0.08);
+    border-color: #2c4a66;
   }
   .inst {
-    border-top: 1px solid #1b2430;
+    border-top: 1px solid var(--border-soft);
     padding: 0.45rem 0.3rem 0.3rem;
     border-radius: 6px;
   }
@@ -383,7 +434,7 @@
     border-top: none;
   }
   .inst.sel {
-    background: #131c27;
+    background: rgba(125, 211, 252, 0.05);
     box-shadow: inset 0 0 0 1px #2c4a66;
   }
   .inst-head {
@@ -413,8 +464,8 @@
   }
   .del {
     background: none;
-    border: 1px solid #2a3442;
-    color: #9fb0c3;
+    border: none;
+    color: var(--dim);
     border-radius: 5px;
     padding: 0 0.4rem;
     cursor: pointer;
@@ -422,7 +473,6 @@
   }
   .del:hover {
     color: #fda4af;
-    border-color: #5a3540;
   }
   .dot {
     width: 9px;
@@ -430,6 +480,14 @@
     border-radius: 50%;
     display: inline-block;
     flex: none;
+  }
+  .qcissue {
+    font-size: 0.72rem;
+    color: #9fb0c3;
+    margin: -0.1rem 0 0.2rem 1.3rem;
+  }
+  .lowconf {
+    color: var(--warn);
   }
   .pts {
     display: grid;
@@ -450,14 +508,14 @@
     text-align: left;
   }
   .pt:hover {
-    background: #141b25;
+    background: rgba(255, 255, 255, 0.03);
   }
   .pt.hidden {
     opacity: 0.45;
   }
   .pt.psel {
     border-color: var(--accent);
-    background: #14202c;
+    background: rgba(125, 211, 252, 0.07);
   }
   .pname {
     color: var(--muted);

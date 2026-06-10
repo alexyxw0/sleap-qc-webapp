@@ -7,6 +7,10 @@
   import Viewer from "./lib/components/Viewer.svelte";
   import Sidebar from "./lib/components/Sidebar.svelte";
   import EditToolbar from "./lib/components/EditToolbar.svelte";
+  import CommandPalette from "./lib/components/CommandPalette.svelte";
+  import ShortcutsHelp from "./lib/components/ShortcutsHelp.svelte";
+  import Toasts from "./lib/components/Toasts.svelte";
+  import { ui } from "./lib/uiStore.svelte.js";
 
   // Reset edit history + view whenever a different labels object is loaded (or closed).
   let lastLabels = null;
@@ -16,6 +20,7 @@
       edit.resetForNewFile();
       view.reset();
       qc.reset();
+      ui.closeAll();
     }
   });
 
@@ -38,9 +43,12 @@
       <Sidebar />
     </div>
   </main>
+  <CommandPalette />
+  <ShortcutsHelp />
 {:else}
   <FileUpload />
 {/if}
+<Toasts />
 
 <style>
   .app {

@@ -37,9 +37,9 @@
   }
 </script>
 
-<section class="card">
+<section class="side-section">
   <button class="head" onclick={() => (open = !open)} aria-expanded={open}>
-    <h3>Skeleton{sk?.name ? ` · ${sk.name}` : ""}</h3>
+    <h3 class="side-h">Skeleton{sk?.name ? ` · ${sk.name}` : ""}</h3>
     <span class="meta">{nodeNames.length} nodes · {edges.length} edges {open ? "▾" : "▸"}</span>
   </button>
 
@@ -87,13 +87,6 @@
 </section>
 
 <style>
-  .card {
-    background: linear-gradient(180deg, rgba(20, 26, 37, 0.55), rgba(13, 18, 27, 0.55));
-    border: 1px solid var(--border);
-    border-radius: var(--r);
-    padding: 0.85rem 0.9rem;
-    box-shadow: var(--shadow-sm), inset 0 1px 0 rgba(255, 255, 255, 0.025);
-  }
   .head {
     display: flex;
     align-items: center;
@@ -106,23 +99,8 @@
     color: inherit;
     gap: 0.5rem;
   }
-  h3 {
+  .head h3 {
     margin: 0;
-    font-size: 0.72rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.09em;
-    color: #9fb0c3;
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-  }
-  h3::before {
-    content: "";
-    width: 3px;
-    height: 11px;
-    border-radius: 2px;
-    background: var(--accent-grad);
   }
   .meta {
     font-size: 0.72rem;
