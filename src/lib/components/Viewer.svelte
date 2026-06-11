@@ -343,7 +343,7 @@
 
     <div class="hud">
       <span class="chip">
-        <b>{pad(store.index + 1)}</b><span class="dim">/{pad(store.frameCount)}</span>
+        <span class="frac"><b>{pad(store.index + 1)}</b><span class="dim">/{pad(store.frameCount)}</span></span>
         <span class="dim">· {item?.lf?.instances?.length ?? 0} INST</span>
       </span>
       {#if hud}
@@ -522,11 +522,17 @@
     background: rgba(11, 13, 15, 0.82);
     border: 1px solid var(--border);
     border-radius: var(--r-xs);
-    padding: 0.2rem 0.55rem;
+    padding: 0.24rem 0.6rem;
     font-size: 0.7rem;
     letter-spacing: 0.04em;
     color: var(--muted);
     backdrop-filter: blur(8px);
+  }
+  /* keep the frame fraction tight as one unit; the chip gap only separates it
+     from the instance count, so it reads "007/266 · 3 INST", not "007 /266". */
+  .frac {
+    display: inline-flex;
+    align-items: baseline;
   }
   .chip b {
     color: var(--text);

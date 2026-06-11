@@ -320,7 +320,7 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.7rem 0.95rem;
+    padding: 0.85rem 1.1rem;
   }
   .filedot {
     width: 6px;
@@ -433,17 +433,16 @@
   }
   .qcrow {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 0.5rem;
     min-width: 0;
   }
   .verdict {
     flex: 1;
+    min-width: 0;
     font-size: 0.82rem;
+    line-height: 1.45;
     color: #9cb8a6;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
   .verdict.flagged {
     color: #e7c08a;
@@ -558,10 +557,9 @@
     color: #9fb0c3;
     margin: -0.1rem 0 0.2rem 1.3rem;
   }
-  .lowconf {
-    color: var(--warn);
-  }
-  /* a flagged problem that is clickable to zoom in on its faulty node(s) */
+  /* a flagged problem that is clickable to zoom in on its faulty node(s).
+     Inline text flow (not inline-flex) so a long "issue · node" wraps to a second
+     line instead of clipping mid-word against the rail edge. */
   .faulty {
     background: none;
     border: none;
@@ -569,19 +567,15 @@
     font: inherit;
     text-align: left;
     cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
   .faulty:hover {
     text-decoration: underline;
   }
   .zico {
+    margin-left: 0.3rem;
     opacity: 0.5;
     font-size: 0.85em;
+    white-space: nowrap;
   }
   .faulty:hover .zico {
     opacity: 1;

@@ -52,7 +52,7 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.32rem 0;
+    padding: 0.42rem 0;
     cursor: pointer;
     font-size: 0.78rem;
     color: var(--text);
@@ -85,8 +85,8 @@
     display: flex;
     justify-content: space-between;
     align-items: baseline;
-    margin: 0.5rem 0 0;
-    padding-top: 0.4rem;
+    margin: 0.65rem 0 0;
+    padding-top: 0.55rem;
     border-top: 1px solid var(--border);
     font-size: 0.72rem;
     color: var(--muted);
