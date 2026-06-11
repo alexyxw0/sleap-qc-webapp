@@ -13,9 +13,14 @@ class QCStore {
   status = $state("idle"); // idle | running | done | error
   error = $state(null);
   threshold = $state(0.7);
+  spatialThreshold = $state(3.5); // worst-node Mahalanobis >= this => spatial outlier
   uncThreshold = $state(0.6); // (stable build: confidence channel absent; kept for the shared UI)
   rev = $state(0); // bump when results change
   ranAtRev = -1; // store.rev at the time QC last ran (for staleness)
+
+  // Which detection techniques contribute to the flagged set. The flagged frames are the
+  // UNION of the enabled checks; the sidebar lets the user toggle each on/off.
+  checks = $state({ anomaly: true, spatial: true, count: true, negative: true, duplicates: true });
 
   #instanceScores = new Map(); // "v:f:i" -> score
   #contributions = new Map(); // "v:f:i" -> { feature: rawValue }
@@ -24,7 +29,7 @@ class QCStore {
   #frameResults = new Map(); // "v:f" -> FrameQC
   #frameScore = new Map(); // "v:f" -> max instance score
   #frameWorst = new Map(); // "v:f" -> instIdx of the worst instance
-  #flaggedFrames = 0;
+  #spatialFlagged = new Set(); // "v:f" frames with a worst-node Mahalanobis >= spatialThreshold
 
   get hasResults() {
     return this.status === "done";
@@ -34,33 +39,95 @@ class QCStore {
     this.rev;
     return this.status === "done" && store.rev !== this.ranAtRev;
   }
+  /** Number of frames flagged by the UNION of the currently-enabled checks. */
   get flaggedFrameCount() {
     this.rev;
-    return this.#flaggedFrames;
+    const c = this.checks;
+    const u = new Set();
+    if (c.anomaly) for (const [fk, s] of this.#frameScore) if (s >= this.threshold) u.add(fk);
+    if (c.spatial) for (const fk of this.#spatialFlagged) u.add(fk);
+    for (const [fk, fq] of this.#frameResults) {
+      if (
+        (c.count && fq.isIncomplete) ||
+        (c.negative && fq.isNegativeWithInstances) ||
+        (c.duplicates && (fq.duplicatePairs?.length ?? 0) > 0)
+      ) {
+        u.add(fk);
+      }
+    }
+    return u.size;
+  }
+
+  /** Toggle a detection technique on/off (re-derives the flagged set via the union). */
+  toggleCheck(name) {
+    if (name in this.checks) {
+      this.checks[name] = !this.checks[name];
+      this.rev++;
+    }
+  }
+
+  /** How many frames a single check flags (independent of whether it's enabled). */
+  checkCount(name) {
+    this.rev;
+    if (name === "anomaly") {
+      let n = 0;
+      for (const s of this.#frameScore.values()) if (s >= this.threshold) n++;
+      return n;
+    }
+    if (name === "spatial") return this.#spatialFlagged.size;
+    let n = 0;
+    for (const fq of this.#frameResults.values()) {
+      if (
+        (name === "count" && fq.isIncomplete) ||
+        (name === "negative" && fq.isNegativeWithInstances) ||
+        (name === "duplicates" && (fq.duplicatePairs?.length ?? 0) > 0)
+      ) {
+        n++;
+      }
+    }
+    return n;
   }
 
   #videoIdx(video) {
     return store.labels?.videos?.indexOf(video) ?? 0;
   }
 
-  /** Per-frame max anomaly score for a navigable item, or null. */
+  /** Per-frame max anomaly score, or null (null also when the Anomaly check is off). */
   frameScore(item) {
     this.rev;
-    if (!item) return null;
+    if (!item || !this.checks.anomaly) return null;
     return this.#frameScore.get(`${this.#videoIdx(item.video)}:${item.frameIdx}`) ?? null;
   }
-  /** Frame-level QC result (count/duplicates/negative) for a navigable item, or null. */
+  /**
+   * Frame-level QC result for a navigable item, with disabled frame-checks suppressed so the
+   * shared `hasFrameIssue()`-based UI (issue list, red triangle) respects the toggles.
+   */
   frameQC(item) {
     this.rev;
     if (!item) return null;
-    return this.#frameResults.get(`${this.#videoIdx(item.video)}:${item.frameIdx}`) ?? null;
+    const fq = this.#frameResults.get(`${this.#videoIdx(item.video)}:${item.frameIdx}`);
+    if (!fq) return null;
+    const c = this.checks;
+    return {
+      ...fq,
+      isIncomplete: c.count ? fq.isIncomplete : false,
+      isNegativeWithInstances: c.negative ? fq.isNegativeWithInstances : false,
+      duplicatePairs: c.duplicates ? fq.duplicatePairs : [],
+      duplicateReasons: c.duplicates ? fq.duplicateReasons : [],
+    };
   }
-  /** Whether a frame has any QC concern (anomalous instance OR a frame-level issue). */
+  /** Whether a frame is flagged by any ENABLED check (the union). */
   frameFlagged(item) {
     this.rev;
-    const s = this.frameScore(item);
-    const fq = this.frameQC(item);
-    return (s != null && s >= this.threshold) || hasFrameIssue(fq);
+    if (!item) return false;
+    const fk = `${this.#videoIdx(item.video)}:${item.frameIdx}`;
+    const c = this.checks;
+    if (c.anomaly) {
+      const s = this.#frameScore.get(fk);
+      if (s != null && s >= this.threshold) return true;
+    }
+    if (c.spatial && this.#spatialFlagged.has(fk)) return true;
+    return hasFrameIssue(this.frameQC(item)); // count/negative/duplicates, already toggle-filtered
   }
 
   // --- Stable build: per-node SPATIAL prior is present (drives the red worst-node ring +
@@ -78,10 +145,10 @@ class QCStore {
   uncertainNodeFor() {
     return -1;
   }
-  /** Worst (most spatially-anomalous) node index for an instance, or -1. */
+  /** Worst (most spatially-anomalous) node index for an instance, or -1 (also when Spatial off). */
   worstNodeFor(item, instIdx) {
     this.rev;
-    if (!item) return -1;
+    if (!item || !this.checks.spatial) return -1;
     return this.#worstNodes.get(`${this.#videoIdx(item.video)}:${item.frameIdx}:${instIdx}`) ?? -1;
   }
 
@@ -113,7 +180,7 @@ class QCStore {
     const key = `${this.#videoIdx(item.video)}:${item.frameIdx}:${instIdx}`;
     const score = this.#instanceScores.get(key);
     if (score == null) return null;
-    const wn = this.#worstNodes.get(key);
+    const wn = this.checks.spatial ? this.#worstNodes.get(key) : -1;
     const ns = this.#nodeScores.get(key);
     const worstNodeName =
       wn != null && wn >= 0 ? store.skeleton?.nodeNames?.[wn] ?? `node ${wn}` : null;
@@ -158,14 +225,15 @@ class QCStore {
           this.#frameWorst.set(fk, Number(key.slice(key.lastIndexOf(":") + 1)));
         }
       }
-      // count flagged frames
-      let flagged = 0;
-      const frameKeys = new Set([...this.#frameScore.keys(), ...this.#frameResults.keys()]);
-      for (const fk of frameKeys) {
-        const s = this.#frameScore.get(fk) ?? 0;
-        if (s >= this.threshold || hasFrameIssue(this.#frameResults.get(fk))) flagged++;
+      // Spatial-outlier frames: a worst-node Mahalanobis at/above the spatial threshold.
+      this.#spatialFlagged = new Set();
+      for (const [key, ns] of this.#nodeScores) {
+        let maxM = -Infinity;
+        for (const m of ns) if (!Number.isNaN(m) && m > maxM) maxM = m;
+        if (maxM >= this.spatialThreshold) {
+          this.#spatialFlagged.add(key.slice(0, key.lastIndexOf(":")));
+        }
       }
-      this.#flaggedFrames = flagged;
       this.ranAtRev = store.rev;
       this.status = "done";
       this.rev++;
@@ -187,7 +255,9 @@ class QCStore {
     this.#frameResults = new Map();
     this.#frameScore = new Map();
     this.#frameWorst = new Map();
-    this.#flaggedFrames = 0;
+    this.#spatialFlagged = new Set();
+    // NOTE: this.checks (the user's enabled-technique preferences) intentionally persist
+    // across files/runs.
     this.ranAtRev = -1;
     this.rev++;
   }

@@ -4,6 +4,7 @@
   import { qc, heatColor, hasFrameIssue } from "../qcStore.svelte.js";
   import FrameGrid from "./FrameGrid.svelte";
   import SkeletonEditor from "./SkeletonEditor.svelte";
+  import QcChecks from "./QcChecks.svelte";
   import { ui } from "../uiStore.svelte.js";
 
   // Left-edge resize: drag changes the rail width (clamped in the store).
@@ -148,6 +149,9 @@
       {/if}
     </section>
   {/if}
+
+  <!-- Detection checks: toggle each technique; flagged set = union of the enabled ones -->
+  <QcChecks />
 
   <!-- File: one summary line; the full stats table is opt-in -->
   <section class="side-section">
