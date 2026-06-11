@@ -200,6 +200,59 @@ class QCStore {
     const worst = this.#frameWorst.get(`${this.#videoIdx(item.video)}:${item.frameIdx}`);
     return worst == null ? null : this.instanceIssue(item, worst);
   }
+  /** Index of the worst-scoring instance in a frame, or -1. */
+  frameWorstInstance(item) {
+    this.rev;
+    if (!item) return -1;
+    return this.#frameWorst.get(`${this.#videoIdx(item.video)}:${item.frameIdx}`) ?? -1;
+  }
+
+  /**
+   * The faulty location to zoom to for an instance: the spatial worst node, plus an adjacent
+   * node when that skeleton-edge neighbour is ALSO a spatial outlier (a faulty node-pair).
+   * Returns { nodes:[..], primary, box:{x,y,w,h} } in image coords, or null.
+   */
+  faultyTarget(item, instIdx) {
+    this.rev;
+    if (!item || !this.checks.spatial) return null;
+    const key = `${this.#videoIdx(item.video)}:${item.frameIdx}:${instIdx}`;
+    const wn = this.#worstNodes.get(key);
+    if (wn == null || wn < 0) return null;
+    const pts = item.lf?.instances?.[instIdx]?.points;
+    const p0 = pts?.[wn]?.xy;
+    if (!p0 || Number.isNaN(p0[0])) return null;
+
+    const xs = [p0[0]];
+    const ys = [p0[1]];
+    const nodes = [wn];
+    const ns = this.#nodeScores.get(key);
+    const sk = store.skeleton;
+    if (ns && sk) {
+      // an adjacent node that is itself a spatial outlier -> a faulty node-pair (edge)
+      let partner = -1;
+      let bestM = this.spatialThreshold;
+      for (const e of sk.edges ?? []) {
+        const a = sk.index(e.source?.name ?? e.source);
+        const b = sk.index(e.destination?.name ?? e.destination);
+        const other = a === wn ? b : b === wn ? a : -1;
+        if (other < 0) continue;
+        const m = ns[other];
+        if (m != null && !Number.isNaN(m) && m >= bestM) {
+          bestM = m;
+          partner = other;
+        }
+      }
+      const p1 = partner >= 0 ? pts?.[partner]?.xy : null;
+      if (p1 && !Number.isNaN(p1[0])) {
+        nodes.push(partner);
+        xs.push(p1[0]);
+        ys.push(p1[1]);
+      }
+    }
+    const minx = Math.min(...xs);
+    const miny = Math.min(...ys);
+    return { nodes, primary: wn, box: { x: minx, y: miny, w: Math.max(...xs) - minx, h: Math.max(...ys) - miny } };
+  }
 
   async run() {
     if (!store.labels || this.status === "running") return;

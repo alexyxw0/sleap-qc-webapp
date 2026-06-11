@@ -118,6 +118,25 @@
     });
   });
 
+  // (C) "Zoom to faulty node" — the sidebar requests an image-space box; compute the zoom/pan
+  // that frames it (with a little context) and apply it once.
+  $effect(() => {
+    const box = view.focusBox;
+    if (!box || !vpW || !vpH) return;
+    const dims = frameDims(store.current, store.frameImage);
+    const fitCss = Math.min(vpW / dims.w, vpH / dims.h);
+    const margin = 36; // image px of context around the box
+    const bw = box.w + 2 * margin;
+    const bh = box.h + 2 * margin;
+    const cx = box.x + box.w / 2;
+    const cy = box.y + box.h / 2;
+    const fill = 0.6; // the box should fill ~60% of the viewport
+    let z = Math.min((vpW * fill) / (bw * fitCss), (vpH * fill) / (bh * fitCss));
+    z = Math.max(2.5, Math.min(6, z));
+    view.applyFocus(z, fitCss * z * (dims.w / 2 - cx), fitCss * z * (dims.h / 2 - cy));
+    view.clearFocus();
+  });
+
   // Clear selection when navigating to another frame.
   $effect(() => {
     void store.index;

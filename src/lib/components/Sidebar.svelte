@@ -1,11 +1,21 @@
 <script>
   import { store } from "../labelsStore.svelte.js";
   import { edit } from "../editStore.svelte.js";
+  import { view } from "../viewStore.svelte.js";
   import { qc, heatColor, hasFrameIssue } from "../qcStore.svelte.js";
   import FrameGrid from "./FrameGrid.svelte";
   import SkeletonEditor from "./SkeletonEditor.svelte";
   import QcChecks from "./QcChecks.svelte";
   import { ui } from "../uiStore.svelte.js";
+
+  // Click a flagged problem -> select its faulty node(s) and zoom the canvas to them.
+  function focusFaulty(instIdx) {
+    const item = store.current;
+    const t = qc.faultyTarget(item, instIdx);
+    if (!t) return;
+    edit.select(instIdx, t.primary);
+    view.requestFocus(t.box);
+  }
 
   // Left-edge resize: drag changes the rail width (clamped in the store).
   function startResize(e) {
@@ -126,13 +136,23 @@
         {#if fs != null}
           <span class="qchip" style:background={heatColor(fs)}>{fs.toFixed(2)}</span>
         {/if}
-        <span class="verdict" class:flagged>
-          {#if flagged}
-            {ti?.issue ?? "frame issue"}{ti?.worstNodeName ? ` · ${ti.worstNodeName}` : ""}
-          {:else}
-            looks ok
-          {/if}
-        </span>
+        {#if flagged && ti?.worstNode >= 0}
+          <button
+            class="verdict flagged faulty"
+            onclick={() => focusFaulty(qc.frameWorstInstance(item))}
+            title="Zoom to the faulty node"
+          >
+            {ti.issue ?? "frame issue"} · {ti.worstNodeName}<span class="zico">⤢</span>
+          </button>
+        {:else}
+          <span class="verdict" class:flagged>
+            {#if flagged}
+              {ti?.issue ?? "frame issue"}{ti?.worstNodeName ? ` · ${ti.worstNodeName}` : ""}
+            {:else}
+              looks ok
+            {/if}
+          </span>
+        {/if}
         {#if qc.hasConfidence}
           {@const mc = qc.frameMinConfidence(item)}
           {#if mc != null && mc <= 1 - qc.uncThreshold}
@@ -216,12 +236,13 @@
           </div>
           {#if qs != null && qs >= qc.threshold}
             {@const ii = qc.instanceIssue(item, inst.i)}
-            <div class="qcissue">
-              {ii?.issue}{ii?.worstNodeName ? ` · ${ii.worstNodeName}` : ""}
-              {#if ii?.lowConfidence}
-                <span class="lowconf">· low conf: {ii.leastConfNodeName} ({ii.leastConfScore?.toFixed(2)})</span>
-              {/if}
-            </div>
+            {#if ii?.worstNode >= 0}
+              <button class="qcissue faulty" onclick={() => focusFaulty(inst.i)} title="Zoom to the faulty node">
+                {ii.issue} · {ii.worstNodeName}<span class="zico">⤢</span>
+              </button>
+            {:else}
+              <div class="qcissue">{ii?.issue}{ii?.worstNodeName ? ` · ${ii.worstNodeName}` : ""}</div>
+            {/if}
           {/if}
           {#if open}
             <div class="pts">
@@ -539,6 +560,32 @@
   }
   .lowconf {
     color: var(--warn);
+  }
+  /* a flagged problem that is clickable to zoom in on its faulty node(s) */
+  .faulty {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .faulty:hover {
+    text-decoration: underline;
+  }
+  .zico {
+    opacity: 0.5;
+    font-size: 0.85em;
+  }
+  .faulty:hover .zico {
+    opacity: 1;
+    color: var(--accent);
   }
   .pts {
     display: grid;
