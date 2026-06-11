@@ -150,7 +150,7 @@
     inset: 0;
     background: rgba(4, 6, 10, 0.55);
     backdrop-filter: blur(3px);
-    z-index: 40;
+    z-index: 400; /* above the recency-layered islands (≤380) */
     animation: fade-up 0.15s var(--ease) both;
   }
   .palette {
@@ -159,19 +159,20 @@
     left: 50%;
     transform: translateX(-50%);
     width: min(560px, 92vw);
-    z-index: 41;
-    background: linear-gradient(180deg, rgba(22, 29, 41, 0.97), rgba(12, 16, 24, 0.97));
-    border: 1px solid #2a3850;
-    border-radius: 14px;
-    box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(125, 211, 252, 0.07),
-      0 0 60px -20px rgba(125, 211, 252, 0.25);
+    z-index: 401;
+    background: rgba(13, 15, 18, 0.92);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    box-shadow: var(--shadow);
     overflow: hidden;
-    animation: palette-in 0.18s var(--ease) both;
+    animation: palette-in 0.16s var(--ease) both;
   }
   @keyframes palette-in {
     from {
       opacity: 0;
-      transform: translateX(-50%) translateY(-10px) scale(0.985);
+      transform: translateX(-50%) translateY(-10px);
     }
     to {
       opacity: 1;
@@ -205,10 +206,10 @@
     font-family: inherit;
     font-size: 0.66rem;
     color: var(--muted);
-    background: rgba(255, 255, 255, 0.05);
+    background: rgba(255, 255, 255, 0.04);
     border: 1px solid var(--border);
     border-bottom-width: 2px;
-    border-radius: 5px;
+    border-radius: var(--r-xs);
     padding: 0.1rem 0.4rem;
     white-space: nowrap;
   }
@@ -227,17 +228,17 @@
     text-align: left;
     background: none;
     border: none;
-    border-radius: 9px;
-    color: #cdd7e3;
+    border-radius: var(--r-xs);
+    color: var(--muted);
     font: inherit;
-    font-size: 0.88rem;
+    font-size: 0.82rem;
     padding: 0.5rem 0.65rem;
     cursor: pointer;
   }
   .list button.sel {
-    background: linear-gradient(90deg, rgba(125, 211, 252, 0.14), rgba(129, 140, 248, 0.1));
-    color: #fff;
-    box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.22);
+    background: rgba(95, 217, 242, 0.07);
+    color: var(--text);
+    box-shadow: inset 2px 0 0 var(--accent);
   }
   .icon {
     width: 1.4rem;

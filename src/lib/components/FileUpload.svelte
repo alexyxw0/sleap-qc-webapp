@@ -14,7 +14,7 @@
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     let raf = 0;
 
-    const COLORS = ["#7dd3fc", "#a78bfa", "#86efac", "#fda4af", "#f3c56c"];
+    const COLORS = ["#5fd9f2", "#97a1aa", "#5fd9f2", "#7ce38b", "#97a1aa"];
     const rand = (a, b) => a + Math.random() * (b - a);
 
     // Each creature: a hub node with limbs radiating off it (star-ish skeleton).
@@ -192,25 +192,18 @@
   {:else}
     <!-- Step 1 — choose the labels file. -->
     <div class="inner hero">
-      <svg class="biglogo" viewBox="0 0 28 28" aria-hidden="true">
-        <defs>
-          <linearGradient id="hg" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stop-color="#7dd3fc" />
-            <stop offset="1" stop-color="#818cf8" />
-          </linearGradient>
-        </defs>
-        <rect x="1" y="1" width="26" height="26" rx="8" fill="url(#hg)" />
-        <g stroke="#0a0f18" stroke-width="1.6" stroke-linecap="round" opacity="0.92">
-          <line x1="9" y1="9" x2="14" y2="14" />
-          <line x1="14" y1="14" x2="11" y2="20" />
-          <line x1="14" y1="14" x2="20" y2="11" />
+      <svg class="biglogo" viewBox="0 0 24 24" aria-hidden="true">
+        <g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square">
+          <path d="M3 7.5V3h4.5M16.5 3H21v4.5M21 16.5V21h-4.5M7.5 21H3v-4.5" />
+          <path d="M12 12 8 16.5M12 12l4.5-2.5" opacity="0.7" />
         </g>
-        <g fill="#0a0f18">
-          <circle cx="9" cy="9" r="2.1" /><circle cx="14" cy="14" r="2.3" />
-          <circle cx="11" cy="20" r="2.1" /><circle cx="20" cy="11" r="2.1" />
+        <g fill="currentColor">
+          <circle cx="12" cy="12" r="2" />
+          <circle cx="8" cy="16.5" r="1.3" />
+          <circle cx="16.5" cy="9.5" r="1.3" />
         </g>
       </svg>
-      <h1>SLEAP<span>QC</span></h1>
+      <h1>SLEAP<span>·QC</span></h1>
       <p class="tag">Pose-estimation proofreading, right in your browser.</p>
 
       <label class="btn">
@@ -254,53 +247,48 @@
   }
   .dropzone.dragging .inner {
     border-color: var(--accent);
-    background: #131b27;
-    box-shadow: var(--shadow), 0 0 40px -8px rgba(125, 211, 252, 0.35);
+    background: var(--surface-2);
     transform: translateY(-2px);
   }
   .inner {
     position: relative;
     width: min(540px, 92vw);
-    border: 1.5px dashed #2b3a4e;
-    border-radius: 18px;
+    border: 1px dashed #39424b;
+    border-radius: 4px;
     padding: 3rem 2.2rem;
     text-align: center;
-    background: linear-gradient(180deg, rgba(20, 26, 37, 0.85), rgba(11, 15, 22, 0.85));
-    box-shadow: var(--shadow);
-    transition: border-color 0.2s var(--ease), background 0.2s, box-shadow 0.2s, transform 0.2s;
-    animation: fade-up 0.5s var(--ease) both;
+    background: rgba(16, 19, 22, 0.92);
+    transition: border-color 0.2s var(--ease), background 0.2s, transform 0.2s;
+    animation: fade-up 0.4s var(--ease) both;
   }
   .biglogo {
-    width: 64px;
-    height: 64px;
-    margin-bottom: 1rem;
-    filter: drop-shadow(0 10px 24px rgba(125, 211, 252, 0.45));
+    width: 56px;
+    height: 56px;
+    margin-bottom: 1.1rem;
+    color: var(--accent);
   }
   .step {
-    font-size: 0.72rem;
+    font-size: 0.66rem;
     text-transform: uppercase;
-    letter-spacing: 0.1em;
-    font-weight: 700;
+    letter-spacing: 0.16em;
+    font-weight: 600;
     color: var(--accent);
     margin-bottom: 0.5rem;
   }
   h1 {
-    margin: 0 0 0.4rem;
-    font-size: 2.3rem;
-    font-weight: 800;
-    letter-spacing: -0.03em;
+    margin: 0 0 0.5rem;
+    font-size: 1.7rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
   }
   h1 span {
-    background: var(--accent-grad);
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-    margin-left: 2px;
+    color: var(--accent);
   }
   .tag {
     margin: 0 0 1.8rem;
     color: var(--muted);
-    font-size: 1rem;
+    font-size: 0.82rem;
+    letter-spacing: 0.02em;
   }
   .lead {
     margin: 0 0 1.5rem;
@@ -321,17 +309,18 @@
   }
   .btn {
     display: inline-block;
-    background: var(--accent-grad);
-    color: #06121f;
+    background: var(--accent);
+    color: #04181d;
     font-weight: 700;
-    padding: 0.7rem 1.4rem;
-    border-radius: 10px;
+    font-size: 0.8rem;
+    letter-spacing: 0.05em;
+    padding: 0.65rem 1.3rem;
+    border-radius: var(--r-xs);
     cursor: pointer;
-    box-shadow: var(--glow);
     transition: filter 0.12s, transform 0.12s;
   }
   .btn:hover {
-    filter: brightness(1.07);
+    filter: brightness(1.1);
     transform: translateY(-1px);
   }
   .hint {
@@ -355,11 +344,11 @@
     list-style: none;
     text-align: left;
     color: var(--muted);
-    font-size: 0.82rem;
-    line-height: 1.7;
-    background: rgba(0, 0, 0, 0.18);
+    font-size: 0.74rem;
+    line-height: 1.8;
+    background: rgba(0, 0, 0, 0.2);
     border: 1px solid var(--border-soft);
-    border-radius: 10px;
+    border-radius: var(--r-xs);
   }
   .notes li {
     display: flex;

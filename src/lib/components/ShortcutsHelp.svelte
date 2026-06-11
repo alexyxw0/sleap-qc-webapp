@@ -77,7 +77,7 @@
     inset: 0;
     background: rgba(4, 6, 10, 0.55);
     backdrop-filter: blur(3px);
-    z-index: 40;
+    z-index: 400; /* above the recency-layered islands (≤380) */
     animation: fade-up 0.15s var(--ease) both;
   }
   .sheet {
@@ -85,20 +85,22 @@
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    z-index: 41;
+    z-index: 401;
     width: min(680px, 94vw);
-    background: linear-gradient(180deg, rgba(22, 29, 41, 0.97), rgba(12, 16, 24, 0.97));
-    border: 1px solid #2a3850;
-    border-radius: 16px;
+    background: rgba(13, 15, 18, 0.92);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+    border: 1px solid var(--border);
+    border-radius: 4px;
     padding: 1.2rem 1.4rem 1.4rem;
-    box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.85), 0 0 60px -20px rgba(125, 211, 252, 0.2);
+    box-shadow: var(--shadow);
     /* fade-up would fill transform:none and clobber the centering translate */
-    animation: sheet-in 0.18s var(--ease) both;
+    animation: sheet-in 0.16s var(--ease) both;
   }
   @keyframes sheet-in {
     from {
       opacity: 0;
-      transform: translate(-50%, calc(-50% + 10px)) scale(0.985);
+      transform: translate(-50%, calc(-50% + 8px));
     }
     to {
       opacity: 1;
@@ -113,8 +115,10 @@
   }
   h2 {
     margin: 0;
-    font-size: 1.05rem;
-    letter-spacing: -0.01em;
+    font-size: 0.8rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
   }
   .x {
     background: none;
@@ -136,9 +140,10 @@
   }
   h3 {
     margin: 0 0 0.5rem;
-    font-size: 0.7rem;
+    font-size: 0.64rem;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.09em;
+    letter-spacing: 0.14em;
     color: var(--accent);
   }
   dl {
@@ -158,12 +163,12 @@
   }
   kbd {
     font-family: inherit;
-    font-size: 0.68rem;
-    color: #cdd7e3;
-    background: rgba(255, 255, 255, 0.05);
+    font-size: 0.66rem;
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.04);
     border: 1px solid var(--border);
     border-bottom-width: 2px;
-    border-radius: 5px;
+    border-radius: var(--r-xs);
     padding: 0.12rem 0.42rem;
     white-space: nowrap;
   }

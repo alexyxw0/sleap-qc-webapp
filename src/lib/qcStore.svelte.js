@@ -19,6 +19,8 @@ class QCStore {
 
   #instanceScores = new Map(); // "v:f:i" -> score
   #contributions = new Map(); // "v:f:i" -> { feature: rawValue }
+  #nodeScores = new Map(); // "v:f:i" -> per-node spatial Mahalanobis[]
+  #worstNodes = new Map(); // "v:f:i" -> worst (most out-of-place) node index
   #frameResults = new Map(); // "v:f" -> FrameQC
   #frameScore = new Map(); // "v:f" -> max instance score
   #frameWorst = new Map(); // "v:f" -> instIdx of the worst instance
@@ -61,9 +63,9 @@ class QCStore {
     return (s != null && s >= this.threshold) || hasFrameIssue(fq);
   }
 
-  // --- Stable build: the confidence / per-node spatial channels are NOT present here
-  //     (this build runs ZScore QC only). These inert accessors let the shared UI render
-  //     without those features (their blocks are gated on hasConfidence / yield no rings). ---
+  // --- Stable build: per-node SPATIAL prior is present (drives the red worst-node ring +
+  //     the node named in the issue description). The CONFIDENCE channel is NOT — these
+  //     inert accessors keep the shared UI's confidence blocks gated off. ---
   get hasConfidence() {
     return false;
   }
@@ -73,11 +75,14 @@ class QCStore {
   instanceUncertainty() {
     return null;
   }
-  worstNodeFor() {
-    return -1;
-  }
   uncertainNodeFor() {
     return -1;
+  }
+  /** Worst (most spatially-anomalous) node index for an instance, or -1. */
+  worstNodeFor(item, instIdx) {
+    this.rev;
+    if (!item) return -1;
+    return this.#worstNodes.get(`${this.#videoIdx(item.video)}:${item.frameIdx}:${instIdx}`) ?? -1;
   }
 
   /**
@@ -101,14 +106,25 @@ class QCStore {
     if (!item) return null;
     return this.#instanceScores.get(`${this.#videoIdx(item.video)}:${item.frameIdx}:${instIdx}`) ?? null;
   }
-  /** { score, issue, feature, confidence } for an instance, or null. */
+  /** { score, issue, feature, confidence, worstNode, worstNodeName, worstNodeDist } or null. */
   instanceIssue(item, instIdx) {
     this.rev;
     if (!item) return null;
     const key = `${this.#videoIdx(item.video)}:${item.frameIdx}:${instIdx}`;
     const score = this.#instanceScores.get(key);
     if (score == null) return null;
-    return { score, confidence: confidence(score), ...topIssue(this.#contributions.get(key)) };
+    const wn = this.#worstNodes.get(key);
+    const ns = this.#nodeScores.get(key);
+    const worstNodeName =
+      wn != null && wn >= 0 ? store.skeleton?.nodeNames?.[wn] ?? `node ${wn}` : null;
+    return {
+      score,
+      confidence: confidence(score),
+      ...topIssue(this.#contributions.get(key)),
+      worstNode: wn ?? -1,
+      worstNodeName,
+      worstNodeDist: wn != null && wn >= 0 && ns ? ns[wn] : null,
+    };
   }
   /** The issue of the worst-scoring instance in a frame, or null. */
   frameTopIssue(item) {
@@ -125,9 +141,13 @@ class QCStore {
     this.rev++;
     await new Promise((r) => setTimeout(r, 0)); // let "Running…" paint before the blocking compute
     try {
-      const out = fitAndScoreLabels(store.labels, { config: makeQCConfig({ useGmm: false }) });
+      const out = fitAndScoreLabels(store.labels, {
+        config: makeQCConfig({ useGmm: false, spatialPrior: true }),
+      });
       this.#instanceScores = out.instanceScores;
       this.#contributions = out.contributions;
+      this.#nodeScores = out.nodeScores ?? new Map();
+      this.#worstNodes = out.worstNodes ?? new Map();
       this.#frameResults = out.frameResults;
       this.#frameScore = new Map();
       this.#frameWorst = new Map();
@@ -162,6 +182,8 @@ class QCStore {
     this.error = null;
     this.#instanceScores = new Map();
     this.#contributions = new Map();
+    this.#nodeScores = new Map();
+    this.#worstNodes = new Map();
     this.#frameResults = new Map();
     this.#frameScore = new Map();
     this.#frameWorst = new Map();

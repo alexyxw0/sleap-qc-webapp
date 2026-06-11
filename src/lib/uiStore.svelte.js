@@ -8,6 +8,16 @@ class UIStore {
   paletteOpen = $state(false);
   helpOpen = $state(false);
 
+  // panel sizes (resizable, clamped)
+  railW = $state(312);
+
+  static RAIL_MIN = 280;
+  static RAIL_MAX = 440;
+
+  setRailW(w) {
+    this.railW = Math.round(Math.max(UIStore.RAIL_MIN, Math.min(UIStore.RAIL_MAX, w)));
+  }
+
   get overlayOpen() {
     return this.paletteOpen || this.helpOpen;
   }

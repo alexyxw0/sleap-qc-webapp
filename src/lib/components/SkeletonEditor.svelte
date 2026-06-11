@@ -90,17 +90,17 @@
   .head {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     width: 100%;
     background: none;
     border: none;
     padding: 0;
     cursor: pointer;
     color: inherit;
-    gap: 0.5rem;
+    gap: 0.55rem;
   }
   .head h3 {
     margin: 0;
+    flex: 1;
   }
   .meta {
     font-size: 0.72rem;
@@ -138,35 +138,36 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    font-size: 0.8rem;
-    background: #141b25;
-    border: 1px solid #1d2632;
-    border-radius: 6px;
+    font-size: 0.76rem;
+    background: var(--surface-2);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--r-xs);
     padding: 0.15rem 0.45rem;
   }
   input,
   select {
     flex: 1;
     min-width: 0;
-    background: #0c1118;
-    border: 1px solid #2a3442;
-    color: #e7edf4;
-    border-radius: 6px;
+    background: rgba(8, 10, 12, 0.7);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: var(--r-xs);
     padding: 0.25rem 0.4rem;
-    font-size: 0.8rem;
+    font-size: 0.76rem;
   }
   button {
-    background: #1a212c;
-    color: #cdd7e3;
-    border: 1px solid #2a3442;
-    border-radius: 6px;
+    background: var(--surface-2);
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: var(--r-xs);
     padding: 0.25rem 0.5rem;
-    font-size: 0.78rem;
+    font-size: 0.74rem;
     cursor: pointer;
     white-space: nowrap;
   }
   button:hover:not(:disabled) {
-    background: #222b38;
+    background: var(--surface-3);
+    color: var(--text);
   }
   button:disabled {
     opacity: 0.4;

@@ -4,6 +4,23 @@
   import { qc, heatColor, hasFrameIssue } from "../qcStore.svelte.js";
   import FrameGrid from "./FrameGrid.svelte";
   import SkeletonEditor from "./SkeletonEditor.svelte";
+  import { ui } from "../uiStore.svelte.js";
+
+  // Left-edge resize: drag changes the rail width (clamped in the store).
+  function startResize(e) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const sx = e.clientX;
+    const w0 = ui.railW;
+    const move = (ev) => ui.setRailW(w0 + (sx - ev.clientX));
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
 
   const PALETTE = [
     "#f3c56c", "#7dd3fc", "#a7f3d0", "#fda4af", "#c4b5fd",
@@ -77,7 +94,9 @@
   });
 </script>
 
-<aside class="sidebar">
+<aside class="sidebar" style:width="{ui.railW}px" style:flex="0 0 {ui.railW}px">
+  <div class="rz" onpointerdown={startResize} title="Drag to resize"></div>
+  <div class="scroll">
   <header class="head">
     <span class="filedot"></span>
     <div class="title" title={store.fileName}>{store.fileName}</div>
@@ -226,20 +245,51 @@
       <p class="muted">No instances on this frame. Use ＋ Instance to add one.</p>
     {/if}
   </section>
+  </div>
 </aside>
 
 <style>
-  /* One continuous flat panel: sections divided by hairlines, no per-card chrome. */
+  /* Right rail: docked inspector, one tone above the well, resizable from its
+     left edge. The handle sits outside the inner scroller so it never scrolls away. */
   .sidebar {
-    width: 320px;
-    flex: 0 0 320px;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+  }
+  .scroll {
+    flex: 1;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     overflow-y: auto;
-    background: rgba(13, 18, 27, 0.6);
-    border: 1px solid var(--border);
-    border-radius: var(--r);
-    animation: fade-up 0.35s var(--ease) both;
+    overflow-x: hidden;
+  }
+  .rz {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 7px;
+    cursor: ew-resize;
+    z-index: 3;
+  }
+  .rz::after {
+    content: "";
+    position: absolute;
+    left: 2px;
+    top: 50%;
+    height: 44px;
+    width: 3px;
+    transform: translateY(-50%);
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.18);
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  .rz:hover::after {
+    opacity: 1;
   }
   .head {
     display: flex;
@@ -248,21 +298,19 @@
     padding: 0.7rem 0.95rem;
   }
   .filedot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
+    width: 6px;
+    height: 6px;
     background: var(--good);
-    box-shadow: 0 0 8px 1px rgba(134, 239, 172, 0.5);
     flex: none;
   }
   .title {
     flex: 1;
     font-weight: 600;
-    font-size: 0.88rem;
+    font-size: 0.8rem;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    letter-spacing: -0.01em;
+    letter-spacing: 0.02em;
   }
   .ghost {
     background: none;
@@ -310,11 +358,11 @@
   .fhead {
     display: flex;
     align-items: baseline;
-    justify-content: space-between;
-    gap: 0.5rem;
+    gap: 0.55rem;
   }
   .fhead .side-h {
     margin: 0;
+    flex: 1;
   }
   .more {
     background: none;
@@ -382,15 +430,14 @@
     font-variant-numeric: tabular-nums;
   }
   .qchip {
-    color: #06121f;
-    font-weight: 800;
-    border-radius: 999px;
-    padding: 0.08rem 0.45rem;
-    font-size: 0.74rem;
-    font-variant-numeric: tabular-nums;
+    color: #04181d;
+    font-weight: 700;
+    border-radius: var(--r-xs);
+    padding: 0.06rem 0.4rem;
+    font-size: 0.72rem;
   }
   .qchip.sm {
-    font-size: 0.68rem;
+    font-size: 0.66rem;
     padding: 0.02rem 0.28rem;
   }
   .issues {
@@ -403,27 +450,27 @@
   .ihead {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
+    gap: 0.55rem;
     margin-bottom: 0.4rem;
   }
   .ihead .side-h {
     margin: 0;
+    flex: 1;
   }
   .addbtn {
     background: none;
     border: 1px solid var(--border);
     color: var(--accent);
-    border-radius: 6px;
-    padding: 0.18rem 0.5rem;
-    font-size: 0.74rem;
+    border-radius: var(--r-xs);
+    padding: 0.16rem 0.5rem;
+    font-size: 0.7rem;
     cursor: pointer;
     white-space: nowrap;
     transition: background 0.12s, border-color 0.12s;
   }
   .addbtn:hover {
-    background: rgba(125, 211, 252, 0.08);
-    border-color: #2c4a66;
+    background: rgba(95, 217, 242, 0.07);
+    border-color: rgba(95, 217, 242, 0.4);
   }
   .inst {
     border-top: 1px solid var(--border-soft);
@@ -434,8 +481,8 @@
     border-top: none;
   }
   .inst.sel {
-    background: rgba(125, 211, 252, 0.05);
-    box-shadow: inset 0 0 0 1px #2c4a66;
+    background: rgba(95, 217, 242, 0.05);
+    box-shadow: inset 0 0 0 1px rgba(95, 217, 242, 0.3);
   }
   .inst-head {
     font-size: 0.8rem;
@@ -515,7 +562,7 @@
   }
   .pt.psel {
     border-color: var(--accent);
-    background: rgba(125, 211, 252, 0.07);
+    background: rgba(95, 217, 242, 0.07);
   }
   .pname {
     color: var(--muted);

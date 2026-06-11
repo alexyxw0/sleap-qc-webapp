@@ -214,11 +214,11 @@
   .head {
     display: flex;
     align-items: baseline;
-    justify-content: space-between;
-    gap: 0.5rem;
+    gap: 0.55rem;
   }
   .head .side-h {
     margin: 0;
+    flex: 1;
   }
   .filters {
     display: flex;
@@ -228,10 +228,10 @@
     background: none;
     border: none;
     padding: 0;
-    font-size: 0.7rem;
+    font-size: 0.64rem;
+    letter-spacing: 0.06em;
     color: var(--dim);
     cursor: pointer;
-    font-variant-numeric: tabular-nums;
     transition: color 0.12s;
   }
   .filters button:hover {
@@ -251,9 +251,9 @@
     height: 190px;
     overflow-y: auto;
     overflow-x: hidden;
-    background: rgba(7, 10, 16, 0.6);
+    background: rgba(8, 10, 12, 0.7);
     border: 1px solid var(--border-soft);
-    border-radius: var(--r-sm);
+    border-radius: var(--r-xs);
     padding: 6px;
   }
   .canvas {
@@ -264,21 +264,21 @@
     position: absolute;
     box-sizing: border-box;
     border: 1px solid transparent;
-    background: rgba(255, 255, 255, 0.045);
-    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 1px;
     padding: 0;
     cursor: pointer;
     transition: border-color 0.1s, transform 0.1s;
   }
   .cell.labeled {
-    background: rgba(125, 211, 252, 0.16);
+    background: rgba(95, 217, 242, 0.15);
   }
   .cell.modified {
-    box-shadow: inset 0 -2px 0 0 rgba(251, 191, 36, 0.7);
+    box-shadow: inset 0 -2px 0 0 rgba(243, 195, 78, 0.7);
   }
   .cell:hover {
     border-color: var(--accent);
-    transform: scale(1.18);
+    transform: scale(1.2);
     z-index: 2;
   }
   .cell.current {
@@ -287,20 +287,20 @@
     z-index: 1;
   }
   .jump {
-    font-size: 0.72rem;
+    font-size: 0.66rem;
+    letter-spacing: 0.06em;
     color: var(--dim);
     white-space: nowrap;
     align-self: flex-end;
   }
   .jump input {
     width: 4.2em;
-    background: rgba(7, 10, 16, 0.6);
+    background: rgba(8, 10, 12, 0.7);
     border: 1px solid var(--border);
     color: var(--text);
     border-radius: var(--r-xs);
     padding: 0.12rem 0.35rem;
-    font-size: 0.74rem;
-    font-variant-numeric: tabular-nums;
+    font-size: 0.72rem;
     transition: border-color 0.12s;
   }
   .jump input:focus {

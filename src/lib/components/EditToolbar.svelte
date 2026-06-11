@@ -12,27 +12,19 @@
 
 <div class="toolbar">
   <div class="brand">
-    <svg class="logo" viewBox="0 0 28 28" aria-hidden="true">
-      <defs>
-        <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="#7dd3fc" />
-          <stop offset="1" stop-color="#818cf8" />
-        </linearGradient>
-      </defs>
-      <rect x="1" y="1" width="26" height="26" rx="8" fill="url(#lg)" />
-      <g stroke="#0a0f18" stroke-width="1.6" stroke-linecap="round" opacity="0.92">
-        <line x1="9" y1="9" x2="14" y2="14" />
-        <line x1="14" y1="14" x2="11" y2="20" />
-        <line x1="14" y1="14" x2="20" y2="11" />
+    <svg class="logo" viewBox="0 0 24 24" aria-hidden="true">
+      <!-- viewfinder reticle around a pose node -->
+      <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square">
+        <path d="M3 7.5V3h4.5M16.5 3H21v4.5M21 16.5V21h-4.5M7.5 21H3v-4.5" />
+        <path d="M12 12 8 16.5M12 12l4.5-2.5" opacity="0.7" />
       </g>
-      <g fill="#0a0f18">
-        <circle cx="9" cy="9" r="2.1" />
-        <circle cx="14" cy="14" r="2.3" />
-        <circle cx="11" cy="20" r="2.1" />
-        <circle cx="20" cy="11" r="2.1" />
+      <g fill="currentColor">
+        <circle cx="12" cy="12" r="2" />
+        <circle cx="8" cy="16.5" r="1.3" />
+        <circle cx="16.5" cy="9.5" r="1.3" />
       </g>
     </svg>
-    <span class="wordmark">SLEAP<b>QC</b></span>
+    <span class="wordmark">SLEAP<b>·QC</b></span>
   </div>
 
   <div class="sep"></div>
@@ -70,7 +62,7 @@
   </button>
   {#if qc.hasResults}
     <span class="qcstat" class:stale={qc.stale} title={qc.stale ? "Edited since the last run — results may be stale" : ""}>
-      {qc.flaggedFrameCount} flagged{qc.stale ? " ·" : ""}
+      FLAGGED <b>{qc.flaggedFrameCount}</b>{qc.stale ? " ·" : ""}
     </span>
     {#if qc.flaggedFrameCount > 0}
       <button class="ic seek" onclick={() => seekFlagged(-1)} title="Previous flagged frame (P)">‹</button>
@@ -89,7 +81,7 @@
 
   {#if edit.dirty}<span class="dot" title="Unsaved changes"></span>{/if}
   <button class="primary" onclick={() => edit.save({ embed: false })} disabled={edit.saving} title="Download edited labels as .slp">
-    {edit.saving ? "Saving…" : "Save .slp"}
+    {edit.saving ? "SAVING…" : "SAVE .SLP"}
   </button>
   {#if store.hasEmbedded}
     <button class="ghost" onclick={() => edit.save({ embed: true })} disabled={edit.saving} title="Download as .pkg.slp with embedded frames">
@@ -103,35 +95,31 @@
     display: flex;
     align-items: center;
     gap: 0.3rem;
-    padding: 0.45rem 0.6rem;
-    background: rgba(13, 18, 27, 0.6);
-    border: 1px solid var(--border);
-    border-radius: var(--r);
+    padding: 0.45rem 0.75rem;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
   }
 
   .brand {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.55rem;
     padding: 0 0.3rem 0 0.1rem;
   }
   .logo {
-    width: 24px;
-    height: 24px;
+    width: 20px;
+    height: 20px;
+    color: var(--accent);
   }
   .wordmark {
     font-weight: 700;
-    font-size: 0.9rem;
-    letter-spacing: 0.01em;
+    font-size: 0.84rem;
+    letter-spacing: 0.08em;
     color: var(--text);
   }
   .wordmark b {
-    background: var(--accent-grad);
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-    font-weight: 800;
-    margin-left: 1px;
+    color: var(--accent);
+    font-weight: 700;
   }
 
   .sep {
@@ -163,8 +151,8 @@
     height: 1.9rem;
     background: none;
     border: none;
-    border-radius: 7px;
-    color: #9fb0c3;
+    border-radius: var(--r-xs);
+    color: var(--muted);
     transition: background 0.12s, color 0.12s;
   }
   .ic svg {
@@ -192,12 +180,13 @@
   }
 
   .pill {
-    background: rgba(125, 211, 252, 0.1);
+    background: rgba(95, 217, 242, 0.08);
     color: var(--accent);
-    border-radius: 999px;
-    padding: 0.12rem 0.55rem;
+    border: 1px solid rgba(95, 217, 242, 0.3);
+    border-radius: var(--r-xs);
+    padding: 0.1rem 0.5rem;
     font-weight: 600;
-    font-size: 0.72rem;
+    font-size: 0.7rem;
     margin-left: 0.3rem;
     white-space: nowrap;
   }
@@ -207,25 +196,34 @@
     align-items: center;
     gap: 0.35rem;
     background: none;
-    border: 1px solid rgba(167, 139, 250, 0.35);
-    color: var(--accent-2);
-    border-radius: 8px;
-    padding: 0.32rem 0.7rem;
-    font-size: 0.8rem;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: var(--r-xs);
+    padding: 0.3rem 0.7rem;
+    font-size: 0.72rem;
     font-weight: 600;
-    transition: background 0.12s, border-color 0.12s;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
   }
   .run:hover:not(:disabled) {
-    background: rgba(167, 139, 250, 0.1);
-    border-color: rgba(167, 139, 250, 0.55);
+    color: var(--accent);
+    border-color: rgba(95, 217, 242, 0.45);
+    background: rgba(95, 217, 242, 0.06);
   }
 
   .qcstat {
-    font-size: 0.76rem;
-    color: var(--muted);
+    font-size: 0.66rem;
+    letter-spacing: 0.1em;
+    color: var(--dim);
     white-space: nowrap;
     padding: 0 0.25rem;
-    font-variant-numeric: tabular-nums;
+  }
+  .qcstat b {
+    color: var(--warn);
+    font-weight: 700;
+    font-size: 0.76rem;
+    letter-spacing: 0;
   }
   .qcstat.stale {
     color: var(--warn);
@@ -241,24 +239,23 @@
   }
   .cmdk kbd {
     font-family: inherit;
-    font-size: 0.68rem;
+    font-size: 0.66rem;
     color: var(--muted);
-    background: rgba(255, 255, 255, 0.05);
+    background: rgba(255, 255, 255, 0.04);
     border: 1px solid var(--border);
     border-bottom-width: 2px;
-    border-radius: 5px;
-    padding: 0.14rem 0.45rem;
+    border-radius: var(--r-xs);
+    padding: 0.12rem 0.4rem;
     transition: color 0.12s, border-color 0.12s;
   }
   .cmdk:hover kbd {
     color: var(--accent);
-    border-color: #2c4a66;
+    border-color: rgba(95, 217, 242, 0.4);
   }
 
   .dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
+    width: 7px;
+    height: 7px;
     background: var(--warn);
     margin-right: 0.35rem;
     animation: pulse-soft 2s ease-in-out infinite;
@@ -267,31 +264,32 @@
 
   .primary {
     background: var(--accent);
-    color: #06121f;
+    color: #04181d;
     border: none;
-    border-radius: 8px;
+    border-radius: var(--r-xs);
     padding: 0.34rem 0.8rem;
-    font-size: 0.8rem;
+    font-size: 0.72rem;
     font-weight: 700;
+    letter-spacing: 0.08em;
     transition: filter 0.12s;
   }
   .primary:hover:not(:disabled) {
-    filter: brightness(1.08);
+    filter: brightness(1.1);
   }
   .ghost {
     background: none;
     border: 1px solid var(--border);
     color: var(--muted);
-    border-radius: 8px;
+    border-radius: var(--r-xs);
     padding: 0.32rem 0.7rem;
-    font-size: 0.78rem;
+    font-size: 0.72rem;
     font-weight: 600;
     transition: color 0.12s, border-color 0.12s, background 0.12s;
   }
   .ghost:hover:not(:disabled) {
     color: var(--accent);
-    border-color: #2c4a66;
-    background: rgba(125, 211, 252, 0.06);
+    border-color: rgba(95, 217, 242, 0.4);
+    background: rgba(95, 217, 242, 0.05);
   }
 
   .spin {

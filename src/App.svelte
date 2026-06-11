@@ -51,19 +51,18 @@
 <Toasts />
 
 <style>
+  /* One fused instrument face: the video is framed in its own region, panels meet
+     at hairlines, nothing floats over the footage except the HUD readouts and the
+     review panel. */
   .app {
     height: 100vh;
     display: flex;
     flex-direction: column;
-    gap: 0.85rem;
-    padding: 0.85rem;
-    box-sizing: border-box;
-    animation: fade-up 0.4s var(--ease) both;
+    animation: fade-up 0.3s var(--ease) both;
   }
   .row {
     flex: 1;
     min-height: 0;
     display: flex;
-    gap: 1rem;
   }
 </style>

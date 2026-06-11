@@ -64,7 +64,7 @@
       }
 
       // base lane (uniform height — no waveform)
-      ctx.fillStyle = labeled ? "rgba(125, 211, 252, 0.13)" : "rgba(255, 255, 255, 0.04)";
+      ctx.fillStyle = labeled ? "rgba(95, 217, 242, 0.12)" : "rgba(255, 255, 255, 0.04)";
       ctx.fillRect(x, 0, 1, ch);
 
       // anomaly tint with a knee: scores below ~0.35 render nothing (every labeled
@@ -82,10 +82,42 @@
       }
     }
 
-    // playhead — a thin line, no glow band
+    // graticule: engraved frame ticks at a "nice" step (≈10 majors across the strip)
+    if (count > 1) {
+      const raw = count / 10;
+      const pow = Math.pow(10, Math.floor(Math.log10(raw)));
+      let step = 10 * pow;
+      for (const m of [1, 2, 5, 10]) {
+        if (raw <= m * pow) {
+          step = m * pow;
+          break;
+        }
+      }
+      ctx.fillStyle = "rgba(232, 236, 239, 0.22)";
+      for (let f = 0; f < count; f += step) {
+        const x = Math.round(((f + 0.5) / count) * cw);
+        ctx.fillRect(x, ch * 0.55, dpr, ch * 0.45);
+      }
+      const minor = step / 5;
+      if (minor >= 1 && cw / (count / minor) > 4 * dpr) {
+        ctx.fillStyle = "rgba(232, 236, 239, 0.1)";
+        for (let f = 0; f < count; f += minor) {
+          const x = Math.round(((f + 0.5) / count) * cw);
+          ctx.fillRect(x, ch * 0.78, dpr, ch * 0.22);
+        }
+      }
+    }
+
+    // playhead — a thin line with a notch at the top
     const playX = Math.round(((index + 0.5) / count) * cw);
-    ctx.fillStyle = "rgba(255,255,255,0.9)";
-    ctx.fillRect(playX - dpr, 0, 2 * dpr, ch);
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    ctx.fillRect(playX - dpr / 2, 0, dpr, ch);
+    ctx.beginPath();
+    ctx.moveTo(playX - 3.5 * dpr, 0);
+    ctx.lineTo(playX + 3.5 * dpr, 0);
+    ctx.lineTo(playX, 4 * dpr);
+    ctx.closePath();
+    ctx.fill();
   });
 
   function frameAt(e) {
@@ -156,13 +188,13 @@
   .timeline {
     position: relative;
     flex: 1;
-    height: 22px;
+    height: 24px;
     align-self: center;
     min-width: 0;
+    margin: 0 0.45rem;
     border: 1px solid var(--border);
-    border-radius: 8px;
-    background: rgba(7, 10, 16, 0.8);
-    box-shadow: inset 0 2px 8px -3px rgba(0, 0, 0, 0.7);
+    border-radius: var(--r-xs);
+    background: rgba(8, 10, 12, 0.85);
   }
   canvas {
     display: block;
@@ -170,25 +202,23 @@
     height: 100%;
     cursor: ew-resize;
     touch-action: none;
-    border-radius: 7px; /* the tooltip sits above the bar, so clip the canvas, not the wrap */
+    border-radius: 1px; /* the tooltip sits above the bar, so clip the canvas, not the wrap */
   }
   .tip {
     position: absolute;
     bottom: calc(100% + 7px);
     transform: translateX(-50%);
-    background: rgba(10, 14, 21, 0.95);
+    background: rgba(11, 13, 15, 0.96);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--r-xs);
     padding: 0.28rem 0.55rem;
-    font-size: 0.7rem;
-    line-height: 1.35;
+    font-size: 0.68rem;
+    line-height: 1.4;
     white-space: nowrap;
     pointer-events: none;
     z-index: 5;
-    box-shadow: var(--shadow-sm);
     display: flex;
     flex-direction: column;
-    backdrop-filter: blur(8px);
   }
   .tip .f {
     font-weight: 700;
@@ -204,7 +234,6 @@
   .tip i {
     width: 7px;
     height: 7px;
-    border-radius: 50%;
     display: inline-block;
   }
 </style>

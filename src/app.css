@@ -1,38 +1,36 @@
 :root {
-  /* surfaces */
-  --bg: #070a10;
-  --surface: #0d121b;
-  --surface-2: #131a25;
-  --surface-3: #18212e;
-  --border: #1d2736;
-  --border-soft: #161e2a;
+  /* surfaces — neutral graphite, no blue cast; the right rail sits one tone above the well */
+  --bg: #0b0d0f;
+  --surface: #101316;
+  --surface-2: #14181c;
+  --surface-3: #191e23;
+  --border: #262c33;
+  --border-soft: #1a1f24;
 
   /* text */
-  --text: #e9eef6;
-  --muted: #8a98ab;
-  --dim: #677482;
+  --text: #e8ecef;
+  --muted: #97a1aa;
+  --dim: #5e6870;
 
-  /* accents */
-  --accent: #7dd3fc;
-  --accent-2: #a78bfa;
-  --accent-grad: linear-gradient(135deg, #7dd3fc 0%, #818cf8 100%);
-  --violet-grad: linear-gradient(135deg, #a78bfa 0%, #6366f1 100%);
-  --good: #86efac;
-  --warn: #fbbf24;
-  --danger: #fb7185;
+  /* signal hues — one interactive hue (instrument cyan); the rest are semantic */
+  --accent: #5fd9f2;
+  --accent-2: #5fd9f2;
+  --good: #7ce38b;
+  --warn: #f3c34e;
+  --danger: #ff6e7d;
 
-  /* shape + motion */
-  --r: 12px;
-  --r-sm: 8px;
-  --r-xs: 6px;
-  --shadow: 0 18px 44px -16px rgba(0, 0, 0, 0.65);
-  --shadow-sm: 0 6px 18px -8px rgba(0, 0, 0, 0.6);
-  --glow: 0 6px 22px -6px rgba(125, 211, 252, 0.5);
+  /* shape + motion — sharp, engraved, fast; no decorative animation */
+  --r: 3px;
+  --r-sm: 2px;
+  --r-xs: 2px;
+  --shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+  --shadow-sm: 0 8px 24px rgba(0, 0, 0, 0.5);
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
 
   color-scheme: dark;
-  font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  font-feature-settings: "cv11", "ss01";
+  /* the whole instrument speaks monospace */
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas,
+    monospace;
 }
 
 * {
@@ -46,49 +44,10 @@ body {
   color: var(--text);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-  /* layered ambient glows over a deep base */
-  background:
-    radial-gradient(1100px 620px at 82% -12%, rgba(125, 211, 252, 0.12), transparent 60%),
-    radial-gradient(900px 560px at -8% 112%, rgba(167, 139, 250, 0.1), transparent 58%),
-    var(--bg);
-  background-attachment: fixed;
-}
-
-/* drifting aurora blobs behind everything */
-body::before {
-  content: "";
-  position: fixed;
-  inset: -25%;
-  z-index: -1;
-  pointer-events: none;
-  background:
-    radial-gradient(620px 420px at 70% 22%, rgba(125, 211, 252, 0.09), transparent 65%),
-    radial-gradient(540px 480px at 22% 75%, rgba(167, 139, 250, 0.08), transparent 62%),
-    radial-gradient(420px 380px at 88% 82%, rgba(134, 239, 172, 0.05), transparent 60%);
-  animation: aurora 32s ease-in-out infinite alternate;
-  will-change: transform;
-}
-@keyframes aurora {
-  from {
-    transform: translate(-2%, -1.5%) rotate(-1.5deg) scale(1);
-  }
-  50% {
-    transform: translate(1.5%, 2%) rotate(1deg) scale(1.06);
-  }
-  to {
-    transform: translate(-1%, 1%) rotate(-0.5deg) scale(1.02);
-  }
-}
-
-/* faint film grain so the large dark fields don't band */
-body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 999;
-  pointer-events: none;
-  opacity: 0.035;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  /* graphite face with a faint graph-paper dot grid */
+  background-image: radial-gradient(rgba(255, 255, 255, 0.032) 1px, transparent 1.2px);
+  background-size: 22px 22px;
+  background-color: var(--bg);
 }
 
 #app {
@@ -96,46 +55,65 @@ body::after {
 }
 
 ::selection {
-  background: rgba(125, 211, 252, 0.28);
+  background: rgba(95, 217, 242, 0.3);
 }
 
 :focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 1px solid var(--accent);
   outline-offset: 1px;
   border-radius: var(--r-xs);
 }
 
 ::-webkit-scrollbar {
-  width: 11px;
-  height: 11px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #25303f;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-  border-radius: 8px;
+  background: #2a3138;
+  border-radius: 0;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #324155;
-  background-clip: padding-box;
+  background: #39424b;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 
-/* Flat inspector sections — shared by the sidebar's child components, so they live
-   here rather than in any one component's scoped styles. */
+/* Floating-overlay material (review HUD, palette, help, toasts): quiet frosted
+   glass — translucent dark fill + moderate blur, hairline border. No displacement,
+   no sampled lighting, no sheen. */
+.overlay-glass {
+  background: rgba(13, 15, 18, 0.88);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border);
+}
+
+/* Inspector sections — shared by the right rail's child components.
+   The heading is an engraved micro-label that extends a rule-line across the row:
+   give the h3 flex:1 inside a flex row and the rule fills the slack. */
 .side-section {
   padding: 0.8rem 0.95rem;
   border-top: 1px solid var(--border-soft);
 }
 .side-h {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
   margin: 0 0 0.55rem;
-  font-size: 0.66rem;
+  font-size: 0.62rem;
   font-weight: 650;
   text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--dim);
+  letter-spacing: 0.14em;
+  color: #8d97a1;
+  white-space: nowrap;
+}
+.side-h::after {
+  content: "";
+  flex: 1 1 0;
+  min-width: 10px;
+  height: 1px;
+  background: var(--border-soft);
 }
 
 @keyframes fade-up {
@@ -150,10 +128,10 @@ body::after {
 }
 @keyframes pulse-soft {
   0%, 100% {
-    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.5);
+    box-shadow: 0 0 0 0 rgba(243, 195, 78, 0.5);
   }
   50% {
-    box-shadow: 0 0 0 5px rgba(251, 191, 36, 0);
+    box-shadow: 0 0 0 5px rgba(243, 195, 78, 0);
   }
 }
 

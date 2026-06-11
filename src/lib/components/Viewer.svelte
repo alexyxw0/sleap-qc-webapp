@@ -294,6 +294,9 @@
 
   const item = $derived(store.current);
 
+  // Zero-padded frame readout, instrument style: 0169/0266.
+  const pad = (n) => String(n).padStart(String(store.frameCount).length, "0");
+
   // HUD: current-frame QC verdict for the chip overlaid on the canvas.
   const hud = $derived.by(() => {
     void qc.rev;
@@ -317,10 +320,12 @@
       onpointerup={onPointerUp}
     ></canvas>
 
+    <div class="vf" aria-hidden="true"></div>
+
     <div class="hud">
       <span class="chip">
-        <b>{store.index + 1}</b>/{store.frameCount}
-        <span class="dim">· {item?.lf?.instances?.length ?? 0} inst</span>
+        <b>{pad(store.index + 1)}</b><span class="dim">/{pad(store.frameCount)}</span>
+        <span class="dim">· {item?.lf?.instances?.length ?? 0} INST</span>
       </span>
       {#if hud}
         <span class="chip qc" class:flagged={hud.flagged}>
@@ -328,11 +333,43 @@
           {#if hud.flagged}
             {hud.issue ?? "frame issue"}
           {:else}
-            looks ok
+            OK
           {/if}
         </span>
       {/if}
     </div>
+
+  </div>
+
+  <div class="controls">
+    <button onclick={() => store.setIndex(0)} title="First frame">
+      <svg viewBox="0 0 14 14"><path d="M3 2.5v9" stroke="currentColor" stroke-width="1.5" /><path d="M11.5 2.8v8.4L5 7z" fill="currentColor" /></svg>
+    </button>
+    <button onclick={() => store.prev()} title="Previous (←/A)">
+      <svg viewBox="0 0 14 14"><path d="M10.5 2.8v8.4L4 7z" fill="currentColor" /></svg>
+    </button>
+    <button class="play" onclick={togglePlay} title="Play/Pause (Space)">
+      {#if playing}
+        <svg viewBox="0 0 14 14"><path d="M4 2.5h2.2v9H4zM7.8 2.5H10v9H7.8z" fill="currentColor" /></svg>
+      {:else}
+        <svg viewBox="0 0 14 14"><path d="M4 2.4v9.2L11.5 7z" fill="currentColor" /></svg>
+      {/if}
+    </button>
+    <button onclick={() => store.next()} title="Next (→/D)">
+      <svg viewBox="0 0 14 14"><path d="M3.5 2.8v8.4L10 7z" fill="currentColor" /></svg>
+    </button>
+    <button onclick={() => store.setIndex(store.frameCount - 1)} title="Last frame">
+      <svg viewBox="0 0 14 14"><path d="M11 2.5v9" stroke="currentColor" stroke-width="1.5" /><path d="M2.5 2.8v8.4L9 7z" fill="currentColor" /></svg>
+    </button>
+
+    <HeatTimeline />
+
+    <div class="counter">
+      <strong>{pad(store.index + 1)}</strong><span class="of">/{store.frameCount}</span>
+      {#if item}<span class="fidx">IDX {item.frameIdx}</span>{/if}
+    </div>
+
+    <span class="div"></span>
 
     <div class="zoomctl">
       <button onclick={() => view.zoomOut()} disabled={view.zoom <= 1} title="Zoom out (−)">−</button>
@@ -341,28 +378,11 @@
       <button onclick={() => view.reset()} disabled={view.zoom === 1 && view.panX === 0 && view.panY === 0} title="Reset view (0)">⤢</button>
     </div>
   </div>
-
-  <div class="controls">
-    <button onclick={() => store.setIndex(0)} title="First frame">⏮</button>
-    <button onclick={() => store.prev()} title="Previous (←/A)">◀</button>
-    <button class="play" onclick={togglePlay} title="Play/Pause (Space)">
-      {playing ? "❚❚" : "▶"}
-    </button>
-    <button onclick={() => store.next()} title="Next (→/D)">▶</button>
-    <button onclick={() => store.setIndex(store.frameCount - 1)} title="Last frame">⏭</button>
-
-    <HeatTimeline />
-
-    <div class="counter">
-      <strong>{store.index + 1}</strong> / {store.frameCount}
-      {#if item}<span class="fidx">frameIdx {item.frameIdx}</span>{/if}
-    </div>
-  </div>
 </section>
 
 <style>
   .viewer {
-    flex: 1; /* fill the row — without this the viewer's width hangs off canvas intrinsic sizing */
+    flex: 1; /* fill the row */
     display: flex;
     flex-direction: column;
     min-width: 0;
@@ -372,10 +392,9 @@
     position: relative;
     flex: 1;
     min-height: 0;
+    /* the footage well sits a step darker than the chrome */
     background:
-      repeating-conic-gradient(#0b0e14 0% 25%, #090c11 0% 50%) 50% / 22px 22px;
-    border: 1px solid var(--border);
-    border-radius: var(--r);
+      repeating-conic-gradient(#0c0e11 0% 25%, #090b0d 0% 50%) 50% / 22px 22px;
     overflow: hidden;
   }
   canvas {
@@ -384,66 +403,49 @@
     height: 100%;
     touch-action: none; /* pointer events drive editing/pan, not scroll/zoom */
   }
-  .zoomctl {
+  /* viewfinder corner brackets — each corner is two 1px strokes */
+  .vf {
     position: absolute;
-    right: 0.7rem;
-    bottom: 0.7rem;
-    display: flex;
-    align-items: center;
-    gap: 0.15rem;
-    background: rgba(11, 15, 22, 0.72);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    padding: 0.2rem 0.3rem;
-    backdrop-filter: blur(10px);
-  }
-  .zoomctl button {
-    background: none;
-    color: #9fb0c3;
-    border: none;
-    border-radius: 50%;
-    width: 1.6rem;
-    height: 1.6rem;
-    font-size: 0.9rem;
-    cursor: pointer;
-    line-height: 1;
-    transition: background 0.12s, color 0.12s;
-  }
-  .zoomctl button:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.06);
-    color: var(--text);
-  }
-  .zoomctl button:disabled {
-    opacity: 0.35;
-    cursor: default;
-  }
-  .zoomctl .pct {
-    font-size: 0.72rem;
-    color: var(--muted);
-    min-width: 2.7rem;
-    text-align: center;
-    font-variant-numeric: tabular-nums;
+    inset: 10px;
+    pointer-events: none;
+    z-index: 2;
+    --vfc: rgba(232, 236, 239, 0.28);
+    background:
+      linear-gradient(var(--vfc), var(--vfc)) 0 0 / 16px 1px,
+      linear-gradient(var(--vfc), var(--vfc)) 0 0 / 1px 16px,
+      linear-gradient(var(--vfc), var(--vfc)) 100% 0 / 16px 1px,
+      linear-gradient(var(--vfc), var(--vfc)) 100% 0 / 1px 16px,
+      linear-gradient(var(--vfc), var(--vfc)) 0 100% / 16px 1px,
+      linear-gradient(var(--vfc), var(--vfc)) 0 100% / 1px 16px,
+      linear-gradient(var(--vfc), var(--vfc)) 100% 100% / 16px 1px,
+      linear-gradient(var(--vfc), var(--vfc)) 100% 100% / 1px 16px;
+    background-repeat: no-repeat;
   }
   .controls {
     display: flex;
     align-items: center;
-    gap: 0.35rem;
-    margin-top: 0.7rem;
-    padding: 0.4rem 0.6rem;
-    background: rgba(13, 18, 27, 0.6);
-    border: 1px solid var(--border);
-    border-radius: var(--r);
+    gap: 0.3rem;
+    padding: 0.45rem 0.75rem;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
   }
   .controls button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     background: none;
-    color: #9fb0c3;
+    color: var(--muted);
     border: none;
-    border-radius: 7px;
-    padding: 0.35rem 0.55rem;
-    font-size: 0.85rem;
+    border-radius: var(--r-xs);
+    width: 1.9rem;
+    height: 1.9rem;
     cursor: pointer;
     line-height: 1;
     transition: background 0.12s, color 0.12s;
+  }
+  .controls button svg {
+    width: 13px;
+    height: 13px;
   }
   .controls button:hover {
     background: rgba(255, 255, 255, 0.05);
@@ -451,69 +453,100 @@
   }
   .controls button.play {
     background: var(--accent);
-    color: #06121f;
-    font-weight: 700;
-    min-width: 2.5rem;
+    color: #04181d;
+    width: 2.4rem;
   }
   .controls button.play:hover {
-    filter: brightness(1.08);
+    filter: brightness(1.1);
+    color: #04181d;
+  }
+  .controls .div {
+    width: 1px;
+    height: 1.1rem;
+    background: var(--border);
+    margin: 0 0.3rem;
+    flex: none;
+  }
+  .zoomctl {
+    display: flex;
+    align-items: center;
+    gap: 0.05rem;
+  }
+  .zoomctl button {
+    width: 1.7rem;
+    height: 1.7rem;
+    font-size: 0.85rem;
+  }
+  .zoomctl button:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+  .zoomctl .pct {
+    font-size: 0.68rem;
+    color: var(--muted);
+    min-width: 2.6rem;
+    text-align: center;
   }
   .hud {
     position: absolute;
-    top: 0.7rem;
-    left: 0.7rem;
+    top: 1.1rem;
+    left: 1.1rem;
     display: flex;
-    gap: 0.4rem;
+    gap: 0.35rem;
     pointer-events: none;
     z-index: 3;
   }
   .chip {
     display: inline-flex;
     align-items: center;
-    gap: 0.35rem;
-    background: rgba(11, 15, 22, 0.72);
+    gap: 0.4rem;
+    background: rgba(11, 13, 15, 0.82);
     border: 1px solid var(--border);
-    border-radius: 999px;
-    padding: 0.22rem 0.65rem;
-    font-size: 0.74rem;
+    border-radius: var(--r-xs);
+    padding: 0.2rem 0.55rem;
+    font-size: 0.7rem;
+    letter-spacing: 0.04em;
     color: var(--muted);
-    backdrop-filter: blur(10px);
-    box-shadow: var(--shadow-sm);
-    font-variant-numeric: tabular-nums;
+    backdrop-filter: blur(8px);
   }
   .chip b {
     color: var(--text);
-    font-size: 0.8rem;
+    font-size: 0.76rem;
+    font-weight: 700;
   }
   .chip .dim {
     color: var(--dim);
   }
   .chip.qc {
-    color: #b6e3c4;
+    color: #9fd3ac;
   }
   .chip.qc.flagged {
-    color: #fcd39b;
-    border-color: rgba(251, 146, 60, 0.4);
-    box-shadow: var(--shadow-sm), 0 0 18px -6px rgba(251, 146, 60, 0.5);
+    color: var(--warn);
+    border-color: rgba(243, 195, 78, 0.35);
   }
   .chip .heat {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
+    width: 7px;
+    height: 7px;
     flex: none;
   }
   .counter {
-    font-variant-numeric: tabular-nums;
-    color: var(--muted);
-    font-size: 0.85rem;
+    color: var(--dim);
+    font-size: 0.78rem;
     white-space: nowrap;
+    letter-spacing: 0.03em;
   }
   .counter strong {
     color: var(--text);
-    font-size: 0.95rem;
+    font-size: 0.86rem;
+    font-weight: 700;
+  }
+  .counter .of {
+    color: var(--dim);
   }
   .fidx {
-    margin-left: 0.5rem;
+    margin-left: 0.6rem;
     color: var(--dim);
+    font-size: 0.66rem;
+    letter-spacing: 0.1em;
   }
 </style>
