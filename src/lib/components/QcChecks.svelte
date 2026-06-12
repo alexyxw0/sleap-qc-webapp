@@ -37,6 +37,22 @@
               <span class="cnt">{qc.checkCount(c.key)}</span>
             {/if}
           </label>
+          {#if c.key === "anomaly" && qc.checks.anomaly}
+            <!-- Anomaly flag threshold. Scores are cached, so dragging only re-derives the
+                 flagged set (no recompute) — counts + union update live. -->
+            <div class="thresh" title="Flag an instance when its anomaly score is at or above this value">
+              <span class="tlbl">threshold</span>
+              <input
+                type="range"
+                min="0.3"
+                max="0.99"
+                step="0.01"
+                value={qc.threshold}
+                oninput={(e) => (qc.threshold = +e.currentTarget.value)}
+              />
+              <span class="tval">{qc.threshold.toFixed(2)}</span>
+            </div>
+          {/if}
         </li>
       {/each}
     </ul>
@@ -95,6 +111,37 @@
   .cnt.pend {
     color: var(--accent);
     letter-spacing: 0.02em;
+  }
+  /* anomaly flag-threshold slider, tucked under its check row */
+  .thresh {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0 0 0.45rem 1.35rem;
+    margin-top: -0.12rem;
+  }
+  .thresh .tlbl {
+    font-size: 0.68rem;
+    color: var(--muted);
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+  .thresh input[type="range"] {
+    flex: 1;
+    min-width: 0;
+    accent-color: var(--accent);
+    height: 13px;
+    cursor: pointer;
+  }
+  .thresh .tval {
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.72rem;
+    min-width: 2.1ch;
+    text-align: right;
+  }
+  li.off .thresh {
+    opacity: 0.5;
   }
   /* a disabled technique dims, so it reads as "not contributing" */
   li.off label {
