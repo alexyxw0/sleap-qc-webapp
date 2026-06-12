@@ -196,9 +196,16 @@ export class GMMDetector {
   // normalized anomaly score in [0,1]: 1 - percentile(ll) (higher = more anomalous).
   scoreOne(vector) {
     if (vector.some((x) => Number.isNaN(x))) return Number.NaN;
-    const ll = this.gmm.scoreSamples([scalerTransformRow(vector, this.scaler)])[0];
+    const ll = this.logLikelihoodOne(vector);
     const below = this.trainLL.reduce((s, t) => s + (t < ll ? 1 : 0), 0);
     return 1 - below / this.trainLL.length;
+  }
+  // Raw log p(x) under the fitted mixture (higher = more probable / normal). Used for
+  // leave-one-node-out attribution: the node whose removal most raises this is "the
+  // node the GMM thinks is wrong".
+  logLikelihoodOne(vector) {
+    if (vector.some((x) => Number.isNaN(x))) return -Infinity;
+    return this.gmm.scoreSamples([scalerTransformRow(vector, this.scaler)])[0];
   }
 }
 

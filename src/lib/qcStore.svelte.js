@@ -55,8 +55,8 @@ class QCStore {
   #frameResults = new Map(); // "v:f" -> FrameQC
   #frameAnom = new Map(); // "v:f" -> max anomaly score
   #frameGmm = new Map(); // "v:f" -> max GMM score
-  #frameWorst = new Map(); // "v:f" -> worst instance index
   #spatialFlagged = new Set(); // "v:f" with worst-node Mahalanobis >= spatialThreshold
+  #gmmWorst = new Map(); // "v:f:i" -> GMM leave-one-out worst node (computed lazily)
 
   get hasResults() {
     this.rev;
@@ -213,6 +213,85 @@ class QCStore {
     if (!item || !this.checks.spatial) return -1;
     return this.#worstNodes.get(`${this.#fkey(item)}:${instIdx}`) ?? -1;
   }
+  /** GMM probability anomaly for an instance, or null. */
+  gmmScore(item, instIdx) {
+    this.rev;
+    if (!item) return null;
+    return this.#gmmScores.get(`${this.#fkey(item)}:${instIdx}`) ?? null;
+  }
+  /** Is this instance flagged by any enabled score-based check (anomaly OR GMM)? */
+  instanceFlagged(item, instIdx) {
+    this.rev;
+    if (!item) return false;
+    const key = `${this.#fkey(item)}:${instIdx}`;
+    if (this.checks.anomaly) {
+      const a = this.#instanceScores.get(key);
+      if (a != null && a >= this.threshold) return true;
+    }
+    if (this.checks.gmm) {
+      const g = this.#gmmScores.get(key);
+      if (g != null && g >= this.gmmThreshold) return true;
+    }
+    return false;
+  }
+  #gmmFlagged(key) {
+    if (!this.checks.gmm) return false;
+    const g = this.#gmmScores.get(key);
+    return g != null && g >= this.gmmThreshold;
+  }
+  /**
+   * Which node the GMM thinks is wrong: leave-one-node-out attribution — the node whose
+   * removal most raises the instance's mixture log-likelihood. Computed lazily for the
+   * current frame's instances only (a handful per frame), then cached. -1 if none stands out.
+   */
+  gmmWorstNode(item, instIdx) {
+    this.rev;
+    if (!item || !this.checks.gmm) return -1;
+    const det = this.#computed.gmm?.det;
+    const fx = this.#computed.gmm?.fx;
+    if (!det || !fx) return -1;
+    const key = `${this.#fkey(item)}:${instIdx}`;
+    if (this.#gmmWorst.has(key)) return this.#gmmWorst.get(key);
+    const inst = item.lf?.instances?.[instIdx];
+    const pose = inst?.numpy?.({ invisibleAsNaN: true });
+    if (!pose) {
+      this.#gmmWorst.set(key, -1);
+      return -1;
+    }
+    const clean = (row) => row.map((f) => (Number.isNaN(f) ? 0 : f === Infinity ? 10 : f === -Infinity ? -10 : f));
+    // reuse the instance's NN distance across all masks (it is not node-specific) so each
+    // leave-one-out only re-runs the cheap per-node features, not the O(n) NN search.
+    const baseNN = fx.nn.score(pose).nnDistance;
+    const baseLL = det.logLikelihoodOne(clean(fx.extractFeatures(pose, baseNN)));
+    let worst = -1;
+    let bestImprove = 1e-6; // require a meaningful improvement to claim a node
+    for (let k = 0; k < pose.length; k++) {
+      if (Number.isNaN(pose[k]?.[0])) continue; // already invisible — nothing to remove
+      const masked = pose.map((p, idx) => (idx === k ? [Number.NaN, Number.NaN] : p));
+      const ll = det.logLikelihoodOne(clean(fx.extractFeatures(masked, baseNN)));
+      const improve = ll - baseLL;
+      if (improve > bestImprove) {
+        bestImprove = improve;
+        worst = k;
+      }
+    }
+    this.#gmmWorst.set(key, worst);
+    return worst;
+  }
+  /**
+   * The single node to indicate for a flagged instance (drives the red ring + zoom):
+   * the spatial worst node when Spatial is on, else the GMM's own leave-one-out node.
+   */
+  faultyNodeFor(item, instIdx) {
+    this.rev;
+    if (!item) return -1;
+    if (this.checks.spatial) {
+      const n = this.#worstNodes.get(`${this.#fkey(item)}:${instIdx}`) ?? -1;
+      if (n >= 0) return n;
+    }
+    if (this.#gmmFlagged(`${this.#fkey(item)}:${instIdx}`)) return this.gmmWorstNode(item, instIdx);
+    return -1;
+  }
 
   seekFlagged(from, dir = 1) {
     this.rev;
@@ -236,46 +315,81 @@ class QCStore {
     this.rev;
     if (!item) return null;
     const key = `${this.#fkey(item)}:${instIdx}`;
-    const score = this.#instanceScores.get(key);
-    if (score == null) return null;
-    const wn = this.checks.spatial ? this.#worstNodes.get(key) : -1;
+    const aScore = this.#instanceScores.get(key);
+    const gScore = this.#gmmScores.get(key);
+    if (aScore == null && gScore == null) return null;
+    const wn = this.faultyNodeFor(item, instIdx);
     const ns = this.#nodeScores.get(key);
-    const worstNodeName =
-      wn != null && wn >= 0 ? store.skeleton?.nodeNames?.[wn] ?? `node ${wn}` : null;
+    const worstNodeName = wn >= 0 ? store.skeleton?.nodeNames?.[wn] ?? `node ${wn}` : null;
+    // Prefer the anomaly explanation (per-feature attribution); otherwise GMM gives a
+    // density verdict ("improbable pose") localized to its leave-one-out node.
+    const gFlag = this.#gmmFlagged(key);
+    const useGmm = aScore == null || (gFlag && this.checks.gmm && !(this.checks.anomaly && aScore >= this.threshold));
+    const base = useGmm
+      ? { score: gScore ?? 0, confidence: confidence(gScore ?? 0), feature: null, issue: "Improbable pose" }
+      : { score: aScore, confidence: confidence(aScore), ...topIssue(this.#contributions.get(key)) };
     return {
-      score,
-      confidence: confidence(score),
-      ...topIssue(this.#contributions.get(key)),
-      worstNode: wn ?? -1,
+      ...base,
+      worstNode: wn,
       worstNodeName,
-      worstNodeDist: wn != null && wn >= 0 && ns ? ns[wn] : null,
+      worstNodeDist: wn >= 0 && ns ? ns[wn] : null,
     };
   }
   frameTopIssue(item) {
     this.rev;
     if (!item) return null;
-    const worst = this.#frameWorst.get(this.#fkey(item));
-    return worst == null ? null : this.instanceIssue(item, worst);
+    const worst = this.frameWorstInstance(item);
+    return worst < 0 ? null : this.instanceIssue(item, worst);
   }
+  /**
+   * The instance most responsible for this frame being flagged — the one furthest over its
+   * threshold across the enabled score-checks (live, so it tracks the threshold sliders).
+   */
   frameWorstInstance(item) {
     this.rev;
     if (!item) return -1;
-    return this.#frameWorst.get(this.#fkey(item)) ?? -1;
+    const fk = this.#fkey(item);
+    const insts = item.lf?.instances ?? [];
+    let best = -1;
+    let bestMargin = -Infinity;
+    for (let i = 0; i < insts.length; i++) {
+      const key = `${fk}:${i}`;
+      let margin = -Infinity;
+      if (this.checks.anomaly) {
+        const a = this.#instanceScores.get(key);
+        if (a != null) margin = Math.max(margin, a - this.threshold);
+      }
+      if (this.checks.gmm) {
+        const g = this.#gmmScores.get(key);
+        if (g != null) margin = Math.max(margin, g - this.gmmThreshold);
+      }
+      if (margin > bestMargin) {
+        bestMargin = margin;
+        best = i;
+      }
+    }
+    return best;
   }
 
   /**
-   * The faulty location to zoom to for an instance: the spatial worst node, plus an adjacent
-   * node when that skeleton-edge neighbour is ALSO a spatial outlier (a faulty node-pair).
+   * The faulty location to zoom to for an instance: the faulty node (spatial, or the GMM's
+   * leave-one-out node) plus an adjacent node when that skeleton-edge neighbour is ALSO a
+   * spatial outlier (a faulty node-pair). Falls back to the whole-instance box when a flagged
+   * instance has no single standout node (e.g. a GMM density flag).
    */
   faultyTarget(item, instIdx) {
     this.rev;
-    if (!item || !this.checks.spatial) return null;
+    if (!item) return null;
     const key = `${this.#fkey(item)}:${instIdx}`;
-    const wn = this.#worstNodes.get(key);
-    if (wn == null || wn < 0) return null;
     const pts = item.lf?.instances?.[instIdx]?.points;
-    const p0 = pts?.[wn]?.xy;
-    if (!p0 || Number.isNaN(p0[0])) return null;
+    const wn = this.faultyNodeFor(item, instIdx);
+    const p0 = wn >= 0 ? pts?.[wn]?.xy : null;
+    if (!p0 || Number.isNaN(p0[0])) {
+      // no standout node — frame the whole instance so the user still lands on the problem
+      if (!this.instanceFlagged(item, instIdx)) return null;
+      const box = instanceBox(pts);
+      return box ? { nodes: [], primary: -1, box } : null;
+    }
 
     const xs = [p0[0]];
     const ys = [p0[1]];
@@ -336,18 +450,7 @@ class QCStore {
     this.#frameGmm = new Map();
     frameMax(this.#instanceScores, this.#frameAnom);
     frameMax(this.#gmmScores, this.#frameGmm);
-
-    // worst instance per frame — prefer anomaly, else GMM (for the verdict / zoom target)
-    this.#frameWorst = new Map();
-    const worstSrc = this.#instanceScores.size ? this.#instanceScores : this.#gmmScores;
-    const best = new Map();
-    for (const [key, s] of worstSrc) {
-      const fk = key.slice(0, key.lastIndexOf(":"));
-      if (s > (best.get(fk) ?? -1)) {
-        best.set(fk, s);
-        this.#frameWorst.set(fk, Number(key.slice(key.lastIndexOf(":") + 1)));
-      }
-    }
+    this.#gmmWorst = new Map(); // lazy leave-one-out cache — invalidated whenever results change
 
     this.#spatialFlagged = new Set();
     for (const [key, ns] of this.#nodeScores) {
@@ -404,6 +507,25 @@ class QCStore {
 export function hasFrameIssue(fq) {
   if (!fq) return false;
   return fq.isIncomplete || fq.isNegativeWithInstances || (fq.duplicatePairs?.length ?? 0) > 0;
+}
+
+// Bounding box (image space) over an instance's placed points — the zoom fallback when a
+// flagged instance has no single standout node.
+function instanceBox(pts) {
+  const xs = [];
+  const ys = [];
+  for (const p of pts ?? []) {
+    const x = p?.xy?.[0];
+    const y = p?.xy?.[1];
+    if (x != null && !Number.isNaN(x)) {
+      xs.push(x);
+      ys.push(y);
+    }
+  }
+  if (!xs.length) return null;
+  const minx = Math.min(...xs);
+  const miny = Math.min(...ys);
+  return { x: minx, y: miny, w: Math.max(...xs) - minx, h: Math.max(...ys) - miny };
 }
 
 // green (low) -> red (high) heat for an anomaly score in [0,1].

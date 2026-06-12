@@ -86,10 +86,9 @@
     let uncertainNodes = null;
     if (qc.hasResults && item) {
       const insts = item.lf?.instances ?? [];
-      worstNodes = insts.map((_, i) => {
-        const sc = qc.instanceScore(item, i);
-        return sc != null && sc >= qc.threshold ? qc.worstNodeFor(item, i) : -1;
-      });
+      // red ring on the faulty node of any flagged instance — anomaly's spatial worst node,
+      // or the GMM's own leave-one-out node. Reacts live to both threshold sliders.
+      worstNodes = insts.map((_, i) => (qc.instanceFlagged(item, i) ? qc.faultyNodeFor(item, i) : -1));
       uncertainNodes = insts.map((_, i) => qc.uncertainNodeFor(item, i));
     }
 

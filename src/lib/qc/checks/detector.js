@@ -303,7 +303,9 @@ export function computeGmmUnit(ctx) {
       gmmScores.set(key, Number.isFinite(s) ? s : 0);
     });
   }
-  return { gmmScores, fitted: det != null };
+  // `det` + the shared feature extractor (ctx._fx) let the store localize a flagged
+  // instance to a node on demand (leave-one-node-out), so GMM can show *where* it's wrong.
+  return { gmmScores, fitted: det != null, det, fx };
 }
 
 /** Per-node spatial prior (Mahalanobis): nodeScores[] + worst node per instance. */

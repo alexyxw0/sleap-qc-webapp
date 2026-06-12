@@ -13,7 +13,7 @@
     const item = store.current;
     const t = qc.faultyTarget(item, instIdx);
     if (!t) return;
-    edit.select(instIdx, t.primary);
+    edit.select(instIdx, t.primary >= 0 ? t.primary : 0); // -1 = no standout node (GMM density flag)
     view.requestFocus(t.box);
   }
 
@@ -218,6 +218,7 @@
     {#if panel.length}
       {#each panel as inst (inst.i)}
         {@const qs = qc.hasResults ? qc.instanceScore(item, inst.i) : null}
+        {@const gs = qc.hasResults && qc.checks.gmm ? qc.gmmScore(item, inst.i) : null}
         {@const open = isOpen(inst.i)}
         <div class="inst" class:sel={inst.i === edit.selInstance}>
           <div class="inst-head">
@@ -232,9 +233,12 @@
             {#if qs != null}
               <span class="qchip sm" style:background={heatColor(qs)} title="QC anomaly score">{qs.toFixed(2)}</span>
             {/if}
+            {#if gs != null && gs >= qc.gmmThreshold}
+              <span class="qchip sm" style:background={heatColor(gs)} title="GMM probability anomaly">G {gs.toFixed(2)}</span>
+            {/if}
             <button class="del" onclick={() => edit.deleteInstance(inst.i)} title="Delete instance">×</button>
           </div>
-          {#if qs != null && qs >= qc.threshold}
+          {#if qc.instanceFlagged(item, inst.i)}
             {@const ii = qc.instanceIssue(item, inst.i)}
             {#if ii?.worstNode >= 0}
               <button class="qcissue faulty" onclick={() => focusFaulty(inst.i)} title="Zoom to the faulty node">

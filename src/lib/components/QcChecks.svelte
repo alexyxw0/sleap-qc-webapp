@@ -53,6 +53,22 @@
               <span class="tval">{qc.threshold.toFixed(2)}</span>
             </div>
           {/if}
+          {#if c.key === "gmm" && qc.checks.gmm}
+            <!-- GMM flag threshold (1 − likelihood percentile; higher = rarer). Same memoized
+                 re-derive: dragging re-flags without recomputing the mixture. -->
+            <div class="thresh" title="Flag an instance when its GMM anomaly is at or above this value (0.95 ≈ rarest 5%)">
+              <span class="tlbl">threshold</span>
+              <input
+                type="range"
+                min="0.5"
+                max="0.99"
+                step="0.01"
+                value={qc.gmmThreshold}
+                oninput={(e) => (qc.gmmThreshold = +e.currentTarget.value)}
+              />
+              <span class="tval">{qc.gmmThreshold.toFixed(2)}</span>
+            </div>
+          {/if}
         </li>
       {/each}
     </ul>

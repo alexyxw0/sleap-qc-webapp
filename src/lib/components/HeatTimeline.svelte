@@ -54,12 +54,14 @@
       const hi = Math.min(count - 1, Math.floor((x + 1) * px));
       let labeled = false;
       let score = null;
+      let flagged = false;
       for (let i = lo; i <= hi; i++) {
         const f = frames[i];
         if ((f?.lf?.instances?.length ?? 0) > 0) labeled = true;
         if (qc.hasResults) {
           const s = qc.frameScore(f);
           if (s != null && (score == null || s > score)) score = s;
+          if (qc.frameFlagged(f)) flagged = true; // reads the thresholds -> redraws on slider drag
         }
       }
 
@@ -67,15 +69,19 @@
       ctx.fillStyle = labeled ? "rgba(95, 217, 242, 0.12)" : "rgba(255, 255, 255, 0.04)";
       ctx.fillRect(x, 0, 1, ch);
 
-      // anomaly tint with a knee: scores below ~0.35 render nothing (every labeled
-      // frame has *some* score — painting them all reads as mush), then opacity ramps
-      // so only genuine hotspots glow. Full per-frame detail stays in the tooltip.
-      if (score != null) {
-        const t = Math.max(0, Math.min(1, score));
-        const k = Math.max(0, (t - 0.35) / 0.65);
+      // Flagged columns glow at full strength; unflagged-but-scored columns keep only a faint
+      // context tint. The flag is the union of the enabled checks at the current thresholds, so
+      // the strip stays in lockstep with the sliders — frames slide in/out of the glow live.
+      if (flagged) {
+        ctx.fillStyle = heatColor(score ?? 1);
+        ctx.globalAlpha = 0.85;
+        ctx.fillRect(x, 0, 1, ch);
+        ctx.globalAlpha = 1;
+      } else if (score != null) {
+        const k = Math.max(0, (Math.min(1, score) - 0.3) / 0.7);
         if (k > 0) {
           ctx.fillStyle = heatColor(score);
-          ctx.globalAlpha = 0.8 * Math.pow(k, 1.5);
+          ctx.globalAlpha = 0.2 * Math.pow(k, 1.5);
           ctx.fillRect(x, 0, 1, ch);
           ctx.globalAlpha = 1;
         }
@@ -148,18 +154,19 @@
   const hoverInfo = $derived.by(() => {
     if (hover == null) return null;
     const f = store.frames[hover.i];
-    const s = qc.hasResults ? qc.frameScore(f) : null;
-    const issue = qc.hasResults && hasFrameIssue(qc.frameQC(f));
+    const has = qc.hasResults;
+    const s = has ? qc.frameScore(f) : null;
+    const flagged = has && qc.frameFlagged(f); // reads thresholds -> tooltip tracks the sliders
+    const issue = has && hasFrameIssue(qc.frameQC(f));
+    let sub;
+    if (s != null) sub = `score ${s.toFixed(2)}${flagged ? " · flagged" : ""}`;
+    else if (flagged || issue) sub = "flagged";
+    else sub = `${f?.lf?.instances?.length ?? 0} inst`;
     return {
       x: hover.x,
       label: `frame ${hover.i + 1}`,
-      sub:
-        s != null
-          ? `anomaly ${s.toFixed(2)}${issue ? " · issue" : ""}`
-          : issue
-            ? "frame issue"
-            : `${f?.lf?.instances?.length ?? 0} inst`,
-      heat: s != null ? heatColor(s) : null,
+      sub,
+      heat: flagged ? heatColor(s ?? 1) : s != null ? heatColor(s) : null,
     };
   });
 </script>
