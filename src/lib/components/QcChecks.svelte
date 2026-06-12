@@ -1,10 +1,14 @@
 <script>
   import { qc } from "../qcStore.svelte.js";
+  import { store } from "../labelsStore.svelte.js";
 
-  // Each detection technique the user can include in the flagged set. The flagged frames
-  // are the UNION of the enabled checks.
+  // Each detection technique the user can include in the flagged set. Pick the ones you want
+  // BEFORE running QC — only selected techniques are computed, and each result is memoized so
+  // re-selecting a computed check never recomputes. The flagged frames are the UNION of the
+  // enabled checks.
   const CHECKS = [
     { key: "anomaly", label: "Anomaly", hint: "Geometrically unusual instance vs. the rest of the file" },
+    { key: "gmm", label: "GMM (probability)", hint: "Low-probability instance under a Gaussian-mixture density model. Heaviest check — opt-in." },
     { key: "spatial", label: "Spatial outlier", hint: "A single node sitting out of place (drives the red ring)" },
     { key: "count", label: "Instance count", hint: "Frame has fewer instances than expected" },
     { key: "negative", label: "Negative frames", hint: "A negative frame that still has instances" },
@@ -12,11 +16,13 @@
   ];
 </script>
 
-{#if qc.hasResults}
+{#if store.labels}
   <section class="side-section">
     <h3 class="side-h">Detection checks</h3>
     <ul class="checks">
       {#each CHECKS as c (c.key)}
+        {@const ready = qc.checkReady(c.key)}
+        {@const pending = qc.checkPending(c.key)}
         <li class:off={!qc.checks[c.key]}>
           <label title={c.hint}>
             <input
@@ -25,14 +31,25 @@
               onchange={() => qc.toggleCheck(c.key)}
             />
             <span class="lbl">{c.label}</span>
-            <span class="cnt">{qc.checkCount(c.key)}</span>
+            {#if pending}
+              <span class="cnt pend" title="Selected — needs a Run QC to compute">run ▸</span>
+            {:else if ready}
+              <span class="cnt">{qc.checkCount(c.key)}</span>
+            {/if}
           </label>
         </li>
       {/each}
     </ul>
-    <p class="union">
-      <span>flagged · union</span><b>{qc.flaggedFrameCount}</b>
-    </p>
+    {#if qc.hasResults}
+      <p class="union">
+        <span>flagged · union</span><b>{qc.flaggedFrameCount}</b>
+      </p>
+    {/if}
+    {#if qc.pendingCount > 0}
+      <p class="hint">
+        {qc.pendingCount} selected check{qc.pendingCount === 1 ? "" : "s"} need{qc.pendingCount === 1 ? "s" : ""} a run{qc.checks.gmm && !qc.checkReady("gmm") ? " · GMM is slow" : ""}
+      </p>
+    {/if}
   </section>
 {/if}
 
@@ -74,12 +91,23 @@
     font-variant-numeric: tabular-nums;
     font-size: 0.72rem;
   }
+  /* a check that is selected but not yet computed — waiting on a Run QC */
+  .cnt.pend {
+    color: var(--accent);
+    letter-spacing: 0.02em;
+  }
   /* a disabled technique dims, so it reads as "not contributing" */
   li.off label {
     color: var(--muted);
   }
   li.off .cnt {
     opacity: 0.5;
+  }
+  .hint {
+    margin: 0.5rem 0 0;
+    font-size: 0.68rem;
+    color: var(--muted);
+    letter-spacing: 0.02em;
   }
   .union {
     display: flex;

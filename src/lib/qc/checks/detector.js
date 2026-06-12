@@ -55,27 +55,17 @@ export class LabelQCDetector {
 
   /** @param instances poses number[][][]; analyzer SkeletonAnalyzer. */
   fit({ instances, analyzer, frameCounts = [], videoIds = null }) {
-    this.analyzer = analyzer;
-    this.baseline = new BaselineFeatureExtractor(analyzer.edges, analyzer.nNodes, analyzer.symmetryPairs).fit(instances);
-    this.visibility = new VisibilityModel().fit(instances.map(visibilityMask));
-    this.nn = new NearestNeighborScorer({ normalize: true }).fit(instances);
-    this._trainingNN = this.nn.looDistances();
-
-    const areas = instances.map((p) => computeConvexHull(p).hullArea).filter((a) => a > 0);
-    this._hullStats = { mean: areas.length ? mean(areas) : 1, std: areas.length ? std(areas) : 1 };
-
-    this.featureNames = [...BASELINE_FEATURE_NAMES, ...V3_FEATURE_NAMES];
-    const matrix = instances.map((p, i) => this.extractFeatures(p, this._trainingNN[i]));
+    this.fitFeatures(instances, analyzer);
 
     // GMM for a large enough reference set, else the z-score fallback (mirrors Python).
     if (instances.length >= this.config.gmmMinSamples && this.config.useGmm) {
       this.detector = new GMMDetector({
         nComponents: this.config.gmmNComponents,
         percentileThreshold: this.config.gmmPercentileThreshold,
-      }).fit(matrix);
+      }).fit(this.rawMatrix);
       this.usedGmm = true;
     } else {
-      this.detector = new ZScoreDetector(3.0).fit(matrix);
+      this.detector = new ZScoreDetector(3.0).fit(this.rawMatrix);
       this.usedGmm = false;
     }
 
@@ -86,6 +76,23 @@ export class LabelQCDetector {
       : null;
 
     this.countChecker = new InstanceCountChecker(true).fit(frameCounts, videoIds);
+    return this;
+  }
+
+  /** Fit just the feature extractors + build the per-instance feature matrix (raw + cleaned). */
+  fitFeatures(instances, analyzer) {
+    this.analyzer = analyzer;
+    this.baseline = new BaselineFeatureExtractor(analyzer.edges, analyzer.nNodes, analyzer.symmetryPairs).fit(instances);
+    this.visibility = new VisibilityModel().fit(instances.map(visibilityMask));
+    this.nn = new NearestNeighborScorer({ normalize: true }).fit(instances);
+    this._trainingNN = this.nn.looDistances();
+    const areas = instances.map((p) => computeConvexHull(p).hullArea).filter((a) => a > 0);
+    this._hullStats = { mean: areas.length ? mean(areas) : 1, std: areas.length ? std(areas) : 1 };
+    this.featureNames = [...BASELINE_FEATURE_NAMES, ...V3_FEATURE_NAMES];
+    this.rawMatrix = instances.map((p, i) => this.extractFeatures(p, this._trainingNN[i]));
+    this.cleanMatrix = this.rawMatrix.map((row) =>
+      row.map((f) => (Number.isNaN(f) ? 0 : f === Infinity ? 10 : f === -Infinity ? -10 : f)),
+    );
     return this;
   }
 
@@ -211,4 +218,114 @@ export function fitAndScoreLabels(labels, { config = makeQCConfig(), getInstance
     instanceScores, contributions, nodeScores, worstNodes,
     frameResults, featureNames: det.featureNames, usedGmm: det.usedGmm,
   };
+}
+
+// ───────────────────────────── Selectable, memoizable QC ─────────────────────────────
+//
+// A "unit" is one computable block — 'anomaly' (ZScore), 'gmm' (GaussianMixture
+// probability), 'spatial' (per-node Mahalanobis), 'frame' (count / negative / duplicates).
+// The qcStore computes only the selected units and caches each, so re-selecting a
+// previously-computed technique never recomputes. `buildContext` gathers frames/poses once;
+// the shared feature matrix (used by anomaly + gmm) is built lazily the first time it's needed.
+
+/** Gather frames + poses once. The feature matrix is built lazily (see ensureFeatures). */
+export function buildContext(labels, config = makeQCConfig()) {
+  if (!labels.skeletons?.length) throw new Error("Labels must have at least one skeleton");
+  const analyzer = analyzerFromSkeleton(labels.skeletons[0]);
+  const toPose = (inst) => inst.numpy({ invisibleAsNaN: true });
+  const frames = [];
+  const allPoses = [];
+  const frameCounts = [];
+  const videoIds = [];
+  labels.videos.forEach((video, videoIdx) => {
+    const vid = videoIdString(video, videoIdx);
+    for (const lf of labels.labeledFrames.filter((f) => f.video === video)) {
+      const poses = lf.instances.map(toPose);
+      frames.push({ videoIdx, frameIdx: lf.frameIdx, isNegative: lf.isNegative ?? false, poses, vid });
+      allPoses.push(...poses);
+      frameCounts.push(poses.length);
+      videoIds.push(vid);
+    }
+  });
+  return { config, analyzer, frames, allPoses, frameCounts, videoIds, _fx: null };
+}
+
+// The shared feature matrix + extractors (built once; reused by anomaly + gmm). This is the
+// expensive part (incl. the O(n^2) NN feature), so it is computed at most once per context.
+function ensureFeatures(ctx) {
+  if (!ctx._fx) ctx._fx = new LabelQCDetector(ctx.config).fitFeatures(ctx.allPoses, ctx.analyzer);
+  return ctx._fx;
+}
+
+// Visit each instance once, aligned with the flat allPoses / feature-matrix row order.
+function eachInstance(ctx, fn) {
+  let row = 0;
+  for (const f of ctx.frames) {
+    for (let i = 0; i < f.poses.length; i++) {
+      fn(f, i, row, `${f.videoIdx}:${f.frameIdx}:${i}`);
+      row++;
+    }
+  }
+}
+
+/** ZScore geometric anomaly: per-instance score + raw feature contributions. */
+export function computeAnomalyUnit(ctx) {
+  const fx = ensureFeatures(ctx);
+  const det = new ZScoreDetector(3.0).fit(fx.rawMatrix);
+  const instanceScores = new Map();
+  const contributions = new Map();
+  eachInstance(ctx, (f, i, row, key) => {
+    const s = det.scoreOne(fx.cleanMatrix[row]);
+    instanceScores.set(key, Number.isFinite(s) ? s : 0);
+    const c = {};
+    fx.featureNames.forEach((n, j) => (c[n] = fx.rawMatrix[row][j] ?? 0));
+    contributions.set(key, c);
+  });
+  return { instanceScores, contributions, featureNames: fx.featureNames };
+}
+
+/** GaussianMixture probability anomaly: per-instance 1 − percentile(log-likelihood). */
+export function computeGmmUnit(ctx) {
+  const fx = ensureFeatures(ctx);
+  const gmmScores = new Map();
+  let det = null;
+  try {
+    det = new GMMDetector({
+      nComponents: ctx.config.gmmNComponents,
+      percentileThreshold: ctx.config.gmmPercentileThreshold,
+    }).fit(fx.rawMatrix);
+  } catch {
+    det = null; // too few instances to fit a mixture — leave the unit empty
+  }
+  if (det) {
+    eachInstance(ctx, (f, i, row, key) => {
+      const s = det.scoreOne(fx.cleanMatrix[row]);
+      gmmScores.set(key, Number.isFinite(s) ? s : 0);
+    });
+  }
+  return { gmmScores, fitted: det != null };
+}
+
+/** Per-node spatial prior (Mahalanobis): nodeScores[] + worst node per instance. */
+export function computeSpatialUnit(ctx) {
+  const sp = new SpatialPrior().fit(ctx.allPoses, ctx.analyzer.nNodes);
+  const nodeScores = new Map();
+  const worstNodes = new Map();
+  eachInstance(ctx, (f, i, row, key) => {
+    const w = sp.worstNode(ctx.allPoses[row]);
+    nodeScores.set(key, w.scores);
+    worstNodes.set(key, w.index);
+  });
+  return { nodeScores, worstNodes };
+}
+
+/** Frame-level checks: instance count, negative-with-instances, duplicates. */
+export function computeFrameUnit(ctx) {
+  const det = new LabelQCDetector(ctx.config);
+  det.countChecker = new InstanceCountChecker(true).fit(ctx.frameCounts, ctx.videoIds);
+  const frameResults = new Map();
+  for (const f of ctx.frames) {
+    frameResults.set(`${f.videoIdx}:${f.frameIdx}`, det.checkFrame(f.poses, f.vid, f.isNegative));
+  }
+  return { frameResults };
 }
