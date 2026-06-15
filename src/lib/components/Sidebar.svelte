@@ -1,8 +1,37 @@
 <script>
   import { store } from "../labelsStore.svelte.js";
   import { edit } from "../editStore.svelte.js";
+  import { view } from "../viewStore.svelte.js";
+  import { qc, heatColor, hasFrameIssue } from "../qcStore.svelte.js";
   import FrameGrid from "./FrameGrid.svelte";
   import SkeletonEditor from "./SkeletonEditor.svelte";
+  import QcChecks from "./QcChecks.svelte";
+  import { ui } from "../uiStore.svelte.js";
+
+  // Click a flagged problem -> select its faulty node(s) and zoom the canvas to them.
+  function focusFaulty(instIdx) {
+    const item = store.current;
+    const t = qc.faultyTarget(item, instIdx);
+    if (!t) return;
+    edit.select(instIdx, t.primary >= 0 ? t.primary : 0); // -1 = no standout node (GMM density flag)
+    view.requestFocus(t.box);
+  }
+
+  // Left-edge resize: drag changes the rail width (clamped in the store).
+  function startResize(e) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const sx = e.clientX;
+    const w0 = ui.railW;
+    const move = (ev) => ui.setRailW(w0 + (sx - ev.clientX));
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
 
   const PALETTE = [
     "#f3c56c", "#7dd3fc", "#a7f3d0", "#fda4af", "#c4b5fd",
@@ -37,6 +66,22 @@
     return Array.isArray(s) ? { n: s[0], h: s[1], w: s[2], c: s[3] } : null;
   });
 
+  // Minimal by default: the full stats table and per-instance point lists are opt-in.
+  let moreStats = $state(false);
+  let expanded = $state(new Set()); // manually expanded instance indices
+  const isOpen = (i) => expanded.has(i) || edit.selInstance === i;
+  function toggleOpen(i) {
+    const s = new Set(expanded);
+    if (s.has(i)) s.delete(i);
+    else s.add(i);
+    expanded = s;
+  }
+  // Collapse manual expansions when navigating to another frame.
+  $effect(() => {
+    void store.index;
+    expanded = new Set();
+  });
+
   // Reactive snapshot of the current frame's instances/points — recomputes on every
   // edit (store.rev) so coordinates/visibility update live, without re-mounting the DOM.
   const panel = $derived.by(() => {
@@ -60,56 +105,104 @@
   });
 </script>
 
-<aside class="sidebar">
+<aside class="sidebar" style:width="{ui.railW}px" style:flex="0 0 {ui.railW}px">
+  <div class="rz" onpointerdown={startResize} title="Drag to resize"></div>
+  <div class="scroll">
   <header class="head">
+    <span class="filedot"></span>
     <div class="title" title={store.fileName}>{store.fileName}</div>
-    <button class="ghost" onclick={() => store.reset()}>✕ Close</button>
+    <button class="ghost" onclick={() => store.reset()} title="Close file">✕</button>
   </header>
 
   {#if store.error}
-    <p class="err">{store.error}</p>
+    <p class="err side-section">{store.error}</p>
   {/if}
 
   <!-- Discrete frame selector -->
   <FrameGrid />
 
-  <!-- Video / source -->
-  <section class="card">
-    <h3>Video</h3>
-    {#if videoShape}
-      <dl>
-        <dt>Resolution</dt>
-        <dd>{videoShape.w} × {videoShape.h}{videoShape.c ? ` × ${videoShape.c}` : ""}</dd>
-        <dt>Frames</dt>
-        <dd>{videoShape.n ?? "—"}</dd>
-        <dt>Embedded</dt>
-        <dd>{store.hasEmbedded ? "yes (.pkg.slp)" : "no"}</dd>
-      </dl>
-    {:else}
-      <p class="muted">No video metadata.</p>
-    {/if}
-
-    {#if store.videoModel}
-      <p class="muted small">video: {store.videoName}</p>
-    {/if}
-  </section>
-
-  <!-- Counts -->
-  {#if totals}
-    <section class="card">
-      <h3>Labels</h3>
-      <dl>
-        <dt>Labeled frames</dt>
-        <dd>{totals.labeledFrames}</dd>
-        <dt>Instances</dt>
-        <dd>{totals.instances}</dd>
-        <dt>Tracks</dt>
-        <dd>{totals.tracks}</dd>
-        <dt>Videos</dt>
-        <dd>{totals.videos}</dd>
-      </dl>
+  <!-- QC results for the current frame — one verdict line + issues only when present -->
+  {#if qc.hasResults}
+    {@const fq = qc.frameQC(item)}
+    {@const fs = qc.frameScore(item)}
+    {@const ti = qc.frameTopIssue(item)}
+    {@const flagged = qc.frameFlagged(item)}
+    <section
+      class="side-section"
+      title="Anomaly = geometrically unusual vs. the rest of this file. Confidence = the model's own per-keypoint certainty. Both are review hints, not certain errors."
+    >
+      <h3 class="side-h">QC — this frame{qc.stale ? " · stale" : ""}</h3>
+      <div class="qcrow">
+        {#if fs != null}
+          <span class="qchip" style:background={heatColor(fs)}>{fs.toFixed(2)}</span>
+        {/if}
+        {#if flagged && ti?.worstNode >= 0}
+          <button
+            class="verdict flagged faulty"
+            onclick={() => focusFaulty(qc.frameWorstInstance(item))}
+            title="Zoom to the faulty node"
+          >
+            {ti.issue ?? "frame issue"} · {ti.worstNodeName}<span class="zico">⤢</span>
+          </button>
+        {:else}
+          <span class="verdict" class:flagged>
+            {#if flagged}
+              {ti?.issue ?? "frame issue"}{ti?.worstNodeName ? ` · ${ti.worstNodeName}` : ""}
+            {:else}
+              looks ok
+            {/if}
+          </span>
+        {/if}
+        {#if qc.hasConfidence}
+          {@const mc = qc.frameMinConfidence(item)}
+          {#if mc != null && mc <= 1 - qc.uncThreshold}
+            <span class="conf" title="Lowest model confidence in this frame">conf {mc.toFixed(2)}</span>
+          {/if}
+        {/if}
+      </div>
+      {#if hasFrameIssue(fq)}
+        <ul class="issues">
+          {#if fq.isIncomplete}<li>{fq.actualInstanceCount} / {fq.expectedInstanceCount} expected instances</li>{/if}
+          {#if fq.isNegativeWithInstances}<li>negative frame has instances</li>{/if}
+          {#if fq.duplicatePairs?.length}<li>{fq.duplicatePairs.length} duplicate pair(s): {fq.duplicateReasons.join(", ")}</li>{/if}
+        </ul>
+      {/if}
     </section>
   {/if}
+
+  <!-- Detection checks: toggle each technique; flagged set = union of the enabled ones -->
+  <QcChecks />
+
+  <!-- File: one summary line; the full stats table is opt-in -->
+  <section class="side-section">
+    <div class="fhead">
+      <h3 class="side-h">File</h3>
+      <button class="more" onclick={() => (moreStats = !moreStats)}>{moreStats ? "less" : "more"}</button>
+    </div>
+    {#if totals}
+      <p class="fsummary">{totals.labeledFrames} frames · {totals.instances} instances</p>
+    {/if}
+    {#if moreStats}
+      <dl>
+        {#if videoShape}
+          <dt>Resolution</dt>
+          <dd>{videoShape.w} × {videoShape.h}</dd>
+          <dt>Video frames</dt>
+          <dd>{videoShape.n ?? "—"}</dd>
+        {/if}
+        {#if totals}
+          <dt>Tracks</dt>
+          <dd>{totals.tracks}</dd>
+          <dt>Videos</dt>
+          <dd>{totals.videos}</dd>
+          <dt>Skeletons</dt>
+          <dd>{totals.skeletons}</dd>
+        {/if}
+        <dt>Source</dt>
+        <dd>{store.hasEmbedded ? "embedded (.pkg.slp)" : store.videoModel ? store.videoName : "external video"}</dd>
+      </dl>
+    {/if}
+  </section>
 
   <!-- Skeleton editor (nodes + edges) -->
   {#if skeleton}
@@ -117,156 +210,298 @@
   {/if}
 
   <!-- Current-frame instances (interactive) -->
-  <section class="card grow">
+  <section class="side-section grow">
     <div class="ihead">
-      <h3>This frame · {panel.length} instance(s)</h3>
+      <h3 class="side-h">This frame · {panel.length} instance{panel.length === 1 ? "" : "s"}</h3>
       <button class="addbtn" onclick={() => edit.addInstance()}>＋ Instance</button>
     </div>
     {#if panel.length}
       {#each panel as inst (inst.i)}
+        {@const qs = qc.hasResults ? qc.instanceScore(item, inst.i) : null}
+        {@const gs = qc.hasResults && qc.checks.gmm ? qc.gmmScore(item, inst.i) : null}
+        {@const open = isOpen(inst.i)}
         <div class="inst" class:sel={inst.i === edit.selInstance}>
           <div class="inst-head">
+            <button class="chev" class:open onclick={() => toggleOpen(inst.i)} title={open ? "Hide points" : "Show points"}>
+              ▸
+            </button>
             <button class="selbtn" onclick={() => edit.select(inst.i, 0)} title="Select instance">
               <span class="dot" style:background={dotColor(inst.i)}></span>
               #{inst.i}
               {inst.track ? `· ${inst.track}` : "· untracked"}
-              {inst.score != null ? `· ${inst.score.toFixed(2)}` : ""}
             </button>
+            {#if qs != null}
+              <span class="qchip sm" style:background={heatColor(qs)} title="QC anomaly score">{qs.toFixed(2)}</span>
+            {/if}
+            {#if gs != null && gs >= qc.gmmThreshold}
+              <span class="qchip sm" style:background={heatColor(gs)} title="GMM probability anomaly">G {gs.toFixed(2)}</span>
+            {/if}
             <button class="del" onclick={() => edit.deleteInstance(inst.i)} title="Delete instance">×</button>
           </div>
-          <div class="pts">
-            {#each inst.points as p (p.j)}
-              <button
-                class="pt"
-                class:hidden={!p.visible}
-                class:psel={inst.i === edit.selInstance && p.j === edit.selNode}
-                onclick={() => edit.select(inst.i, p.j)}
-                ondblclick={() => edit.toggleVisible(inst.i, p.j)}
-                title="Click to select · double-click to show/hide"
-              >
-                <span class="pname">{p.name}</span>
-                <span class="pxy">
-                  {p.placed ? `${p.x.toFixed(1)}, ${p.y.toFixed(1)}` : "—"}
-                  <i class="vis" class:on={p.visible}></i>
-                </span>
+          {#if qc.instanceFlagged(item, inst.i)}
+            {@const ii = qc.instanceIssue(item, inst.i)}
+            {#if ii?.worstNode >= 0}
+              <button class="qcissue faulty" onclick={() => focusFaulty(inst.i)} title="Zoom to the faulty node">
+                {ii.issue} · {ii.worstNodeName}<span class="zico">⤢</span>
               </button>
-            {/each}
-          </div>
+            {:else}
+              <div class="qcissue">{ii?.issue}{ii?.worstNodeName ? ` · ${ii.worstNodeName}` : ""}</div>
+            {/if}
+          {/if}
+          {#if open}
+            <div class="pts">
+              {#each inst.points as p (p.j)}
+                <button
+                  class="pt"
+                  class:hidden={!p.visible}
+                  class:psel={inst.i === edit.selInstance && p.j === edit.selNode}
+                  onclick={() => edit.select(inst.i, p.j)}
+                  ondblclick={() => edit.toggleVisible(inst.i, p.j)}
+                  title="Click to select · double-click to show/hide"
+                >
+                  <span class="pname">{p.name}</span>
+                  <span class="pxy">
+                    {p.placed ? `${p.x.toFixed(1)}, ${p.y.toFixed(1)}` : "—"}
+                    <i class="vis" class:on={p.visible}></i>
+                  </span>
+                </button>
+              {/each}
+            </div>
+          {/if}
         </div>
       {/each}
     {:else}
       <p class="muted">No instances on this frame. Use ＋ Instance to add one.</p>
     {/if}
   </section>
+  </div>
 </aside>
 
 <style>
+  /* Right rail: docked inspector, one tone above the well, resizable from its
+     left edge. The handle sits outside the inner scroller so it never scrolls away. */
   .sidebar {
-    width: 320px;
-    flex: 0 0 320px;
+    position: relative;
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+  }
+  .scroll {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
     overflow-y: auto;
-    padding-right: 0.25rem;
+    overflow-x: hidden;
+  }
+  .rz {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 7px;
+    cursor: ew-resize;
+    z-index: 3;
+  }
+  .rz::after {
+    content: "";
+    position: absolute;
+    left: 2px;
+    top: 50%;
+    height: 44px;
+    width: 3px;
+    transform: translateY(-50%);
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.18);
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  .rz:hover::after {
+    opacity: 1;
   }
   .head {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 0.5rem;
+    padding: 0.85rem 1.1rem;
+  }
+  .filedot {
+    width: 6px;
+    height: 6px;
+    background: var(--good);
+    flex: none;
   }
   .title {
+    flex: 1;
     font-weight: 600;
-    font-size: 0.9rem;
+    font-size: 0.8rem;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    letter-spacing: 0.02em;
   }
   .ghost {
     background: none;
-    border: 1px solid #2a3442;
-    color: var(--muted);
-    border-radius: 6px;
-    padding: 0.25rem 0.5rem;
-    font-size: 0.78rem;
+    border: none;
+    color: var(--dim);
+    border-radius: var(--r-xs);
+    width: 1.6rem;
+    height: 1.6rem;
+    font-size: 0.75rem;
     cursor: pointer;
-    white-space: nowrap;
+    transition: color 0.12s, background 0.12s;
   }
   .ghost:hover {
-    color: #fda4af;
-    border-color: #5a3540;
+    color: var(--danger);
+    background: rgba(251, 113, 133, 0.08);
   }
-  .card {
-    background: #10151d;
-    border: 1px solid #1d2632;
-    border-radius: 10px;
-    padding: 0.8rem 0.9rem;
-  }
-  .card.grow {
+  .grow {
     flex: 1;
     min-height: 120px;
-  }
-  h3 {
-    margin: 0 0 0.55rem;
-    font-size: 0.82rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: #9fb0c3;
   }
   dl {
     margin: 0;
     display: grid;
     grid-template-columns: auto 1fr;
-    gap: 0.2rem 0.75rem;
-    font-size: 0.85rem;
+    gap: 0.18rem 0.85rem;
+    font-size: 0.8rem;
   }
   dt {
-    color: var(--muted);
+    color: var(--dim);
   }
   dd {
     margin: 0;
     text-align: right;
+    color: #c3cedb;
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .muted {
     color: var(--muted);
-    font-size: 0.85rem;
+    font-size: 0.82rem;
     margin: 0.25rem 0 0;
   }
-  .small {
-    font-size: 0.78rem;
+  .fhead {
+    display: flex;
+    align-items: baseline;
+    gap: 0.55rem;
+  }
+  .fhead .side-h {
+    margin: 0;
+    flex: 1;
+  }
+  .more {
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: 0.7rem;
+    color: var(--dim);
+    cursor: pointer;
+    transition: color 0.12s;
+  }
+  .more:hover {
+    color: var(--accent);
+  }
+  .fsummary {
+    margin: 0.35rem 0 0;
+    font-size: 0.8rem;
+    color: #c3cedb;
+    font-variant-numeric: tabular-nums;
+  }
+  .fsummary + dl {
+    margin-top: 0.45rem;
+  }
+  .chev {
+    background: none;
+    border: none;
+    padding: 0 0.1rem;
+    color: var(--dim);
+    font-size: 0.66rem;
+    cursor: pointer;
+    flex: none;
+    transition: transform 0.15s var(--ease), color 0.12s;
+  }
+  .chev.open {
+    transform: rotate(90deg);
+  }
+  .chev:hover {
+    color: var(--text);
   }
   .err {
     color: #fda4af;
     font-size: 0.82rem;
     margin: 0;
   }
+  .qcrow {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+  .verdict {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.82rem;
+    line-height: 1.45;
+    color: #9cb8a6;
+  }
+  .verdict.flagged {
+    color: #e7c08a;
+    font-weight: 600;
+  }
+  .conf {
+    font-size: 0.72rem;
+    color: var(--warn);
+    font-variant-numeric: tabular-nums;
+  }
+  .qchip {
+    color: #04181d;
+    font-weight: 700;
+    border-radius: var(--r-xs);
+    padding: 0.06rem 0.4rem;
+    font-size: 0.72rem;
+  }
+  .qchip.sm {
+    font-size: 0.66rem;
+    padding: 0.02rem 0.28rem;
+  }
+  .issues {
+    margin: 0.45rem 0 0;
+    padding-left: 1rem;
+    font-size: 0.76rem;
+    color: #d9b25c;
+    line-height: 1.5;
+  }
   .ihead {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
+    gap: 0.55rem;
     margin-bottom: 0.4rem;
   }
-  .ihead h3 {
+  .ihead .side-h {
     margin: 0;
+    flex: 1;
   }
   .addbtn {
-    background: #18212d;
-    border: 1px solid #2a3442;
+    background: none;
+    border: 1px solid var(--border);
     color: var(--accent);
-    border-radius: 6px;
-    padding: 0.2rem 0.5rem;
-    font-size: 0.76rem;
+    border-radius: var(--r-xs);
+    padding: 0.16rem 0.5rem;
+    font-size: 0.7rem;
     cursor: pointer;
     white-space: nowrap;
+    transition: background 0.12s, border-color 0.12s;
   }
   .addbtn:hover {
-    background: #1f2937;
+    background: rgba(95, 217, 242, 0.07);
+    border-color: rgba(95, 217, 242, 0.4);
   }
   .inst {
-    border-top: 1px solid #1b2430;
+    border-top: 1px solid var(--border-soft);
     padding: 0.45rem 0.3rem 0.3rem;
     border-radius: 6px;
   }
@@ -274,8 +509,8 @@
     border-top: none;
   }
   .inst.sel {
-    background: #131c27;
-    box-shadow: inset 0 0 0 1px #2c4a66;
+    background: rgba(95, 217, 242, 0.05);
+    box-shadow: inset 0 0 0 1px rgba(95, 217, 242, 0.3);
   }
   .inst-head {
     font-size: 0.8rem;
@@ -304,8 +539,8 @@
   }
   .del {
     background: none;
-    border: 1px solid #2a3442;
-    color: #9fb0c3;
+    border: none;
+    color: var(--dim);
     border-radius: 5px;
     padding: 0 0.4rem;
     cursor: pointer;
@@ -313,7 +548,6 @@
   }
   .del:hover {
     color: #fda4af;
-    border-color: #5a3540;
   }
   .dot {
     width: 9px;
@@ -321,6 +555,35 @@
     border-radius: 50%;
     display: inline-block;
     flex: none;
+  }
+  .qcissue {
+    font-size: 0.72rem;
+    color: #9fb0c3;
+    margin: -0.1rem 0 0.2rem 1.3rem;
+  }
+  /* a flagged problem that is clickable to zoom in on its faulty node(s).
+     Inline text flow (not inline-flex) so a long "issue · node" wraps to a second
+     line instead of clipping mid-word against the rail edge. */
+  .faulty {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .faulty:hover {
+    text-decoration: underline;
+  }
+  .zico {
+    margin-left: 0.3rem;
+    opacity: 0.5;
+    font-size: 0.85em;
+    white-space: nowrap;
+  }
+  .faulty:hover .zico {
+    opacity: 1;
+    color: var(--accent);
   }
   .pts {
     display: grid;
@@ -341,14 +604,14 @@
     text-align: left;
   }
   .pt:hover {
-    background: #141b25;
+    background: rgba(255, 255, 255, 0.03);
   }
   .pt.hidden {
     opacity: 0.45;
   }
   .pt.psel {
     border-color: var(--accent);
-    background: #14202c;
+    background: rgba(95, 217, 242, 0.07);
   }
   .pname {
     color: var(--muted);

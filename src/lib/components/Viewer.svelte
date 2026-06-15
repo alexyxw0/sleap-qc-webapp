@@ -2,7 +2,11 @@
   import { store } from "../labelsStore.svelte.js";
   import { edit } from "../editStore.svelte.js";
   import { view } from "../viewStore.svelte.js";
+  import { qc, heatColor } from "../qcStore.svelte.js";
+  import { ui } from "../uiStore.svelte.js";
+  import { toast } from "../toastStore.svelte.js";
   import { drawScene, frameDims, hitTestNode } from "../draw.js";
+  import HeatTimeline from "./HeatTimeline.svelte";
 
   let wrap = $state();
   let canvas = $state();
@@ -11,7 +15,6 @@
   let vpH = $state(0);
   let playing = $state(false);
   let timer = null;
-  let frameImage = $state.raw(null); // cached decoded frame, so edits don't re-fetch it
 
   let mode = null; // 'node' (drag a point) | 'select' (just selected, no move) | 'pan'
   let dragging = null;
@@ -49,23 +52,14 @@
     return () => ro.disconnect();
   });
 
-  // (A) Fetch the frame image — only when the frame or attached video changes.
+  // (A) Keep the decoded frame image in sync with the current frame. Decoding is serialized
+  // in the store (latest-wins reconciliation), so fast timeline scrubbing converges to the
+  // current frame without overlapping/aborted decodes that would desync image vs. overlay.
   $effect(() => {
-    const item = store.current;
     void store.index;
     void store.videoModel;
-    if (!ctx) return;
-    let cancelled = false;
-    const ac = new AbortController();
-    (async () => {
-      const image = await store.getFrameImage(item, ac.signal);
-      if (cancelled) return;
-      frameImage = image ?? null;
-    })();
-    return () => {
-      cancelled = true;
-      ac.abort();
-    };
+    void store.rev;
+    store.syncFrameImage();
   });
 
   // (B) Draw image + overlay. The zoom/pan transform is applied *inside* the canvas
@@ -73,6 +67,7 @@
   // is one drawImage + a few shapes — cheap enough to run on every zoom/pan/edit frame.
   $effect(() => {
     void store.rev;
+    void qc.rev;
     const selI = edit.selInstance;
     const selN = edit.selNode;
     const z = view.zoom;
@@ -84,12 +79,25 @@
     const sk = store.skeleton;
     if (!ctx || !W || !H) return;
 
+    // QC rings: red on the worst *geometric* node of flagged instances; amber on the
+    // least-confident node of low-confidence instances. Both only when concerning, so normal
+    // poses stay clean. *Nodes[instIdx] = nodeIdx to ring, or -1.
+    let worstNodes = null;
+    let uncertainNodes = null;
+    if (qc.hasResults && item) {
+      const insts = item.lf?.instances ?? [];
+      // red ring on the faulty node of any flagged instance — anomaly's spatial worst node,
+      // or the GMM's own leave-one-out node. Reacts live to both threshold sliders.
+      worstNodes = insts.map((_, i) => (qc.instanceFlagged(item, i) ? qc.faultyNodeFor(item, i) : -1));
+      uncertainNodes = insts.map((_, i) => qc.uncertainNodeFor(item, i));
+    }
+
     const cw = Math.round(W * dpr);
     const ch = Math.round(H * dpr);
     if (canvas.width !== cw) canvas.width = cw;
     if (canvas.height !== ch) canvas.height = ch;
 
-    const dims = frameDims(item, frameImage);
+    const dims = frameDims(item, store.frameImage);
     const fitCss = Math.min(W / dims.w, H / dims.h); // CSS px per image px to fit
     const s = fitCss * z * dpr; // device px per image px
     const offX = (cw - dims.w * s) / 2 + px * dpr;
@@ -97,14 +105,35 @@
     xform = { s, offX, offY };
 
     const scale = 1 / (fitCss * z); // image px per CSS px — keeps overlay a constant screen size
-    drawScene(ctx, frameImage, item, sk, {
+    drawScene(ctx, store.frameImage, item, sk, {
       transform: { s, offX, offY },
       dims,
       scale,
       editing: true,
       selInstance: selI,
       selNode: selN,
+      worstNodes,
+      uncertainNodes,
     });
+  });
+
+  // (C) "Zoom to faulty node" — the sidebar requests an image-space box; compute the zoom/pan
+  // that frames it (with a little context) and apply it once.
+  $effect(() => {
+    const box = view.focusBox;
+    if (!box || !vpW || !vpH) return;
+    const dims = frameDims(store.current, store.frameImage);
+    const fitCss = Math.min(vpW / dims.w, vpH / dims.h);
+    const margin = 36; // image px of context around the box
+    const bw = box.w + 2 * margin;
+    const bh = box.h + 2 * margin;
+    const cx = box.x + box.w / 2;
+    const cy = box.y + box.h / 2;
+    const fill = 0.6; // the box should fill ~60% of the viewport
+    let z = Math.min((vpW * fill) / (bw * fitCss), (vpH * fill) / (bh * fitCss));
+    z = Math.max(2.5, Math.min(6, z));
+    view.applyFocus(z, fitCss * z * (dims.w / 2 - cx), fitCss * z * (dims.h / 2 - cy));
+    view.clearFocus();
   });
 
   // Clear selection when navigating to another frame.
@@ -226,7 +255,14 @@
   }
   $effect(() => () => clearInterval(timer));
 
+  function seekFlagged(dir) {
+    const i = qc.seekFlagged(store.index, dir);
+    if (i >= 0) store.setIndex(i);
+    else toast(qc.hasResults ? "No flagged frames" : "Run QC first to navigate flagged frames");
+  }
+
   function onKey(e) {
+    if (ui.overlayOpen) return; // palette/help own the keyboard while up
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
     const mod = e.ctrlKey || e.metaKey;
     if (mod && (e.key === "z" || e.key === "Z")) {
@@ -257,6 +293,12 @@
     } else if (e.key === " ") {
       togglePlay();
       e.preventDefault();
+    } else if (e.key === "n" || e.key === "N") {
+      seekFlagged(e.shiftKey ? -1 : 1);
+      e.preventDefault();
+    } else if (e.key === "p" || e.key === "P") {
+      seekFlagged(-1);
+      e.preventDefault();
     } else if (e.key === "v" && edit.selInstance >= 0 && edit.selNode >= 0) {
       edit.toggleVisible(edit.selInstance, edit.selNode);
       e.preventDefault();
@@ -269,6 +311,19 @@
   }
 
   const item = $derived(store.current);
+
+  // Zero-padded frame readout, instrument style: 0169/0266.
+  const pad = (n) => String(n).padStart(String(store.frameCount).length, "0");
+
+  // HUD: current-frame QC verdict for the chip overlaid on the canvas.
+  const hud = $derived.by(() => {
+    void qc.rev;
+    if (!qc.hasResults || !item) return null;
+    const s = qc.frameScore(item);
+    const flagged = qc.frameFlagged(item);
+    const issue = flagged ? qc.frameTopIssue(item)?.issue : null;
+    return { score: s, flagged, issue };
+  });
 </script>
 
 <svelte:window onkeydown={onKey} />
@@ -283,6 +338,57 @@
       onpointerup={onPointerUp}
     ></canvas>
 
+    <div class="vf" aria-hidden="true"></div>
+
+    <div class="hud">
+      <span class="chip">
+        <span class="frac"><b>{pad(store.index + 1)}</b><span class="dim">/{pad(store.frameCount)}</span></span>
+        <span class="dim">· {item?.lf?.instances?.length ?? 0} INST</span>
+      </span>
+      {#if hud}
+        <span class="chip qc" class:flagged={hud.flagged}>
+          {#if hud.score != null}<i class="heat" style:background={heatColor(hud.score)}></i>{/if}
+          {#if hud.flagged}
+            {hud.issue ?? "frame issue"}
+          {:else}
+            OK
+          {/if}
+        </span>
+      {/if}
+    </div>
+
+  </div>
+
+  <div class="controls">
+    <button onclick={() => store.setIndex(0)} title="First frame">
+      <svg viewBox="0 0 14 14"><path d="M3 2.5v9" stroke="currentColor" stroke-width="1.5" /><path d="M11.5 2.8v8.4L5 7z" fill="currentColor" /></svg>
+    </button>
+    <button onclick={() => store.prev()} title="Previous (←/A)">
+      <svg viewBox="0 0 14 14"><path d="M10.5 2.8v8.4L4 7z" fill="currentColor" /></svg>
+    </button>
+    <button class="play" onclick={togglePlay} title="Play/Pause (Space)">
+      {#if playing}
+        <svg viewBox="0 0 14 14"><path d="M4 2.5h2.2v9H4zM7.8 2.5H10v9H7.8z" fill="currentColor" /></svg>
+      {:else}
+        <svg viewBox="0 0 14 14"><path d="M4 2.4v9.2L11.5 7z" fill="currentColor" /></svg>
+      {/if}
+    </button>
+    <button onclick={() => store.next()} title="Next (→/D)">
+      <svg viewBox="0 0 14 14"><path d="M3.5 2.8v8.4L10 7z" fill="currentColor" /></svg>
+    </button>
+    <button onclick={() => store.setIndex(store.frameCount - 1)} title="Last frame">
+      <svg viewBox="0 0 14 14"><path d="M11 2.5v9" stroke="currentColor" stroke-width="1.5" /><path d="M2.5 2.8v8.4L9 7z" fill="currentColor" /></svg>
+    </button>
+
+    <HeatTimeline />
+
+    <div class="counter">
+      <strong>{pad(store.index + 1)}</strong><span class="of">/{store.frameCount}</span>
+      {#if item}<span class="fidx">IDX {item.frameIdx}</span>{/if}
+    </div>
+
+    <span class="div"></span>
+
     <div class="zoomctl">
       <button onclick={() => view.zoomOut()} disabled={view.zoom <= 1} title="Zoom out (−)">−</button>
       <span class="pct">{view.zoomPct}%</span>
@@ -290,34 +396,11 @@
       <button onclick={() => view.reset()} disabled={view.zoom === 1 && view.panX === 0 && view.panY === 0} title="Reset view (0)">⤢</button>
     </div>
   </div>
-
-  <div class="controls">
-    <button onclick={() => store.setIndex(0)} title="First frame">⏮</button>
-    <button onclick={() => store.prev()} title="Previous (←/A)">◀</button>
-    <button class="play" onclick={togglePlay} title="Play/Pause (Space)">
-      {playing ? "❚❚" : "▶"}
-    </button>
-    <button onclick={() => store.next()} title="Next (→/D)">▶</button>
-    <button onclick={() => store.setIndex(store.frameCount - 1)} title="Last frame">⏭</button>
-
-    <input
-      class="slider"
-      type="range"
-      min="0"
-      max={Math.max(0, store.frameCount - 1)}
-      value={store.index}
-      oninput={(e) => store.setIndex(+e.target.value)}
-    />
-
-    <div class="counter">
-      <strong>{store.index + 1}</strong> / {store.frameCount}
-      {#if item}<span class="fidx">frameIdx {item.frameIdx}</span>{/if}
-    </div>
-  </div>
 </section>
 
 <style>
   .viewer {
+    flex: 1; /* fill the row */
     display: flex;
     flex-direction: column;
     min-width: 0;
@@ -327,9 +410,9 @@
     position: relative;
     flex: 1;
     min-height: 0;
+    /* the footage well sits a step darker than the chrome */
     background:
-      repeating-conic-gradient(#0c0f14 0% 25%, #0a0d12 0% 50%) 50% / 24px 24px;
-    border-radius: 10px;
+      repeating-conic-gradient(#0c0e11 0% 25%, #090b0d 0% 50%) 50% / 22px 22px;
     overflow: hidden;
   }
   canvas {
@@ -338,85 +421,156 @@
     height: 100%;
     touch-action: none; /* pointer events drive editing/pan, not scroll/zoom */
   }
-  .zoomctl {
+  /* viewfinder corner brackets — each corner is two 1px strokes */
+  .vf {
     position: absolute;
-    right: 0.6rem;
-    bottom: 0.6rem;
-    display: flex;
-    align-items: center;
-    gap: 0.2rem;
-    background: rgba(13, 18, 26, 0.85);
-    border: 1px solid #25303d;
-    border-radius: 8px;
-    padding: 0.2rem 0.3rem;
-    backdrop-filter: blur(4px);
-  }
-  .zoomctl button {
-    background: #1a212c;
-    color: #d7dee8;
-    border: 1px solid #2a3442;
-    border-radius: 5px;
-    width: 1.7rem;
-    height: 1.5rem;
-    font-size: 0.9rem;
-    cursor: pointer;
-    line-height: 1;
-  }
-  .zoomctl button:hover:not(:disabled) {
-    background: #222b38;
-  }
-  .zoomctl button:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-  .zoomctl .pct {
-    font-size: 0.72rem;
-    color: var(--muted);
-    min-width: 2.6rem;
-    text-align: center;
-    font-variant-numeric: tabular-nums;
+    inset: 10px;
+    pointer-events: none;
+    z-index: 2;
+    --vfc: rgba(232, 236, 239, 0.28);
+    background:
+      linear-gradient(var(--vfc), var(--vfc)) 0 0 / 16px 1px,
+      linear-gradient(var(--vfc), var(--vfc)) 0 0 / 1px 16px,
+      linear-gradient(var(--vfc), var(--vfc)) 100% 0 / 16px 1px,
+      linear-gradient(var(--vfc), var(--vfc)) 100% 0 / 1px 16px,
+      linear-gradient(var(--vfc), var(--vfc)) 0 100% / 16px 1px,
+      linear-gradient(var(--vfc), var(--vfc)) 0 100% / 1px 16px,
+      linear-gradient(var(--vfc), var(--vfc)) 100% 100% / 16px 1px,
+      linear-gradient(var(--vfc), var(--vfc)) 100% 100% / 1px 16px;
+    background-repeat: no-repeat;
   }
   .controls {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
-    padding: 0.7rem 0.2rem 0;
+    gap: 0.3rem;
+    padding: 0.45rem 0.75rem;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
   }
   .controls button {
-    background: #1a212c;
-    color: #d7dee8;
-    border: 1px solid #2a3442;
-    border-radius: 7px;
-    padding: 0.4rem 0.6rem;
-    font-size: 0.9rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    color: var(--muted);
+    border: none;
+    border-radius: var(--r-xs);
+    width: 1.9rem;
+    height: 1.9rem;
     cursor: pointer;
     line-height: 1;
+    transition: background 0.12s, color 0.12s;
+  }
+  .controls button svg {
+    width: 13px;
+    height: 13px;
   }
   .controls button:hover {
-    background: #222b38;
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text);
   }
   .controls button.play {
     background: var(--accent);
-    color: #06121f;
-    border-color: transparent;
-    font-weight: 700;
-    min-width: 2.4rem;
+    color: #04181d;
+    width: 2.4rem;
   }
-  .slider {
-    flex: 1;
-    accent-color: var(--accent);
+  .controls button.play:hover {
+    filter: brightness(1.1);
+    color: #04181d;
+  }
+  .controls .div {
+    width: 1px;
+    height: 1.1rem;
+    background: var(--border);
+    margin: 0 0.3rem;
+    flex: none;
+  }
+  .zoomctl {
+    display: flex;
+    align-items: center;
+    gap: 0.05rem;
+  }
+  .zoomctl button {
+    width: 1.7rem;
+    height: 1.7rem;
+    font-size: 0.85rem;
+  }
+  .zoomctl button:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+  .zoomctl .pct {
+    font-size: 0.68rem;
+    color: var(--muted);
+    min-width: 2.6rem;
+    text-align: center;
+  }
+  .hud {
+    position: absolute;
+    top: 1.1rem;
+    left: 1.1rem;
+    display: flex;
+    gap: 0.35rem;
+    pointer-events: none;
+    z-index: 3;
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    background: rgba(11, 13, 15, 0.82);
+    border: 1px solid var(--border);
+    border-radius: var(--r-xs);
+    padding: 0.24rem 0.6rem;
+    font-size: 0.7rem;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    backdrop-filter: blur(8px);
+  }
+  /* keep the frame fraction tight as one unit; the chip gap only separates it
+     from the instance count, so it reads "007/266 · 3 INST", not "007 /266". */
+  .frac {
+    display: inline-flex;
+    align-items: baseline;
+  }
+  .chip b {
+    color: var(--text);
+    font-size: 0.76rem;
+    font-weight: 700;
+  }
+  .chip .dim {
+    color: var(--dim);
+  }
+  .chip.qc {
+    color: #9fd3ac;
+  }
+  .chip.qc.flagged {
+    color: var(--warn);
+    border-color: rgba(243, 195, 78, 0.35);
+  }
+  .chip .heat {
+    width: 7px;
+    height: 7px;
+    flex: none;
   }
   .counter {
-    font-variant-numeric: tabular-nums;
-    color: var(--muted);
-    font-size: 0.85rem;
+    color: var(--dim);
+    font-size: 0.78rem;
     white-space: nowrap;
+    letter-spacing: 0.03em;
   }
   .counter strong {
-    color: #eaf0f7;
+    color: var(--text);
+    font-size: 0.86rem;
+    font-weight: 700;
+  }
+  .counter .of {
+    color: var(--dim);
   }
   .fidx {
-    margin-left: 0.5rem;
-    opacity: 0.7;
+    margin-left: 0.6rem;
+    color: var(--dim);
+    font-size: 0.66rem;
+    letter-spacing: 0.1em;
   }
 </style>

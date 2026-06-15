@@ -15,6 +15,24 @@ class ViewStore {
   panX = $state(0); // screen px
   panY = $state(0);
 
+  // A pending "zoom to this image-space box" request. The Viewer (which knows the viewport +
+  // fit scale) consumes it, computes the zoom/pan to frame the box, and clears it.
+  focusBox = $state.raw(null); // { x, y, w, h } in image coordinates
+
+  /** Ask the Viewer to zoom in on an image-space box (e.g. a faulty node / node-pair). */
+  requestFocus(box) {
+    this.focusBox = box;
+  }
+  clearFocus() {
+    this.focusBox = null;
+  }
+  /** Apply a Viewer-computed focus (zoom + screen pan), clamped. */
+  applyFocus(zoom, panX, panY) {
+    this.zoom = Math.min(MAX, Math.max(MIN, zoom));
+    this.panX = panX;
+    this.panY = panY;
+  }
+
   get transform() {
     return `translate(${this.panX}px, ${this.panY}px) scale(${this.zoom})`;
   }

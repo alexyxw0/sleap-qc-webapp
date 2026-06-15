@@ -86,7 +86,7 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
   const edges = skeleton.edges ?? [];
   const instances = lf.instances ?? [];
   const names = skeleton.nodeNames ?? [];
-  const { editing = false, selInstance = -1, selNode = -1, scale = 1 } = sel;
+  const { editing = false, selInstance = -1, selNode = -1, scale = 1, worstNodes = null, uncertainNodes = null } = sel;
 
   // Sizes are specified in on-screen pixels and converted to image-space via `scale`
   // (image px per screen px), so the overlay + labels look consistent at any video
@@ -147,6 +147,20 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
         ctx.strokeStyle = "rgba(255,255,255,0.85)";
         ctx.stroke();
       }
+      // QC: dashed warning ring on the most spatially-anomalous node of a flagged instance
+      // (red = geometric outlier) and the least-confident node (amber = low model confidence).
+      const qcRing = (radius, colorRing) => {
+        ctx.globalAlpha = 0.95;
+        ctx.beginPath();
+        ctx.arc(px, py, radius, 0, Math.PI * 2);
+        ctx.lineWidth = 2 * s;
+        ctx.setLineDash([3.5 * s, 2.5 * s]);
+        ctx.strokeStyle = colorRing;
+        ctx.stroke();
+        ctx.setLineDash([]);
+      };
+      if (worstNodes && worstNodes[idx] === ni) qcRing(r + 4 * s, "#fb7185");
+      if (uncertainNodes && uncertainNodes[idx] === ni) qcRing(r + (worstNodes && worstNodes[idx] === ni ? 7.5 : 4) * s, "#fbbf24");
       if (focused) {
         ctx.globalAlpha = 1;
         ctx.beginPath();

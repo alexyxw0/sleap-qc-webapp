@@ -1,13 +1,16 @@
-# SLEAP Web — viewer skeleton
+# SLEAP QC Web
 
-A minimal **Svelte 5 + Vite** web app that loads a SLEAP labels file
-(`.slp` or `.pkg.slp`) entirely in the browser using
-[`@talmolab/sleap-io.js`](https://www.npmjs.com/package/@talmolab/sleap-io.js), and lets
-you scrub through its frames with the pose overlay — the read/navigate core of the SLEAP
-GUI.
+A **Svelte 5 + Vite** web app that loads a SLEAP labels file (`.slp` or `.pkg.slp`)
+entirely in the browser using
+[`@talmolab/sleap-io.js`](https://www.npmjs.com/package/@talmolab/sleap-io.js): scrub
+frames with the pose overlay, **edit** poses/skeletons, and run **quality-control checks**
+(a JS port of `sleap.qc`) to surface anomalous frames — all client-side, no server.
 
-Built as the validation spike for the investigation in
-`../2026-06-09-sleap-io-js-web-backend/` (backend = sleap-io.js, frontend = Svelte).
+> **Provenance.** This is the standalone, stable baseline extracted at the point where the
+> `sleap.qc` detection pipeline had been ported and wired into the editor (deterministic
+> ZScore path). Later experimental QC work — the **ECOD** scorer + per-node spatial prior
+> (de-saturation), a confidence/uncertainty channel, and calibration — continues in a
+> separate experimental repository and is intentionally **not** included here.
 
 ## Run
 
@@ -44,7 +47,7 @@ npm run build    # production build to dist/ (verified green)
 - `demo-flies13-preds.slp` — **1350 frames, 2700 instances** (great for navigation);
   then add `demo-flies13-preds.mp4` to see the fly video under the poses.
 
-## Architecture (maps to the investigation)
+## Architecture
 
 - `src/lib/labelsStore.svelte.js` — the **reactivity bridge**. sleap-io.js objects are
   plain classes (not deep-proxied by Svelte), so the model lives in `$state.raw` and a
@@ -64,7 +67,7 @@ npm run build    # production build to dist/ (verified green)
 `smoke.mjs` is a Node check that the data-model fields the UI relies on exist on real
 fixtures (`node smoke.mjs`).
 
-## Editing (branch `feature/label-editing`)
+## Editing
 
 Edit the labels/nodes/skeleton of individual frames and save the result as a new file.
 Every operation was validated to survive `saveSlpToBytes` → reload before the UI was built.
@@ -109,15 +112,38 @@ mutating the sleap-io.js model in place and bumping `store.rev`. The canvas spli
 image-fetch from overlay-draw into two `$effect`s so dragging redraws the overlay without
 re-decoding the frame. `EditToolbar` / `SkeletonEditor` are the new components.
 
+## QC checks
+
+A JS port of the `sleap.qc` detection pipeline (`src/lib/qc/checks/`) is wired into the UI:
+
+- **Run QC** button (toolbar) runs the **deterministic** path on demand — geometric/visibility
+  features + frame-level checks + the ZScore anomaly scorer (`useGmm:false`; the GMM is
+  seed-unstable even in sklearn, so it's excluded from the UI). Shows a flagged-frame count
+  and a "stale" flag once you edit.
+- **Frame grid**: each tile gets a green→red **anomaly heat bar** (per-frame max score) and a
+  red triangle for **frame-level issues** (incomplete count, duplicates, negative-with-instances).
+- **Sidebar**: a **QC card** for the current frame — the anomaly score + confidence, the
+  **likely issue** (what the check thinks is wrong, e.g. "Unusual edge length", "Isolated
+  node"; ported from `sleap.qc`'s `_infer_top_issue`), instance count vs. expected, and any
+  frame-level issues — plus a per-instance **anomaly chip + issue** in the instance panel.
+  The card states plainly that the anomaly is "geometrically unusual vs. the rest of this
+  file (a review hint, not a certain error)" so a high score is read as *look here*, not
+  *definitely wrong* — and the issue label lets you verify/dismiss it quickly.
+
+The detector port is validated against the real Python `sleap.qc` (Python 3.13): 17/18
+features bit-exact, ZScore ~1e-8, GMM scoring exact. The deterministic **ZScore** path is
+used in the UI (the GMM is seed-unstable even in sklearn, so it's excluded). Heavy compute
+runs on the main thread for now (fine for typical files; a Web Worker is the next step for
+very large ones).
+
 ## Scope (still not the full GUI)
 
 **Not yet**: track creation/reassignment, prediction-review workflow, suggestions,
-multi-instance copy/interpolate, zoom/pan. The data model supports these; they're UI work —
-see the investigation's gap analysis and design questions (DQ-F1…F5).
+multi-instance copy/interpolate. The data model supports these; they're UI work.
 
 ## Notes / known edges
 - Pure client-side SPA — no server. Production: `@sveltejs/adapter-static` under SvelteKit
-  (recommended in the investigation) or this plain Vite build behind any static host.
+  or this plain Vite build behind any static host.
 - Needs network at runtime: the h5wasm WASM is pulled from jsDelivr by the streaming
   worker. (Can be self-hosted later via `h5wasmUrl`.)
 - External-video decode uses WebCodecs (modern browsers).

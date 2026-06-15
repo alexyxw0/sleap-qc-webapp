@@ -2,10 +2,15 @@
   import { store } from "./lib/labelsStore.svelte.js";
   import { edit } from "./lib/editStore.svelte.js";
   import { view } from "./lib/viewStore.svelte.js";
+  import { qc } from "./lib/qcStore.svelte.js";
   import FileUpload from "./lib/components/FileUpload.svelte";
   import Viewer from "./lib/components/Viewer.svelte";
   import Sidebar from "./lib/components/Sidebar.svelte";
   import EditToolbar from "./lib/components/EditToolbar.svelte";
+  import CommandPalette from "./lib/components/CommandPalette.svelte";
+  import ShortcutsHelp from "./lib/components/ShortcutsHelp.svelte";
+  import Toasts from "./lib/components/Toasts.svelte";
+  import { ui } from "./lib/uiStore.svelte.js";
 
   // Reset edit history + view whenever a different labels object is loaded (or closed).
   let lastLabels = null;
@@ -14,6 +19,8 @@
       lastLabels = store.labels;
       edit.resetForNewFile();
       view.reset();
+      qc.reset();
+      ui.closeAll();
     }
   });
 
@@ -36,23 +43,26 @@
       <Sidebar />
     </div>
   </main>
+  <CommandPalette />
+  <ShortcutsHelp />
 {:else}
   <FileUpload />
 {/if}
+<Toasts />
 
 <style>
+  /* One fused instrument face: the video is framed in its own region, panels meet
+     at hairlines, nothing floats over the footage except the HUD readouts and the
+     review panel. */
   .app {
     height: 100vh;
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
-    padding: 1rem;
-    box-sizing: border-box;
+    animation: fade-up 0.3s var(--ease) both;
   }
   .row {
     flex: 1;
     min-height: 0;
     display: flex;
-    gap: 1rem;
   }
 </style>
