@@ -5,6 +5,7 @@ export function makeQCConfig(overrides = {}) {
     useGmm: true,
     useCurvature: "auto", // "auto" => enable for chains >= 5 nodes
     useSymmetry: "auto", // "auto" => enable when symmetry pairs exist
+    useChirality: "auto", // "auto" => enable when symmetry pairs exist (skeleton or name-inferred)
     useAnatomical: false,
 
     instanceThreshold: 0.7,
@@ -32,3 +33,6 @@ export const shouldUseCurvature = (config, maxChainLength) =>
 
 export const shouldUseSymmetry = (config, hasSymmetry) =>
   typeof config.useSymmetry === "boolean" ? config.useSymmetry : hasSymmetry;
+
+export const shouldUseChirality = (config, hasSymmetry) =>
+  typeof config.useChirality === "boolean" ? config.useChirality : hasSymmetry;

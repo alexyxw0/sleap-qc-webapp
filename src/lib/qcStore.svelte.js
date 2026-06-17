@@ -13,6 +13,8 @@ import {
   computeGmmUnit,
   computeSpatialUnit,
   computeFrameUnit,
+  computeChiralityUnit,
+  computePoseSplitUnit,
 } from "./qc/checks/detector.js";
 import { makeQCConfig } from "./qc/checks/config.js";
 import { topIssue, confidence } from "./qc/checks/explain.js";
@@ -23,6 +25,8 @@ const UNIT_OF = {
   anomaly: "anomaly",
   gmm: "gmm",
   spatial: "spatial",
+  chirality: "chirality",
+  poseSplit: "poseSplit",
   count: "frame",
   negative: "frame",
   duplicates: "frame",
@@ -34,13 +38,15 @@ class QCStore {
   threshold = $state(0.7); // anomaly (ZScore) flag
   gmmThreshold = $state(0.95); // GMM anomaly (1 − likelihood-percentile) flag — top ~5%
   spatialThreshold = $state(3.5); // worst-node Mahalanobis >= this => spatial outlier
+  chiralityThreshold = $state(0.5); // L/R-flip flag ([0,1] wrong-side fraction; hard rule forces >=0.9)
+  poseSplitThreshold = $state(0.5); // chimera flag ([0,1] squashed split_score; 0.5 == raw split_score 1)
   uncThreshold = $state(0.6); // (stable build: confidence channel absent; kept for the shared UI)
   rev = $state(0); // bump when results / selection change
   ranAtRev = -1; // store.rev at the time QC last ran (for staleness)
 
   // Which detection techniques to run / include. The flagged frames are the UNION of the
   // enabled-and-computed checks. GMM is off by default — it's the heaviest, opt-in technique.
-  checks = $state({ anomaly: true, gmm: false, spatial: true, count: true, negative: true, duplicates: true });
+  checks = $state({ anomaly: true, gmm: false, spatial: true, chirality: true, poseSplit: true, count: true, negative: true, duplicates: true });
 
   #ctx = null; // shared frame/pose/feature context for the current labels
   #ctxLabels = null; // identity of the labels #ctx was built for
@@ -57,6 +63,12 @@ class QCStore {
   #frameGmm = new Map(); // "v:f" -> max GMM score
   #spatialFlagged = new Set(); // "v:f" with worst-node Mahalanobis >= spatialThreshold
   #gmmWorst = new Map(); // "v:f:i" -> GMM leave-one-out worst node (computed lazily)
+  #chiralityScores = new Map(); // "v:f:i" -> L/R-flip [0,1] score
+  #chiralityWorst = new Map(); // "v:f:i" -> a node from a wrong pair, -1 if none
+  #frameChir = new Map(); // "v:f" -> max chirality score
+  #poseSplitScores = new Map(); // "v:f:i" -> chimera [0,1] score
+  #poseSplitWorst = new Map(); // "v:f:i" -> a bridge-edge node, -1 if none
+  #framePoseSplit = new Map(); // "v:f" -> max pose-split score
 
   get hasResults() {
     this.rev;
@@ -98,6 +110,8 @@ class QCStore {
     if (c.anomaly) for (const [fk, s] of this.#frameAnom) if (s >= this.threshold) u.add(fk);
     if (c.gmm) for (const [fk, s] of this.#frameGmm) if (s >= this.gmmThreshold) u.add(fk);
     if (c.spatial) for (const fk of this.#spatialFlagged) u.add(fk);
+    if (c.chirality) for (const [fk, s] of this.#frameChir) if (s >= this.chiralityThreshold) u.add(fk);
+    if (c.poseSplit) for (const [fk, s] of this.#framePoseSplit) if (s >= this.poseSplitThreshold) u.add(fk);
     for (const [fk, fq] of this.#frameResults) {
       if (
         (c.count && fq.isIncomplete) ||
@@ -125,6 +139,16 @@ class QCStore {
       return n;
     }
     if (name === "spatial") return this.#spatialFlagged.size;
+    if (name === "chirality") {
+      let n = 0;
+      for (const s of this.#frameChir.values()) if (s >= this.chiralityThreshold) n++;
+      return n;
+    }
+    if (name === "poseSplit") {
+      let n = 0;
+      for (const s of this.#framePoseSplit.values()) if (s >= this.poseSplitThreshold) n++;
+      return n;
+    }
     let n = 0;
     for (const fq of this.#frameResults.values()) {
       if (
@@ -191,7 +215,45 @@ class QCStore {
       if (s != null && s >= this.gmmThreshold) return true;
     }
     if (c.spatial && this.#spatialFlagged.has(fk)) return true;
+    if (c.chirality) {
+      const s = this.#frameChir.get(fk);
+      if (s != null && s >= this.chiralityThreshold) return true;
+    }
+    if (c.poseSplit) {
+      const s = this.#framePoseSplit.get(fk);
+      if (s != null && s >= this.poseSplitThreshold) return true;
+    }
     return hasFrameIssue(this.frameQC(item));
+  }
+
+  /**
+   * Every ENABLED check currently flagging this frame, as `{ key, label, score }` (score is
+   * null for the boolean frame checks). Same union logic as frameFlagged, but it names which
+   * detectors agree so the sidebar can show "what's flagging this frame" at a glance.
+   */
+  frameFlaggingChecks(item) {
+    this.rev;
+    if (!item) return [];
+    const fk = this.#fkey(item);
+    const c = this.checks;
+    const out = [];
+    const score = (on, map, thr, key, label) => {
+      if (!on) return;
+      const s = map.get(fk);
+      if (s != null && s >= thr) out.push({ key, label, score: s });
+    };
+    score(c.chirality, this.#frameChir, this.chiralityThreshold, "chirality", "L/R flip");
+    score(c.poseSplit, this.#framePoseSplit, this.poseSplitThreshold, "poseSplit", "Chimera");
+    score(c.anomaly, this.#frameAnom, this.threshold, "anomaly", "Anomaly");
+    score(c.gmm, this.#frameGmm, this.gmmThreshold, "gmm", "GMM");
+    if (c.spatial && this.#spatialFlagged.has(fk)) out.push({ key: "spatial", label: "Spatial", score: null });
+    const fq = this.#frameResults.get(fk);
+    if (fq) {
+      if (c.count && fq.isIncomplete) out.push({ key: "count", label: "Count", score: null });
+      if (c.negative && fq.isNegativeWithInstances) out.push({ key: "negative", label: "Negative", score: null });
+      if (c.duplicates && (fq.duplicatePairs?.length ?? 0) > 0) out.push({ key: "duplicates", label: "Duplicate", score: null });
+    }
+    return out;
   }
 
   // --- confidence channel is absent in this build (inert) ---
@@ -231,6 +293,14 @@ class QCStore {
     if (this.checks.gmm) {
       const g = this.#gmmScores.get(key);
       if (g != null && g >= this.gmmThreshold) return true;
+    }
+    if (this.checks.chirality) {
+      const s = this.#chiralityScores.get(key);
+      if (s != null && s >= this.chiralityThreshold) return true;
+    }
+    if (this.checks.poseSplit) {
+      const s = this.#poseSplitScores.get(key);
+      if (s != null && s >= this.poseSplitThreshold) return true;
     }
     return false;
   }
@@ -285,11 +355,26 @@ class QCStore {
   faultyNodeFor(item, instIdx) {
     this.rev;
     if (!item) return -1;
+    const key = `${this.#fkey(item)}:${instIdx}`;
+    if (this.checks.chirality) {
+      const s = this.#chiralityScores.get(key);
+      if (s != null && s >= this.chiralityThreshold) {
+        const n = this.#chiralityWorst.get(key) ?? -1;
+        if (n >= 0) return n;
+      }
+    }
+    if (this.checks.poseSplit) {
+      const s = this.#poseSplitScores.get(key);
+      if (s != null && s >= this.poseSplitThreshold) {
+        const n = this.#poseSplitWorst.get(key) ?? -1;
+        if (n >= 0) return n;
+      }
+    }
     if (this.checks.spatial) {
-      const n = this.#worstNodes.get(`${this.#fkey(item)}:${instIdx}`) ?? -1;
+      const n = this.#worstNodes.get(key) ?? -1;
       if (n >= 0) return n;
     }
-    if (this.#gmmFlagged(`${this.#fkey(item)}:${instIdx}`)) return this.gmmWorstNode(item, instIdx);
+    if (this.#gmmFlagged(key)) return this.gmmWorstNode(item, instIdx);
     return -1;
   }
 
@@ -317,6 +402,23 @@ class QCStore {
     const key = `${this.#fkey(item)}:${instIdx}`;
     const aScore = this.#instanceScores.get(key);
     const gScore = this.#gmmScores.get(key);
+    const chScore = this.#chiralityScores.get(key);
+    const psScore = this.#poseSplitScores.get(key);
+    if (aScore == null && gScore == null && chScore == null && psScore == null) return null;
+
+    // Chirality wins the verdict: a whole-instance L/R flip is the dominant, most-actionable error.
+    if (this.checks.chirality && chScore != null && chScore >= this.chiralityThreshold) {
+      const cn = this.#chiralityWorst.get(key) ?? -1;
+      const cName = cn >= 0 ? store.skeleton?.nodeNames?.[cn] ?? `node ${cn}` : null;
+      return { score: chScore, confidence: confidence(chScore), feature: null, issue: "Whole-instance L/R flip", worstNode: cn, worstNodeName: cName, worstNodeDist: null };
+    }
+    // Pose-split (chimera) verdict, just under chirality.
+    if (this.checks.poseSplit && psScore != null && psScore >= this.poseSplitThreshold) {
+      const pn = this.#poseSplitWorst.get(key) ?? -1;
+      const pName = pn >= 0 ? store.skeleton?.nodeNames?.[pn] ?? `node ${pn}` : null;
+      return { score: psScore, confidence: confidence(psScore), feature: null, issue: "Split pose / chimera", worstNode: pn, worstNodeName: pName, worstNodeDist: null };
+    }
+
     if (aScore == null && gScore == null) return null;
     const wn = this.faultyNodeFor(item, instIdx);
     const ns = this.#nodeScores.get(key);
@@ -362,6 +464,14 @@ class QCStore {
       if (this.checks.gmm) {
         const g = this.#gmmScores.get(key);
         if (g != null) margin = Math.max(margin, g - this.gmmThreshold);
+      }
+      if (this.checks.chirality) {
+        const s = this.#chiralityScores.get(key);
+        if (s != null) margin = Math.max(margin, s - this.chiralityThreshold);
+      }
+      if (this.checks.poseSplit) {
+        const s = this.#poseSplitScores.get(key);
+        if (s != null) margin = Math.max(margin, s - this.poseSplitThreshold);
       }
       if (margin > bestMargin) {
         bestMargin = margin;
@@ -427,6 +537,8 @@ class QCStore {
     if (unit === "gmm") return computeGmmUnit(this.#ctx);
     if (unit === "spatial") return computeSpatialUnit(this.#ctx);
     if (unit === "frame") return computeFrameUnit(this.#ctx);
+    if (unit === "chirality") return computeChiralityUnit(this.#ctx);
+    if (unit === "poseSplit") return computePoseSplitUnit(this.#ctx);
     return null;
   }
 
@@ -438,6 +550,10 @@ class QCStore {
     this.#nodeScores = this.#computed.spatial?.nodeScores ?? new Map();
     this.#worstNodes = this.#computed.spatial?.worstNodes ?? new Map();
     this.#frameResults = this.#computed.frame?.frameResults ?? new Map();
+    this.#chiralityScores = this.#computed.chirality?.chiralityScores ?? new Map();
+    this.#chiralityWorst = this.#computed.chirality?.chiralityWorst ?? new Map();
+    this.#poseSplitScores = this.#computed.poseSplit?.poseSplitScores ?? new Map();
+    this.#poseSplitWorst = this.#computed.poseSplit?.poseSplitWorst ?? new Map();
 
     const frameMax = (src, dst) => {
       dst.clear();
@@ -448,8 +564,12 @@ class QCStore {
     };
     this.#frameAnom = new Map();
     this.#frameGmm = new Map();
+    this.#frameChir = new Map();
+    this.#framePoseSplit = new Map();
     frameMax(this.#instanceScores, this.#frameAnom);
     frameMax(this.#gmmScores, this.#frameGmm);
+    frameMax(this.#chiralityScores, this.#frameChir);
+    frameMax(this.#poseSplitScores, this.#framePoseSplit);
     this.#gmmWorst = new Map(); // lazy leave-one-out cache — invalidated whenever results change
 
     this.#spatialFlagged = new Set();

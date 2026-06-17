@@ -16,6 +16,8 @@ import { VisibilityModel } from "./features/visibility.js";
 import { NearestNeighborScorer } from "./features/reference.js";
 import { analyzerFromSkeleton } from "./features/skeleton.js";
 import { InstanceCountChecker, checkNegativeFrame, detectDuplicates } from "./frameLevel.js";
+import { ChiralityModel, resolveChiralityInputs, firstWrongPairNode } from "./features/chirality.js";
+import { computePoseSplit } from "./features/poseSplit.js";
 
 export const V3_FEATURE_NAMES = [
   "max_curvature", "curvature_std", "visibility_pattern_score",
@@ -247,7 +249,7 @@ export function buildContext(labels, config = makeQCConfig()) {
       videoIds.push(vid);
     }
   });
-  return { config, analyzer, frames, allPoses, frameCounts, videoIds, _fx: null };
+  return { config, analyzer, frames, allPoses, frameCounts, videoIds, labels, _fx: null };
 }
 
 // The shared feature matrix + extractors (built once; reused by anomaly + gmm). This is the
@@ -330,4 +332,53 @@ export function computeFrameUnit(ctx) {
     frameResults.set(`${f.videoIdx}:${f.frameIdx}`, det.checkFrame(f.poses, f.vid, f.isNegative));
   }
   return { frameResults };
+}
+
+/**
+ * Chirality — whole-instance L/R mirror flip. Learns each symmetric pair's canonical side
+ * from the file's own instances (fit on ctx.allPoses), then scores the wrong-side fraction
+ * per instance. Coordinate-only; self-disables (empty maps) when the skeleton has no
+ * symmetry pairs (and none can be name-inferred). A hard rule promotes a majority-wrong
+ * instance (fraction >= 0.5) to a >= 0.9 score so it always clears the flag threshold.
+ */
+export function computeChiralityUnit(ctx) {
+  const sk = ctx.labels?.skeletons?.[0];
+  const names = sk?.nodeNames ?? sk?.nodes?.map((n) => n.name) ?? [];
+  const inputs = resolveChiralityInputs(ctx.analyzer, names, ctx.allPoses);
+  if (!inputs) return { chiralityScores: new Map(), chiralityWorst: new Map(), fitted: false };
+  const model = new ChiralityModel().fit(ctx.allPoses, inputs);
+  const chiralityScores = new Map();
+  const chiralityWorst = new Map();
+  eachInstance(ctx, (f, i, row, key) => {
+    const r = model.scoreInstance(ctx.allPoses[row]);
+    const score = r.wrongFraction >= 0.5 ? Math.max(0.9, r.wrongFraction) : r.wrongFraction; // hard rule
+    chiralityScores.set(key, Number.isFinite(score) ? score : 0);
+    chiralityWorst.set(key, r.wrongPairs.size ? firstWrongPairNode(r.wrongPairs) : -1);
+  });
+  return { chiralityScores, chiralityWorst, fitted: true };
+}
+
+/**
+ * Pose-split (chimera) — one instance spanning two animals, joined by a stretched bridging
+ * edge. Reuses the baseline edge-length stats (from ctx._fx if anomaly/gmm already built
+ * them, else fits a lightweight baseline) + skeleton adjacency. The raw split_score is
+ * unbounded, so it is squashed s/(s+1) into [0,1] (threshold 0.5 == the upstream
+ * split_score==1 chimera/normal boundary).
+ */
+export function computePoseSplitUnit(ctx) {
+  const analyzer = ctx.analyzer;
+  const stats =
+    ctx._fx?.baseline?.stats ??
+    new BaselineFeatureExtractor(analyzer.edges, analyzer.nNodes, analyzer.symmetryPairs).fit(ctx.allPoses).stats;
+  const adj = Array.from({ length: analyzer.nNodes }, () => []);
+  for (const [s, d] of analyzer.edges) { adj[s].push(d); adj[d].push(s); }
+  const poseSplitScores = new Map();
+  const poseSplitWorst = new Map();
+  eachInstance(ctx, (f, i, row, key) => {
+    const r = computePoseSplit(ctx.allPoses[row], adj, stats.edgeMeans, stats.edgeStds);
+    const score = r.splitScore / (r.splitScore + 1); // squash unbounded score -> [0,1]
+    poseSplitScores.set(key, Number.isFinite(score) ? score : 0);
+    poseSplitWorst.set(key, r.bridge ? Math.min(r.bridge[0], r.bridge[1]) : -1);
+  });
+  return { poseSplitScores, poseSplitWorst };
 }
