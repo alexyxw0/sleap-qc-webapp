@@ -16,6 +16,7 @@ import {
 } from "./qc/checks/detector.js";
 import { makeQCConfig } from "./qc/checks/config.js";
 import { topIssue, confidence } from "./qc/checks/explain.js";
+import { visibilityMask } from "./qc/checks/util.js";
 import { store } from "./labelsStore.svelte.js";
 
 // A user-facing check maps to a computable unit. count/negative/duplicates share one frame unit.
@@ -351,8 +352,14 @@ class QCStore {
       const { feature } = topIssue(contributions);
       const pose = item.lf?.instances?.[instIdx]?.numpy?.({ invisibleAsNaN: true });
       if (feature && pose) {
-        const nodes = fx.baseline.attribute(pose)[feature];
-        if (nodes?.length) node = nodes[0];
+        if (feature === "visibility_pattern_score") {
+          // lives on the co-visibility model, not the baseline extractor
+          const n = fx.visibility?.worstNode(visibilityMask(pose)) ?? -1;
+          if (n >= 0) node = n;
+        } else {
+          const nodes = fx.baseline.attribute(pose)[feature];
+          if (nodes?.length) node = nodes[0];
+        }
       }
     }
     this.#anomalyWorst.set(key, node);
