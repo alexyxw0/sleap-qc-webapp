@@ -8,7 +8,6 @@
 
 import { mean, std, visibilityMask } from "./util.js";
 import { GMMDetector } from "./gmm.js";
-import { SpatialPrior } from "./spatial.js";
 import { makeQCConfig, shouldUseCurvature } from "./config.js";
 import { BaselineFeatureExtractor, BASELINE_FEATURE_NAMES } from "./features/baseline.js";
 import { computeCurvature, computeConvexHull } from "./features/structural.js";
@@ -71,12 +70,6 @@ export class LabelQCDetector {
       this.usedGmm = false;
     }
 
-    // Per-node spatial prior — drives the per-keypoint "worst node" indicator (the red ring).
-    // Pure geometry; independent of the instance scorer above.
-    this.spatial = this.config.spatialPrior
-      ? new SpatialPrior().fit(instances, analyzer.nNodes)
-      : null;
-
     this.countChecker = new InstanceCountChecker(true).fit(frameCounts, videoIds);
     return this;
   }
@@ -129,14 +122,7 @@ export class LabelQCDetector {
     const score = this.detector.scoreOne(clean);
     const contributions = {};
     this.featureNames.forEach((n, i) => (contributions[n] = features[i] ?? 0));
-    const out = { score: Number.isFinite(score) ? score : 0, contributions };
-    if (this.spatial) {
-      const w = this.spatial.worstNode(pose);
-      out.nodeScores = w.scores;
-      out.worstNode = w.index;
-      out.worstNodeDist = w.dist;
-    }
-    return out;
+    return { score: Number.isFinite(score) ? score : 0, contributions };
   }
 
   /** Frame-level QC for a frame's poses. */
@@ -200,8 +186,6 @@ export function fitAndScoreLabels(labels, { config = makeQCConfig(), getInstance
 
   const instanceScores = new Map();
   const contributions = new Map();
-  const nodeScores = new Map(); // key -> per-node Mahalanobis[]
-  const worstNodes = new Map(); // key -> worst node index
   const frameResults = new Map();
   for (const f of frames) {
     f.poses.forEach((pose, instIdx) => {
@@ -209,15 +193,11 @@ export function fitAndScoreLabels(labels, { config = makeQCConfig(), getInstance
       const r = det.scoreInstance(pose);
       instanceScores.set(key, r.score);
       contributions.set(key, r.contributions);
-      if (r.nodeScores) {
-        nodeScores.set(key, r.nodeScores);
-        worstNodes.set(key, r.worstNode);
-      }
     });
     frameResults.set(`${f.videoIdx}:${f.frameIdx}`, det.checkFrame(f.poses, f.vid, f.isNegative));
   }
   return {
-    instanceScores, contributions, nodeScores, worstNodes,
+    instanceScores, contributions,
     frameResults, featureNames: det.featureNames, usedGmm: det.usedGmm,
   };
 }
@@ -225,7 +205,7 @@ export function fitAndScoreLabels(labels, { config = makeQCConfig(), getInstance
 // ───────────────────────────── Selectable, memoizable QC ─────────────────────────────
 //
 // A "unit" is one computable block — 'anomaly' (ZScore), 'gmm' (GaussianMixture
-// probability), 'spatial' (per-node Mahalanobis), 'frame' (count / negative / duplicates).
+// probability), 'frame' (count / negative / duplicates).
 // The qcStore computes only the selected units and caches each, so re-selecting a
 // previously-computed technique never recomputes. `buildContext` gathers frames/poses once;
 // the shared feature matrix (used by anomaly + gmm) is built lazily the first time it's needed.
@@ -308,19 +288,6 @@ export function computeGmmUnit(ctx) {
   // `det` + the shared feature extractor (ctx._fx) let the store localize a flagged
   // instance to a node on demand (leave-one-node-out), so GMM can show *where* it's wrong.
   return { gmmScores, fitted: det != null, det, fx };
-}
-
-/** Per-node spatial prior (Mahalanobis): nodeScores[] + worst node per instance. */
-export function computeSpatialUnit(ctx) {
-  const sp = new SpatialPrior().fit(ctx.allPoses, ctx.analyzer.nNodes);
-  const nodeScores = new Map();
-  const worstNodes = new Map();
-  eachInstance(ctx, (f, i, row, key) => {
-    const w = sp.worstNode(ctx.allPoses[row]);
-    nodeScores.set(key, w.scores);
-    worstNodes.set(key, w.index);
-  });
-  return { nodeScores, worstNodes };
 }
 
 /** Frame-level checks: instance count, negative-with-instances, duplicates. */

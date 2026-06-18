@@ -18,10 +18,6 @@ export function makeQCConfig(overrides = {}) {
     gmmMinSamples: 50,
     gmmPercentileThreshold: 5.0,
 
-    // Per-node spatial prior — the per-keypoint "worst node" indicator (red ring + the
-    // node named in the sidebar description). Pure geometry; the UI opts in.
-    spatialPrior: false,
-
     autoCalibrate: true, // reserved / unused, mirrors the Python dead field
     calibrationPercentile: 95.0,
     ...overrides,

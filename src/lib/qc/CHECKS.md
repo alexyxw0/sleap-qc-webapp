@@ -3,24 +3,24 @@
 Low-level developer reference for the per-instance and per-frame quality-control engine. Audience: engineers working on the QC engine.
 
 **Source roots.** Two distinct locations — do not assume one tree:
-- **Engine units, detectors, features:** `src/lib/qc/checks/` (`detector.js`, `gmm.js`, `spatial.js`, `frameLevel.js`, `config.js`, `util.js`, `explain.js`, and `features/`).
+- **Engine units, detectors, features:** `src/lib/qc/checks/` (`detector.js`, `gmm.js`, `frameLevel.js`, `config.js`, `util.js`, `explain.js`, and `features/`).
 - **Store / orchestration:** `src/lib/qcStore.svelte.js` (one level **up**, not under `qc/`).
 
 All `checks/…` citations below are relative to `src/lib/qc/`; `qcStore.svelte.js` citations are relative to `src/lib/`.
 
 ## Architecture
 
-**Unit model.** Each detection technique is a pure `computeXUnit(ctx)` function in `checks/detector.js` (`computeAnomalyUnit`, `computeGmmUnit`, `computeSpatialUnit`, `computeFrameUnit`, `computeChiralityUnit`, `computePoseSplitUnit`). A unit takes the shared `ctx` (built once by `buildContext`, carrying `frames`, `allPoses`, `analyzer`, `frameCounts`, `videoIds`, `config`, `labels`, fitted features) and returns `Map`s keyed by `` `${videoIdx}:${frameIdx}:${instIdx}` `` for instance-level results, or `` `${videoIdx}:${frameIdx}` `` for frame-level results.
+**Unit model.** Each detection technique is a pure `computeXUnit(ctx)` function in `checks/detector.js` (`computeAnomalyUnit`, `computeGmmUnit`, `computeFrameUnit`, `computeChiralityUnit`, `computePoseSplitUnit`). A unit takes the shared `ctx` (built once by `buildContext`, carrying `frames`, `allPoses`, `analyzer`, `frameCounts`, `videoIds`, `config`, `labels`, fitted features) and returns `Map`s keyed by `` `${videoIdx}:${frameIdx}:${instIdx}` `` for instance-level results, or `` `${videoIdx}:${frameIdx}` `` for frame-level results.
 
 **Memoization.** `qcStore.svelte.js` maps each user-facing check to a unit via `UNIT_OF` (`count`/`negative`/`duplicates` all share the `frame` unit). Results live in `#computed[unit]`; re-selecting a previously-computed technique never recomputes. `#ctx` is rebuilt only when the underlying labels change (`#ctxLabels` identity check), via `buildContext(store.labels, makeQCConfig({ useGmm: false }))` (see GMM Notes for why the `useGmm:false` override is inert for the unit path). After the first run, toggling a new check auto-reruns (an `$effect` in `App.svelte` gated on `status === "done"`), computing only the newly-needed unit.
 
-**Score + threshold convention.** Instance scorers (anomaly, gmm, chirality, pose-split) emit a score in `[0,1]`; an instance is flagged when `score >= threshold`. Spatial emits a raw Mahalanobis distance compared directly against `spatialThreshold` (3.5). Frame checks emit booleans. Per-instance scores roll up to a frame via **max** aggregation.
+**Score + threshold convention.** Instance scorers (anomaly, gmm, chirality, pose-split) emit a score in `[0,1]`; an instance is flagged when `score >= threshold`. Frame checks emit booleans. Per-instance scores roll up to a frame via **max** aggregation.
 
-**UNION flagging.** `flaggedFrameCount` / the flagged set is the UNION of all *enabled-and-computed* checks: anomaly (`>= threshold`), gmm (`>= gmmThreshold`), spatial (`#spatialFlagged` membership), chirality (`>= chiralityThreshold`), poseSplit (`>= poseSplitThreshold`), plus boolean frame checks `count`/`negative`/`duplicates`. Disabling a check removes its contribution from the union without recomputation.
+**UNION flagging.** `flaggedFrameCount` / the flagged set is the UNION of all *enabled-and-computed* checks: anomaly (`>= threshold`), gmm (`>= gmmThreshold`), chirality (`>= chiralityThreshold`), poseSplit (`>= poseSplitThreshold`), plus boolean frame checks `count`/`negative`/`duplicates`. Disabling a check removes its contribution from the union without recomputation.
 
-**Default toggle state (as shipped).** `checks = { anomaly:true, gmm:false, spatial:true, chirality:true, poseSplit:true, count:true, negative:true, duplicates:true }`. GMM defaults **OFF** (opt-in/heaviest); chirality defaults ON but self-disables without symmetric pairs; the others (incl. pose-split) default ON.
+**Default toggle state (as shipped).** `checks = { anomaly:true, gmm:false, chirality:true, poseSplit:true, count:true, negative:true, duplicates:true }`. GMM defaults **OFF** (opt-in/heaviest); chirality defaults ON but self-disables without symmetric pairs; the others (incl. pose-split) default ON.
 
-**Three population-stat implementations.** Z-scores, GMM scaling, and spatial covariance are all *population* (`/N`, ddof=0) but live in **three independent code paths**: `util.js` (`mean`/`safeStd`, floor `1e-6`) for ZScore and the 18-feature stats; `gmm.js` `standardScalerFit` (zero-variance scale→1); `spatial.js` per-node `/n` covariance. Do not assume a single shared helper.
+**Two population-stat implementations.** Z-scores and GMM scaling are both *population* (`/N`, ddof=0) but live in **two independent code paths**: `util.js` (`mean`/`safeStd`, floor `1e-6`) for ZScore and the 18-feature stats; `gmm.js` `standardScalerFit` (zero-variance scale→1). Do not assume a single shared helper.
 
 ---
 
@@ -48,24 +48,7 @@ All `checks/…` citations below are relative to `src/lib/qc/`; `qcStore.svelte.
 - `scoreOne` returns the *full* `1 − CDF` in `[0,1]` (strict-less-than count / N); the 5%/0.95 cut is applied **downstream** by `gmmThreshold`, not inside the detector. Score direction is **inverted** vs likelihood. EM is not bit-identical to sklearn (different RNG/init); only `scoreSamples` math is sklearn-exact.
 - **The live app path is driven solely by `checks.gmm` + `computeGmmUnit`.** `computeGmmUnit` reads `ctx.config.gmmNComponents`/`gmmPercentileThreshold` and tries to fit unconditionally; it ignores both `gmmMinSamples` *and* `useGmm`, and leaves the unit empty (`det=null`) only if `fit()` throws (`valid < 2`).
 - `gmmMinSamples (50)` **and** `config.useGmm` together gate **only** the legacy `LabelQCDetector.fit` path (`if (instances.length >= gmmMinSamples && useGmm)`), which `fitAndScoreLabels` drives. The store builds its context with `makeQCConfig({ useGmm:false })`, so even that legacy path would never pick GMM under the store's config — but that override is moot because the unit path never consults `useGmm`.
-- **Leave-one-node-out attribution** lives in `qcStore.svelte.js` (`gmmWorstNode`, not in `gmm.js`): for a flagged instance it masks each visible node `k` to `[NaN,NaN]`, re-extracts features (reusing a single `baseNN` since NN distance is not node-specific), and the "worst node" is the one whose **removal most raises** log-likelihood (`improve = ll_masked − baseLL > 1e-6`; `−1` if none helps). It is reached via `faultyNodeFor` only when none of chirality, pose-split, or Spatial claims the node.
-
----
-
-## Spatial outlier
-
-**Flags:** instance (and thus its frame) whose worst node sits far from its learned egocentric position — `max non-NaN worst-node Mahalanobis >= spatialThreshold(3.5)`.
-
-**Algorithm:** `SpatialPrior` (`checks/spatial.js`), a per-node 2D Gaussian prior scored by Mahalanobis distance. **Fit**: for each node `k`, collect its **leave-one-out** normalized coordinate over all reference instances via `normalizedLOO(pose,k)` — a canonical frame built from *every other visible node* (`frameOf`): centroid `(cx,cy)=mean(others)`, scale `= hypot(maxX−minX, maxY−minY)` floored to `1.0` if `<1e-6`; normalized `= ((x−cx)/scale, (y−cy)/scale)`. With `>= minSamples(5)` samples, compute mean `[mx,my]` and **population** covariance `[[sxx/n+reg, sxy/n],[sxy/n, syy/n+reg]]` (`reg=1e-6` on diagonal) and precision `prec = inv2(cov)` (closed-form 2×2 inverse, det floored to `±1e-9`). **Score** (`nodeMahalanobis`): `d = p − mean`, `M = sqrt(max(0, dᵀ·prec·d))`; NaN where node is invisible or has no prior. **Worst** (`worstNode`): argmax over finite node scores → `{index, dist, scores}` (`index=−1, dist=NaN` if none finite). **Classify** (`qcStore.svelte.js`): frame key (instance index stripped) is flagged when the instance's max worst-node Mahalanobis `>= 3.5`.
-
-**Threshold/params:** `spatialThreshold=3.5` (lives in `qcStore.svelte.js`, *not* in `spatial.js`), `minSamples=5`, `reg=1e-6`.
-
-**Notes:**
-- **Spatial runs in the app whenever `checks.spatial` is on.** `computeSpatialUnit` constructs `new SpatialPrior().fit(...)` directly and **ignores `config.spatialPrior` entirely**. `config.spatialPrior` (default `false`) only gates the *legacy* `LabelQCDetector.fit` path, so the `checks.spatial:true` vs `config.spatialPrior:false` mismatch is *not* a contradiction — the false default does **not** mean spatial is off in the app.
-- The instance-level scorer that complements spatial is the **ZScoreDetector** (a stale comment in `spatial.js` calls it "ECOD" — ECOD was the §11 plan; the shipped build uses ZScore).
-- SpatialPrior does **not** use `normalizePose` from `reference.js` (which centers on whole-instance centroid). Its own `normalizedLOO` excludes node `k` from the frame, so one badly-placed node cannot corrupt its own normalization and smear anomaly across the instance. `normalizedLOO` returns `null` if node `k` is invisible OR fewer than 2 *other* visible nodes exist.
-- Covariance is population (`/n`) with `inv2` flooring det to `±1e-9` against near-singularity; `max(0,...)` guards the sqrt against tiny negative quadratic forms.
-- The spatial worst node drives the red ring (precedence below the whole-instance chirality / pose-split rings, above GMM) whenever Spatial is enabled and its worst index `>=0`.
+- **Leave-one-node-out attribution** lives in `qcStore.svelte.js` (`gmmWorstNode`, not in `gmm.js`): for a flagged instance it masks each visible node `k` to `[NaN,NaN]`, re-extracts features (reusing a single `baseNN` since NN distance is not node-specific), and the "worst node" is the one whose **removal most raises** log-likelihood (`improve = ll_masked − baseLL > 1e-6`; `−1` if none helps). It is reached via `faultyNodeFor` only when neither chirality nor pose-split claims the node.
 
 ---
 
@@ -146,7 +129,7 @@ The human-readable sidebar verdict is assembled by `instanceIssue` (`qcStore.sve
 3. Else, if anomaly is absent, **or** GMM flags while anomaly does *not* (`gFlag && checks.gmm && !(checks.anomaly && aScore >= threshold)`), the verdict is the GMM density verdict `"Improbable pose"` (`feature:null`), localized to the GMM leave-one-out node.
 4. Else the **anomaly** explanation wins: `topIssue(contributions)` supplies `issue`/`feature`, `confidence(aScore)` the bucket.
 
-The displayed `worstNode` always comes from `faultyNodeFor` (chirality → pose-split → spatial → GMM precedence), independent of which verdict string was chosen.
+The displayed `worstNode` always comes from `faultyNodeFor` (chirality → pose-split → GMM precedence), independent of which verdict string was chosen.
 
 ---
 
@@ -188,7 +171,6 @@ Edge cases: edge/angle/pairwise z-scores are only computed over nodes visible *a
 - `frameThreshold=0.5` — defined but unused by the unit pipeline (frame checks are boolean).
 - `autoCalibrate=true`, `calibrationPercentile=95.0` — reserved / dead, mirror the Python dead fields.
 - `useGmm=true` (default) — overridden to `false` by the store, but inert anyway since `computeGmmUnit` ignores it.
-- `spatialPrior=false` — only gates the legacy `LabelQCDetector.fit` path, not `computeSpatialUnit`.
 - `gmmPercentileThreshold=5.0` — passed into `GMMDetector` but unused by `scoreOne` (the 0.95 cut is `gmmThreshold` in the store).
 
 ---

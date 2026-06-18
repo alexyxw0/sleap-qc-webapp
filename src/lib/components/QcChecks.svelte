@@ -34,12 +34,6 @@
       info: "Probabilistic counterpart to the anomaly check: it fits a Gaussian-mixture density over the same 18 features and flags poses that are rare under it (threshold 0.95 ≈ the rarest 5%). Catches subtle, multi-feature weirdness the single-feature anomaly score misses, but it is the heaviest check to compute, so it is opt-in (off by default).",
     },
     {
-      key: "spatial",
-      label: "Spatial outlier",
-      hint: "A single node sitting out of place (drives the red ring).",
-      info: "Pinpoints a single misplaced keypoint rather than a whole-instance problem. Each node gets a learned 2D Gaussian prior for where it normally sits relative to the rest of the body (egocentric, leave-one-out normalized) and is scored by Mahalanobis distance. This is the check that drives the red “worst node” ring on the canvas. On by default.",
-    },
-    {
       key: "count",
       label: "Instance count",
       hint: "Frame has fewer instances than expected.",
