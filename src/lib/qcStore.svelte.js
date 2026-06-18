@@ -46,6 +46,7 @@ class QCStore {
 
   #ctx = null; // shared frame/pose/feature context for the current labels
   #ctxLabels = null; // identity of the labels #ctx was built for
+  #ctxRev = -1; // store.rev the #ctx was built at — bumps when instances are edited in place
   #computed = {}; // unit -> result maps (the memoization cache)
 
   // Derived per-frame maps (rebuilt from #computed after each run).
@@ -526,9 +527,14 @@ class QCStore {
     this.rev++;
     await new Promise((r) => setTimeout(r, 0)); // let "Running…" paint before the blocking compute
     try {
-      if (store.labels !== this.#ctxLabels) {
+      // Rebuild the context (re-snapshots poses + clears the memoized units) when the labels
+      // changed — either a new file (identity) OR an in-place instance edit (store.rev bumps
+      // without changing identity). Without the rev check, editing a keypoint and re-running
+      // would silently reuse the stale pose snapshot and cached unit results.
+      if (store.labels !== this.#ctxLabels || store.rev !== this.#ctxRev) {
         this.#ctx = buildContext(store.labels, makeQCConfig({ useGmm: false }));
         this.#ctxLabels = store.labels;
+        this.#ctxRev = store.rev;
         this.#computed = {};
       }
       // compute the units the enabled checks need, skipping anything already cached
@@ -554,6 +560,7 @@ class QCStore {
     this.error = null;
     this.#ctx = null;
     this.#ctxLabels = null;
+    this.#ctxRev = -1;
     this.#computed = {};
     this.#derive();
     // NOTE: this.checks (the user's enabled-technique preferences) intentionally persist.
