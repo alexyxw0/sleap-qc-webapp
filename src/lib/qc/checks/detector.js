@@ -263,7 +263,10 @@ export function computeAnomalyUnit(ctx) {
     fx.featureNames.forEach((n, j) => (c[n] = fx.rawMatrix[row][j] ?? 0));
     contributions.set(key, c);
   });
-  return { instanceScores, contributions, featureNames: fx.featureNames };
+  // `fx` (the fitted feature extractor) lets the store attribute a flagged instance's
+  // dominant feature to its culprit node on demand (fx.baseline.attribute), so the anomaly
+  // verdict can name *which* node — e.g. the isolated invisible node.
+  return { instanceScores, contributions, featureNames: fx.featureNames, fx };
 }
 
 /** GaussianMixture probability anomaly: per-instance 1 − percentile(log-likelihood). */

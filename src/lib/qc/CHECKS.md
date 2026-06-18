@@ -34,6 +34,8 @@ All `checks/…` citations below are relative to `src/lib/qc/`; `qcStore.svelte.
 
 **Notes:** The score is a *smooth sigmoid*, not a hard z-cut — solving `sigmoid(maxZ−3) >= 0.7` gives `maxZ >= 3 + ln(7/3) ≈ 3.847`. Scoring uses the cleaned (sanitized) row but contributions show raw values, so a NaN/Inf feature is silently absorbed into the score yet surfaced raw. The `?? 0` coalesce on contributions only catches `null`/`undefined` (a *missing* slot shows `0`); a genuine `NaN` raw feature passes through and is **displayed as `NaN`**. Fit drops NaN rows entirely, but those instances are still *scored* on their zero-filled clean row.
 
+**Node attribution.** The score is instance-level, but for a flagged instance the verdict names *which* node when its dominant feature (`topIssue`) is **node-localizable**. `BaselineFeatureExtractor.attribute(pose)` returns the culprit node(s) — the argmax/argmin that `extract()`'s reductions discard — for `max_edge_zscore` (both endpoints), `max_angle_zscore` (the joint), `max_pairwise_zscore` (the pair), `max_centroid_distance` (the "isolated" node), `min_symmetry_consistency` (the worst pair), and `has_isolated_invisible` (the invisible node whose neighbors are all visible). `qcStore.anomalyWorstNode` (lazy, cached; uses the `fx` returned by `computeAnomalyUnit`) resolves `topIssue`'s feature to its node and feeds `faultyNodeFor` → the red ring + sidebar name + zoom. Whole-instance features (`mean_*`, `bbox/hull/nn`, `visibility_rate`/`visibility_pattern_score`) are intentionally **not** localized → no node, generic verdict. An isolated *invisible* node is named but has no coordinates, so it cannot be ringed/zoomed (zoom falls back to the instance box).
+
 ---
 
 ## GMM (probability)
@@ -48,7 +50,7 @@ All `checks/…` citations below are relative to `src/lib/qc/`; `qcStore.svelte.
 - `scoreOne` returns the *full* `1 − CDF` in `[0,1]` (strict-less-than count / N); the 5%/0.95 cut is applied **downstream** by `gmmThreshold`, not inside the detector. Score direction is **inverted** vs likelihood. EM is not bit-identical to sklearn (different RNG/init); only `scoreSamples` math is sklearn-exact.
 - **The live app path is driven solely by `checks.gmm` + `computeGmmUnit`.** `computeGmmUnit` reads `ctx.config.gmmNComponents`/`gmmPercentileThreshold` and tries to fit unconditionally; it ignores both `gmmMinSamples` *and* `useGmm`, and leaves the unit empty (`det=null`) only if `fit()` throws (`valid < 2`).
 - `gmmMinSamples (50)` **and** `config.useGmm` together gate **only** the legacy `LabelQCDetector.fit` path (`if (instances.length >= gmmMinSamples && useGmm)`), which `fitAndScoreLabels` drives. The store builds its context with `makeQCConfig({ useGmm:false })`, so even that legacy path would never pick GMM under the store's config — but that override is moot because the unit path never consults `useGmm`.
-- **Leave-one-node-out attribution** lives in `qcStore.svelte.js` (`gmmWorstNode`, not in `gmm.js`): for a flagged instance it masks each visible node `k` to `[NaN,NaN]`, re-extracts features (reusing a single `baseNN` since NN distance is not node-specific), and the "worst node" is the one whose **removal most raises** log-likelihood (`improve = ll_masked − baseLL > 1e-6`; `−1` if none helps). It is reached via `faultyNodeFor` only when neither chirality nor pose-split claims the node.
+- **Leave-one-node-out attribution** lives in `qcStore.svelte.js` (`gmmWorstNode`, not in `gmm.js`): for a flagged instance it masks each visible node `k` to `[NaN,NaN]`, re-extracts features (reusing a single `baseNN` since NN distance is not node-specific), and the "worst node" is the one whose **removal most raises** log-likelihood (`improve = ll_masked − baseLL > 1e-6`; `−1` if none helps). It is reached via `faultyNodeFor` only when none of chirality, pose-split, or the anomaly attribution claims the node.
 
 ---
 
@@ -129,7 +131,7 @@ The human-readable sidebar verdict is assembled by `instanceIssue` (`qcStore.sve
 3. Else, if anomaly is absent, **or** GMM flags while anomaly does *not* (`gFlag && checks.gmm && !(checks.anomaly && aScore >= threshold)`), the verdict is the GMM density verdict `"Improbable pose"` (`feature:null`), localized to the GMM leave-one-out node.
 4. Else the **anomaly** explanation wins: `topIssue(contributions)` supplies `issue`/`feature`, `confidence(aScore)` the bucket.
 
-The displayed `worstNode` always comes from `faultyNodeFor` (chirality → pose-split → GMM precedence), independent of which verdict string was chosen.
+The displayed `worstNode` always comes from `faultyNodeFor` (chirality → pose-split → anomaly → GMM precedence), independent of which verdict string was chosen.
 
 ---
 

@@ -57,6 +57,7 @@ class QCStore {
   #frameAnom = new Map(); // "v:f" -> max anomaly score
   #frameGmm = new Map(); // "v:f" -> max GMM score
   #gmmWorst = new Map(); // "v:f:i" -> GMM leave-one-out worst node (computed lazily)
+  #anomalyWorst = new Map(); // "v:f:i" -> culprit node of the anomaly's dominant feature (lazy)
   #chiralityScores = new Map(); // "v:f:i" -> L/R-flip [0,1] score
   #chiralityWorst = new Map(); // "v:f:i" -> a node from a wrong pair, -1 if none
   #frameChir = new Map(); // "v:f" -> max chirality score
@@ -333,9 +334,34 @@ class QCStore {
     return worst;
   }
   /**
+   * Which node the geometric anomaly (ZScore) verdict is about: the culprit node/edge of its
+   * dominant feature (`topIssue`) — e.g. the isolated invisible node, the far "isolated" node,
+   * the most length-deviant edge. Lazy + cached per instance. Returns -1 when the winning
+   * feature is a whole-instance one (mean_*, bbox/hull/nn, visibility_rate) with no single node.
+   */
+  anomalyWorstNode(item, instIdx) {
+    this.rev;
+    if (!item || !this.checks.anomaly) return -1;
+    const key = `${this.#fkey(item)}:${instIdx}`;
+    if (this.#anomalyWorst.has(key)) return this.#anomalyWorst.get(key);
+    let node = -1;
+    const fx = this.#computed.anomaly?.fx;
+    const contributions = this.#contributions.get(key);
+    if (fx?.baseline && contributions) {
+      const { feature } = topIssue(contributions);
+      const pose = item.lf?.instances?.[instIdx]?.numpy?.({ invisibleAsNaN: true });
+      if (feature && pose) {
+        const nodes = fx.baseline.attribute(pose)[feature];
+        if (nodes?.length) node = nodes[0];
+      }
+    }
+    this.#anomalyWorst.set(key, node);
+    return node;
+  }
+  /**
    * The single node to indicate for a flagged instance (drives the red ring + zoom):
-   * chirality's wrong-pair node, else the pose-split bridge node, else the GMM's own
-   * leave-one-out node.
+   * chirality's wrong-pair node, else the pose-split bridge node, else the anomaly's dominant-
+   * feature culprit node, else the GMM's own leave-one-out node.
    */
   faultyNodeFor(item, instIdx) {
     this.rev;
@@ -352,6 +378,13 @@ class QCStore {
       const s = this.#poseSplitScores.get(key);
       if (s != null && s >= this.poseSplitThreshold) {
         const n = this.#poseSplitWorst.get(key) ?? -1;
+        if (n >= 0) return n;
+      }
+    }
+    if (this.checks.anomaly) {
+      const a = this.#instanceScores.get(key);
+      if (a != null && a >= this.threshold) {
+        const n = this.anomalyWorstNode(item, instIdx);
         if (n >= 0) return n;
       }
     }
@@ -517,6 +550,7 @@ class QCStore {
     frameMax(this.#chiralityScores, this.#frameChir);
     frameMax(this.#poseSplitScores, this.#framePoseSplit);
     this.#gmmWorst = new Map(); // lazy leave-one-out cache — invalidated whenever results change
+    this.#anomalyWorst = new Map(); // lazy anomaly-attribution cache — same invalidation
   }
 
   /** Run the enabled checks that aren't already computed (incremental + memoized). */
