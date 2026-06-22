@@ -53,9 +53,9 @@
         : []),
       ...(edit.canUndo ? [{ icon: "↺", label: `Undo ${edit.undoLabel ?? ""}`, kbd: "⌘Z", run: () => edit.undo() }] : []),
       ...(edit.canRedo ? [{ icon: "↻", label: `Redo ${edit.redoLabel ?? ""}`, kbd: "⇧⌘Z", run: () => edit.redo() }] : []),
-      { icon: "⤓", label: "Save .slp", kbd: "", run: () => edit.save({ embed: false }) },
+      { icon: "⤓", label: store.hasEmbedded ? "Save .pkg.slp (embedded frames)" : "Save .slp", kbd: "", run: () => edit.save({ embed: store.hasEmbedded }) },
       ...(store.hasEmbedded
-        ? [{ icon: "⤓", label: "Export .pkg.slp (embedded frames)", kbd: "", run: () => edit.save({ embed: true }) }]
+        ? [{ icon: "⤓", label: "Export plain .slp (labels only, drops frames)", kbd: "", run: () => edit.save({ embed: false }) }]
         : []),
       { icon: "⏮", label: "First frame", kbd: "", run: () => go(0) },
       { icon: "⏭", label: "Last frame", kbd: "", run: () => go(store.frameCount - 1) },

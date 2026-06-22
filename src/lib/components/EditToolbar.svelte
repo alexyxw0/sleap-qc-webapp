@@ -80,12 +80,12 @@
   <div class="sep"></div>
 
   {#if edit.dirty}<span class="dot" title="Unsaved changes"></span>{/if}
-  <button class="primary" onclick={() => edit.save({ embed: false })} disabled={edit.saving} title="Download edited labels as .slp">
-    {edit.saving ? "SAVING…" : "SAVE .SLP"}
+  <button class="primary" onclick={() => edit.save({ embed: store.hasEmbedded })} disabled={edit.saving} title={store.hasEmbedded ? "Download as .pkg.slp with embedded frames" : "Download edited labels as .slp"}>
+    {edit.saving ? "SAVING…" : store.hasEmbedded ? "SAVE .PKG.SLP" : "SAVE .SLP"}
   </button>
   {#if store.hasEmbedded}
-    <button class="ghost" onclick={() => edit.save({ embed: true })} disabled={edit.saving} title="Download as .pkg.slp with embedded frames">
-      .pkg.slp
+    <button class="ghost" onclick={() => edit.save({ embed: false })} disabled={edit.saving} title="Download labels only as a plain .slp (drops embedded frames)">
+      .slp
     </button>
   {/if}
 </div>

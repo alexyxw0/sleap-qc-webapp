@@ -352,7 +352,9 @@ class EditStore {
   }
 
   // ---- save ----
-  async save({ embed = false } = {}) {
+  // Default to the source format: a loaded .pkg.slp (embedded frames) round-trips back to a
+  // .pkg.slp, a plain .slp stays a plain .slp. Pass `embed` explicitly to force a format.
+  async save({ embed = store.hasEmbedded } = {}) {
     if (!store.labels) return;
     this.saving = true;
     store.error = null;
