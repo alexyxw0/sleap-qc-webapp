@@ -147,7 +147,7 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
         ctx.strokeStyle = "rgba(255,255,255,0.85)";
         ctx.stroke();
       }
-      // QC: dashed warning ring on the most spatially-anomalous node of a flagged instance
+      // QC: dashed warning ring on the faulty node of a flagged instance
       // (red = geometric outlier) and the least-confident node (amber = low model confidence).
       const qcRing = (radius, colorRing) => {
         ctx.globalAlpha = 0.95;

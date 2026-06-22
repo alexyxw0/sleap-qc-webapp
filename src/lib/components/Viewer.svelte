@@ -86,8 +86,8 @@
     let uncertainNodes = null;
     if (qc.hasResults && item) {
       const insts = item.lf?.instances ?? [];
-      // red ring on the faulty node of any flagged instance — anomaly's spatial worst node,
-      // or the GMM's own leave-one-out node. Reacts live to both threshold sliders.
+      // red ring on the faulty node of any flagged instance — chirality's wrong-pair node,
+      // the pose-split bridge node, or the GMM's leave-one-out node. Reacts live to the sliders.
       worstNodes = insts.map((_, i) => (qc.instanceFlagged(item, i) ? qc.faultyNodeFor(item, i) : -1));
       uncertainNodes = insts.map((_, i) => qc.uncertainNodeFor(item, i));
     }

@@ -160,6 +160,18 @@
           {/if}
         {/if}
       </div>
+      {#if flagged}
+        {@const flaggers = qc.frameFlaggingChecks(item)}
+        {#if flaggers.length}
+          <div class="flaggers">
+            {#each flaggers as f (f.key)}
+              <span class="ftag" title="Flagged by {f.label}{f.score != null ? ` · ${f.score.toFixed(2)}` : ''}">
+                {f.label}{#if f.score != null}<i class="fscore">{f.score.toFixed(2)}</i>{/if}
+              </span>
+            {/each}
+          </div>
+        {/if}
+      {/if}
       {#if hasFrameIssue(fq)}
         <ul class="issues">
           {#if fq.isIncomplete}<li>{fq.actualInstanceCount} / {fq.expectedInstanceCount} expected instances</li>{/if}
@@ -474,6 +486,30 @@
     font-size: 0.76rem;
     color: #d9b25c;
     line-height: 1.5;
+  }
+  /* "what's flagging this frame": one badge per enabled check that fired. */
+  .flaggers {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    margin-top: 0.45rem;
+  }
+  .ftag {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.28rem;
+    font-size: 0.68rem;
+    color: #e7c08a;
+    border: 1px solid rgba(231, 192, 138, 0.4);
+    border-radius: var(--r-xs);
+    padding: 0.04rem 0.36rem;
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+  }
+  .ftag .fscore {
+    color: var(--dim);
+    font-style: normal;
+    font-variant-numeric: tabular-nums;
   }
   .ihead {
     display: flex;

@@ -50,6 +50,20 @@ export function topIssue(contributions) {
   return { feature: best, issue: ISSUE_MAP[best] ?? `High ${best}` };
 }
 
+// Features whose dominant deviation is a *signed* z-score, so "increased" / "decreased" (vs the
+// learned mean) is meaningful. The area features are signed directly in `contributions`; the
+// max_* features are |z| there, so their sign comes from `BaselineFeatureExtractor.attribute`.
+export const DIRECTIONAL_FEATURES = new Set([
+  "max_edge_zscore", "max_angle_zscore", "max_pairwise_zscore",
+  "bbox_area_zscore", "hull_area_zscore",
+]);
+
+/** Append "(increased)" / "(decreased)" to a z-score issue when its direction is known. */
+export function withDirection(issue, dir) {
+  if (!dir) return issue;
+  return `${issue} (${dir > 0 ? "increased" : "decreased"})`;
+}
+
 /** Confidence bucket from the anomaly score (mirrors Python). */
 export const confidence = (score) => (score > 0.8 ? "high" : score > 0.5 ? "medium" : "low");
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { topIssue, confidence, topContributions } from "./explain.js";
+import { topIssue, confidence, topContributions, withDirection } from "./explain.js";
 
 describe("topIssue", () => {
   it("maps the dominant feature to a readable issue", () => {
@@ -31,6 +31,14 @@ describe("confidence", () => {
     expect(confidence(0.99)).toBe("high");
     expect(confidence(0.6)).toBe("medium");
     expect(confidence(0.2)).toBe("low");
+  });
+});
+
+describe("withDirection", () => {
+  it("appends increased/decreased for a known direction, leaves it alone otherwise", () => {
+    expect(withDirection("Unusual edge length", 1)).toBe("Unusual edge length (increased)");
+    expect(withDirection("Unusual edge length", -1)).toBe("Unusual edge length (decreased)");
+    expect(withDirection("Unusual edge length", 0)).toBe("Unusual edge length");
   });
 });
 

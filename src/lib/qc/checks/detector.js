@@ -8,7 +8,6 @@
 
 import { mean, std, visibilityMask } from "./util.js";
 import { GMMDetector } from "./gmm.js";
-import { SpatialPrior } from "./spatial.js";
 import { makeQCConfig, shouldUseCurvature } from "./config.js";
 import { BaselineFeatureExtractor, BASELINE_FEATURE_NAMES } from "./features/baseline.js";
 import { computeCurvature, computeConvexHull } from "./features/structural.js";
@@ -16,6 +15,8 @@ import { VisibilityModel } from "./features/visibility.js";
 import { NearestNeighborScorer } from "./features/reference.js";
 import { analyzerFromSkeleton } from "./features/skeleton.js";
 import { InstanceCountChecker, checkNegativeFrame, detectDuplicates } from "./frameLevel.js";
+import { ChiralityModel, resolveChiralityInputs, firstWrongPairNode } from "./features/chirality.js";
+import { computePoseSplit } from "./features/poseSplit.js";
 
 export const V3_FEATURE_NAMES = [
   "max_curvature", "curvature_std", "visibility_pattern_score",
@@ -69,12 +70,6 @@ export class LabelQCDetector {
       this.usedGmm = false;
     }
 
-    // Per-node spatial prior — drives the per-keypoint "worst node" indicator (the red ring).
-    // Pure geometry; independent of the instance scorer above.
-    this.spatial = this.config.spatialPrior
-      ? new SpatialPrior().fit(instances, analyzer.nNodes)
-      : null;
-
     this.countChecker = new InstanceCountChecker(true).fit(frameCounts, videoIds);
     return this;
   }
@@ -127,14 +122,7 @@ export class LabelQCDetector {
     const score = this.detector.scoreOne(clean);
     const contributions = {};
     this.featureNames.forEach((n, i) => (contributions[n] = features[i] ?? 0));
-    const out = { score: Number.isFinite(score) ? score : 0, contributions };
-    if (this.spatial) {
-      const w = this.spatial.worstNode(pose);
-      out.nodeScores = w.scores;
-      out.worstNode = w.index;
-      out.worstNodeDist = w.dist;
-    }
-    return out;
+    return { score: Number.isFinite(score) ? score : 0, contributions };
   }
 
   /** Frame-level QC for a frame's poses. */
@@ -198,8 +186,6 @@ export function fitAndScoreLabels(labels, { config = makeQCConfig(), getInstance
 
   const instanceScores = new Map();
   const contributions = new Map();
-  const nodeScores = new Map(); // key -> per-node Mahalanobis[]
-  const worstNodes = new Map(); // key -> worst node index
   const frameResults = new Map();
   for (const f of frames) {
     f.poses.forEach((pose, instIdx) => {
@@ -207,15 +193,11 @@ export function fitAndScoreLabels(labels, { config = makeQCConfig(), getInstance
       const r = det.scoreInstance(pose);
       instanceScores.set(key, r.score);
       contributions.set(key, r.contributions);
-      if (r.nodeScores) {
-        nodeScores.set(key, r.nodeScores);
-        worstNodes.set(key, r.worstNode);
-      }
     });
     frameResults.set(`${f.videoIdx}:${f.frameIdx}`, det.checkFrame(f.poses, f.vid, f.isNegative));
   }
   return {
-    instanceScores, contributions, nodeScores, worstNodes,
+    instanceScores, contributions,
     frameResults, featureNames: det.featureNames, usedGmm: det.usedGmm,
   };
 }
@@ -223,7 +205,7 @@ export function fitAndScoreLabels(labels, { config = makeQCConfig(), getInstance
 // ───────────────────────────── Selectable, memoizable QC ─────────────────────────────
 //
 // A "unit" is one computable block — 'anomaly' (ZScore), 'gmm' (GaussianMixture
-// probability), 'spatial' (per-node Mahalanobis), 'frame' (count / negative / duplicates).
+// probability), 'frame' (count / negative / duplicates).
 // The qcStore computes only the selected units and caches each, so re-selecting a
 // previously-computed technique never recomputes. `buildContext` gathers frames/poses once;
 // the shared feature matrix (used by anomaly + gmm) is built lazily the first time it's needed.
@@ -247,7 +229,7 @@ export function buildContext(labels, config = makeQCConfig()) {
       videoIds.push(vid);
     }
   });
-  return { config, analyzer, frames, allPoses, frameCounts, videoIds, _fx: null };
+  return { config, analyzer, frames, allPoses, frameCounts, videoIds, labels, _fx: null };
 }
 
 // The shared feature matrix + extractors (built once; reused by anomaly + gmm). This is the
@@ -281,7 +263,10 @@ export function computeAnomalyUnit(ctx) {
     fx.featureNames.forEach((n, j) => (c[n] = fx.rawMatrix[row][j] ?? 0));
     contributions.set(key, c);
   });
-  return { instanceScores, contributions, featureNames: fx.featureNames };
+  // `fx` (the fitted feature extractor) lets the store attribute a flagged instance's
+  // dominant feature to its culprit node on demand (fx.baseline.attribute), so the anomaly
+  // verdict can name *which* node — e.g. the isolated invisible node.
+  return { instanceScores, contributions, featureNames: fx.featureNames, fx };
 }
 
 /** GaussianMixture probability anomaly: per-instance 1 − percentile(log-likelihood). */
@@ -308,19 +293,6 @@ export function computeGmmUnit(ctx) {
   return { gmmScores, fitted: det != null, det, fx };
 }
 
-/** Per-node spatial prior (Mahalanobis): nodeScores[] + worst node per instance. */
-export function computeSpatialUnit(ctx) {
-  const sp = new SpatialPrior().fit(ctx.allPoses, ctx.analyzer.nNodes);
-  const nodeScores = new Map();
-  const worstNodes = new Map();
-  eachInstance(ctx, (f, i, row, key) => {
-    const w = sp.worstNode(ctx.allPoses[row]);
-    nodeScores.set(key, w.scores);
-    worstNodes.set(key, w.index);
-  });
-  return { nodeScores, worstNodes };
-}
-
 /** Frame-level checks: instance count, negative-with-instances, duplicates. */
 export function computeFrameUnit(ctx) {
   const det = new LabelQCDetector(ctx.config);
@@ -330,4 +302,53 @@ export function computeFrameUnit(ctx) {
     frameResults.set(`${f.videoIdx}:${f.frameIdx}`, det.checkFrame(f.poses, f.vid, f.isNegative));
   }
   return { frameResults };
+}
+
+/**
+ * Chirality — whole-instance L/R mirror flip. Learns each symmetric pair's canonical side
+ * from the file's own instances (fit on ctx.allPoses), then scores the wrong-side fraction
+ * per instance. Coordinate-only; self-disables (empty maps) when the skeleton has no
+ * symmetry pairs (and none can be name-inferred). A hard rule promotes a majority-wrong
+ * instance (fraction >= 0.5) to a >= 0.9 score so it always clears the flag threshold.
+ */
+export function computeChiralityUnit(ctx) {
+  const sk = ctx.labels?.skeletons?.[0];
+  const names = sk?.nodeNames ?? sk?.nodes?.map((n) => n.name) ?? [];
+  const inputs = resolveChiralityInputs(ctx.analyzer, names, ctx.allPoses);
+  if (!inputs) return { chiralityScores: new Map(), chiralityWorst: new Map(), fitted: false };
+  const model = new ChiralityModel().fit(ctx.allPoses, inputs);
+  const chiralityScores = new Map();
+  const chiralityWorst = new Map();
+  eachInstance(ctx, (f, i, row, key) => {
+    const r = model.scoreInstance(ctx.allPoses[row]);
+    const score = r.wrongFraction >= 0.5 ? Math.max(0.9, r.wrongFraction) : r.wrongFraction; // hard rule
+    chiralityScores.set(key, Number.isFinite(score) ? score : 0);
+    chiralityWorst.set(key, r.wrongPairs.size ? firstWrongPairNode(r.wrongPairs) : -1);
+  });
+  return { chiralityScores, chiralityWorst, fitted: true };
+}
+
+/**
+ * Pose-split (chimera) — one instance spanning two animals, joined by a stretched bridging
+ * edge. Reuses the baseline edge-length stats (from ctx._fx if anomaly/gmm already built
+ * them, else fits a lightweight baseline) + skeleton adjacency. The raw split_score is
+ * unbounded, so it is squashed s/(s+1) into [0,1] (threshold 0.5 == the upstream
+ * split_score==1 chimera/normal boundary).
+ */
+export function computePoseSplitUnit(ctx) {
+  const analyzer = ctx.analyzer;
+  const stats =
+    ctx._fx?.baseline?.stats ??
+    new BaselineFeatureExtractor(analyzer.edges, analyzer.nNodes, analyzer.symmetryPairs).fit(ctx.allPoses).stats;
+  const adj = Array.from({ length: analyzer.nNodes }, () => []);
+  for (const [s, d] of analyzer.edges) { adj[s].push(d); adj[d].push(s); }
+  const poseSplitScores = new Map();
+  const poseSplitWorst = new Map();
+  eachInstance(ctx, (f, i, row, key) => {
+    const r = computePoseSplit(ctx.allPoses[row], adj, stats.edgeMeans, stats.edgeStds);
+    const score = r.splitScore / (r.splitScore + 1); // squash unbounded score -> [0,1]
+    poseSplitScores.set(key, Number.isFinite(score) ? score : 0);
+    poseSplitWorst.set(key, r.bridge ? Math.min(r.bridge[0], r.bridge[1]) : -1);
+  });
+  return { poseSplitScores, poseSplitWorst };
 }

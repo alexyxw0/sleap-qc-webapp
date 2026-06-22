@@ -5,6 +5,7 @@ export function makeQCConfig(overrides = {}) {
     useGmm: true,
     useCurvature: "auto", // "auto" => enable for chains >= 5 nodes
     useSymmetry: "auto", // "auto" => enable when symmetry pairs exist
+    useChirality: "auto", // "auto" => enable when symmetry pairs exist (skeleton or name-inferred)
     useAnatomical: false,
 
     instanceThreshold: 0.7,
@@ -17,10 +18,6 @@ export function makeQCConfig(overrides = {}) {
     gmmMinSamples: 50,
     gmmPercentileThreshold: 5.0,
 
-    // Per-node spatial prior — the per-keypoint "worst node" indicator (red ring + the
-    // node named in the sidebar description). Pure geometry; the UI opts in.
-    spatialPrior: false,
-
     autoCalibrate: true, // reserved / unused, mirrors the Python dead field
     calibrationPercentile: 95.0,
     ...overrides,
@@ -32,3 +29,6 @@ export const shouldUseCurvature = (config, maxChainLength) =>
 
 export const shouldUseSymmetry = (config, hasSymmetry) =>
   typeof config.useSymmetry === "boolean" ? config.useSymmetry : hasSymmetry;
+
+export const shouldUseChirality = (config, hasSymmetry) =>
+  typeof config.useChirality === "boolean" ? config.useChirality : hasSymmetry;

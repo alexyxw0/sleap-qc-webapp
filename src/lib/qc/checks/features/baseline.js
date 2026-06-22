@@ -190,4 +190,109 @@ export class BaselineFeatureExtractor {
     }
     return [visRate, isolated];
   }
+
+  /**
+   * Per-feature culprit node(s) + direction for UI attribution. For the *node-localizable*
+   * baseline features, returns the node/edge that drives the feature's value — the argmax (or
+   * argmin) that `extract()`'s reductions discard. Shape: `{ featureName: { nodes: idx[], dir? } }`
+   * (edges/pairs/symmetry give two indices, the rest one); `dir` is the **signed z-score sign**
+   * (+1 = larger than learned mean, -1 = smaller) for the z-score features, omitted where
+   * direction is meaningless (centroid distance, symmetry, isolated-invisible). A feature is
+   * absent when it has no single culprit. Whole-instance features (mean_*, bbox/hull/nn,
+   * visibility_rate) are intentionally absent — they are not about one node.
+   */
+  attribute(pose) {
+    if (!this.stats) throw new Error("Must call fit() before attribute()");
+    const out = {};
+
+    // max_edge_zscore -> the most length-deviant visible edge (both endpoints) + direction.
+    let beZ = -Infinity, beEdge = null, beDir = 0;
+    for (const [s, d] of this.edges) {
+      if (!isVisible(pose[s]) || !isVisible(pose[d])) continue;
+      const k = edgeKey(s, d);
+      if (!this.stats.edgeMeans.has(k)) continue;
+      const zRaw = (dist(pose[s], pose[d]) - this.stats.edgeMeans.get(k)) / this.stats.edgeStds.get(k);
+      if (Math.abs(zRaw) > beZ) { beZ = Math.abs(zRaw); beEdge = [s, d]; beDir = Math.sign(zRaw); }
+    }
+    if (beEdge) out.max_edge_zscore = { nodes: beEdge, dir: beDir };
+
+    // max_angle_zscore -> the joint (center node) with the most-deviant angle + direction.
+    let baZ = -Infinity, baCenter = -1, baDir = 0;
+    this._adjacency.forEach((neighbors, center) => {
+      if (neighbors.length < 2 || !isVisible(pose[center])) return;
+      for (let i = 0; i < neighbors.length; i++)
+        for (let j = i + 1; j < neighbors.length; j++) {
+          const n1 = neighbors[i], n2 = neighbors[j];
+          if (!isVisible(pose[n1]) || !isVisible(pose[n2])) continue;
+          const a = this._angle(pose[center], pose[n1], pose[n2]);
+          if (a == null) continue;
+          const k = [center, Math.min(n1, n2), Math.max(n1, n2)].join(",");
+          if (!this.stats.angleMeans.has(k)) continue;
+          const zRaw = (a - this.stats.angleMeans.get(k)) / this.stats.angleStds.get(k);
+          if (Math.abs(zRaw) > baZ) { baZ = Math.abs(zRaw); baCenter = center; baDir = Math.sign(zRaw); }
+        }
+    });
+    if (baCenter >= 0) out.max_angle_zscore = { nodes: [baCenter], dir: baDir };
+
+    // max_pairwise_zscore -> the most distance-deviant node pair + direction.
+    let bpZ = -Infinity, bpPair = null, bpDir = 0;
+    for (let i = 0; i < this.nNodes; i++)
+      for (let j = i + 1; j < this.nNodes; j++) {
+        if (!isVisible(pose[i]) || !isVisible(pose[j])) continue;
+        const zRaw = (dist(pose[i], pose[j]) - this.stats.pairwiseMeans.get(`${i},${j}`)) / this.stats.pairwiseStds.get(`${i},${j}`);
+        if (Math.abs(zRaw) > bpZ) { bpZ = Math.abs(zRaw); bpPair = [i, j]; bpDir = Math.sign(zRaw); }
+      }
+    if (bpPair) out.max_pairwise_zscore = { nodes: bpPair, dir: bpDir };
+
+    // max_centroid_distance -> the visible node furthest from the visible centroid (no direction:
+    // a distance is one-sided).
+    const vis = [];
+    for (let i = 0; i < this.nNodes; i++) if (isVisible(pose[i])) vis.push(i);
+    if (vis.length >= 2) {
+      const cx = vis.reduce((s, i) => s + pose[i][0], 0) / vis.length;
+      const cy = vis.reduce((s, i) => s + pose[i][1], 0) / vis.length;
+      let best = -1, bestD = -Infinity;
+      for (const i of vis) {
+        const dd = Math.hypot(pose[i][0] - cx, pose[i][1] - cy);
+        if (dd > bestD) { bestD = dd; best = i; }
+      }
+      if (best >= 0) out.max_centroid_distance = { nodes: [best] };
+    }
+
+    // min_symmetry_consistency -> the least-consistent symmetric pair (the argmin of extract()).
+    if (this.symmetryPairs.length >= 2) {
+      let worstPair = null, worstScore = Infinity;
+      for (let i = 0; i < this.symmetryPairs.length; i++) {
+        const [l1, r1] = this.symmetryPairs[i];
+        if (!isVisible(pose[l1]) || !isVisible(pose[r1])) continue;
+        let consistent = 0, total = 0;
+        for (let j = 0; j < this.symmetryPairs.length; j++) {
+          if (i === j) continue;
+          const [l2, r2] = this.symmetryPairs[j];
+          if (!isVisible(pose[l2]) || !isVisible(pose[r2])) continue;
+          const ratio = dist(pose[l1], pose[l2]) / Math.max(dist(pose[l1], pose[r2]), 1e-6);
+          if (ratio < 0.9) consistent += 1;
+          else if (ratio <= 1.1) consistent += 0.5;
+          total += 1;
+        }
+        if (total > 0) {
+          const sc = consistent / total;
+          if (sc < worstScore) { worstScore = sc; worstPair = [l1, r1]; }
+        }
+      }
+      if (worstPair) out.min_symmetry_consistency = { nodes: worstPair };
+    }
+
+    // has_isolated_invisible -> the invisible node whose skeleton neighbors are all visible
+    // (matches the break in _visibilityFeatures). If the node is unplaced it has no coords to
+    // ring; a placed-but-hidden node (real xy, visible:false) is still ringed/zoomed on canvas.
+    const visMask = pose.map(isVisible);
+    for (let i = 0; i < this.nNodes; i++) {
+      if (visMask[i]) continue;
+      const nb = this._adjacency[i];
+      if (nb.length && nb.every((n) => visMask[n])) { out.has_isolated_invisible = { nodes: [i] }; break; }
+    }
+
+    return out;
+  }
 }

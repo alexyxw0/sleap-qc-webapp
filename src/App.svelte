@@ -24,6 +24,14 @@
     }
   });
 
+  // Auto-rerun QC when the detection selection adds an uncomputed check, so the flagged set
+  // always reflects the current checks without a manual Run. Gated on status "done": the
+  // FIRST run stays manual (heavy units like GMM remain opt-in), and a failed run won't loop.
+  // Converges because run() computes the pending units, driving pendingCount back to 0.
+  $effect(() => {
+    if (qc.pendingCount > 0 && qc.status === "done") qc.run();
+  });
+
   // Warn before leaving with unsaved edits.
   function onBeforeUnload(e) {
     if (edit.dirty) {

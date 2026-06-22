@@ -6,37 +6,101 @@
   // BEFORE running QC — only selected techniques are computed, and each result is memoized so
   // re-selecting a computed check never recomputes. The flagged frames are the UNION of the
   // enabled checks.
+  // `hint` is the quick hover tooltip; `info` is the longer, expand-on-click explanation
+  // of what the detector measures and when to trust it.
   const CHECKS = [
-    { key: "anomaly", label: "Anomaly", hint: "Geometrically unusual instance vs. the rest of the file" },
-    { key: "gmm", label: "GMM (probability)", hint: "Low-probability instance under a Gaussian-mixture density model. Heaviest check — opt-in." },
-    { key: "spatial", label: "Spatial outlier", hint: "A single node sitting out of place (drives the red ring)" },
-    { key: "count", label: "Instance count", hint: "Frame has fewer instances than expected" },
-    { key: "negative", label: "Negative frames", hint: "A negative frame that still has instances" },
-    { key: "duplicates", label: "Duplicates", hint: "Two instances overlapping / duplicated" },
+    {
+      key: "chirality",
+      label: "L/R flip (chirality)",
+      hint: "Whole-instance left/right mirror flip: symmetric pairs (e.g. Ear_L/Ear_R) sitting on the wrong side of the body midline.",
+      info: "Whole-instance left/right mirror flip — symmetric keypoint pairs (Ear_L/Ear_R, …) sitting on the wrong side of the body midline. A mirror flip preserves every edge length and unsigned angle, so it is invisible to the geometric checks below; this is the dedicated signed-side test, measuring which side of the body axis each left/right keypoint falls on. Coordinate-only and scale-invariant. Auto-disables when the skeleton has no symmetric (or name-inferable) pairs. On by default.",
+    },
+    {
+      key: "poseSplit",
+      label: "Split pose (chimera)",
+      hint: "One labeled instance spanning two animals, joined by an over-stretched bridging edge.",
+      info: "One labeled instance that actually spans two animals (e.g. the head of one + the body of another), joined by a single over-stretched bridging edge. It finds the most-stretched edge, cuts it, and only flags when that yields two balanced, well-separated clusters — so a lone stray node or two genuinely-touching animals will not trip it. Coordinate-only; reuses the learned edge-length statistics. On by default.",
+    },
+    {
+      key: "anomaly",
+      label: "Anomaly",
+      hint: "Geometrically unusual instance vs. the rest of the file.",
+      info: "General “this pose looks geometrically wrong” detector. It builds an 18-dimensional descriptor per instance (edge lengths, joint angles, pairwise distances, bounding-box & convex-hull area, symmetry, curvature, visibility …) and flags an instance whose single most-extreme feature deviates far from the rest of the file. The threshold slider sets how extreme counts as extreme. On by default.",
+    },
+    {
+      key: "gmm",
+      label: "GMM (probability)",
+      hint: "Low-probability instance under a Gaussian-mixture density model. Heaviest check — opt-in.",
+      info: "Probabilistic counterpart to the anomaly check: it fits a Gaussian-mixture density over the same 18 features and flags poses that are rare under it (threshold 0.95 ≈ the rarest 5%). Catches subtle, multi-feature weirdness the single-feature anomaly score misses, but it is the heaviest check to compute, so it is opt-in (off by default).",
+    },
+    {
+      key: "count",
+      label: "Instance count",
+      hint: "Frame has fewer instances than expected.",
+      info: "Frame-level: flags a frame with fewer instances than expected, where “expected” is the median instance-count per frame (computed per video). Only under-counting is flagged — a likely missed or un-labeled animal; extra instances are left to the Duplicates check. On by default.",
+    },
+    {
+      key: "negative",
+      label: "Negative frames",
+      hint: "A negative frame that still has instances.",
+      info: "Consistency check: a frame explicitly marked negative (background / no animal) should carry no labeled instances. Flags any negative frame that still has instances. Boolean — no threshold. On by default.",
+    },
+    {
+      key: "duplicates",
+      label: "Duplicates",
+      hint: "Two instances overlapping / duplicated.",
+      info: "Flags a frame where two instances overlap — either by bounding-box IoU (> 0.5) or by node-wise overlap (most shared-visible nodes within ~10 px of each other). Catches the same animal accidentally labeled twice. On by default.",
+    },
   ];
+
+  let collapsed = $state(false); // collapse the whole detection-checks block to de-clutter
+  let infoOpen = $state({}); // per-check key -> show the long-form description
 </script>
 
 {#if store.labels}
   <section class="side-section">
-    <h3 class="side-h">Detection checks</h3>
+    <button type="button" class="sec-head" onclick={() => (collapsed = !collapsed)} aria-expanded={!collapsed} title="Collapse / expand detection checks">
+      <span class="schev" class:open={!collapsed}>▸</span>
+      <span class="side-h">Detection checks</span>
+      {#if qc.hasResults}
+        <span class="sum">{qc.flaggedFrameCount} flagged</span>
+      {:else if qc.pendingCount > 0}
+        <span class="sum pend">{qc.pendingCount} to run</span>
+      {/if}
+    </button>
+    {#if !collapsed}
     <ul class="checks">
       {#each CHECKS as c (c.key)}
         {@const ready = qc.checkReady(c.key)}
         {@const pending = qc.checkPending(c.key)}
         <li class:off={!qc.checks[c.key]}>
-          <label title={c.hint}>
-            <input
-              type="checkbox"
-              checked={qc.checks[c.key]}
-              onchange={() => qc.toggleCheck(c.key)}
-            />
-            <span class="lbl">{c.label}</span>
-            {#if pending}
-              <span class="cnt pend" title="Selected — needs a Run QC to compute">run ▸</span>
-            {:else if ready}
-              <span class="cnt">{qc.checkCount(c.key)}</span>
-            {/if}
-          </label>
+          <div class="row">
+            <label title={c.hint}>
+              <input
+                type="checkbox"
+                checked={qc.checks[c.key]}
+                onchange={() => qc.toggleCheck(c.key)}
+              />
+              <span class="lbl">{c.label}</span>
+              {#if pending}
+                <span class="penddot" title="Selected — needs a Run QC to compute"></span>
+              {:else if ready}
+                <span class="cnt">{qc.checkCount(c.key)}</span>
+              {/if}
+            </label>
+            <button
+              type="button"
+              class="info-btn"
+              class:open={infoOpen[c.key]}
+              onclick={() => (infoOpen[c.key] = !infoOpen[c.key])}
+              aria-expanded={!!infoOpen[c.key]}
+              aria-label="What this check detects"
+              title="What this check detects"
+            >ⓘ</button>
+          </div>
+          {#if infoOpen[c.key]}
+            <p class="info">{c.info}</p>
+          {/if}
           {#if c.key === "anomaly" && qc.checks.anomaly}
             <!-- Anomaly flag threshold. Scores are cached, so dragging only re-derives the
                  flagged set (no recompute) — counts + union update live. -->
@@ -69,6 +133,36 @@
               <span class="tval">{qc.gmmThreshold.toFixed(2)}</span>
             </div>
           {/if}
+          {#if c.key === "chirality" && qc.checks.chirality}
+            <!-- Chirality flag threshold (wrong-side fraction; the hard rule forces >=0.9). -->
+            <div class="thresh" title="Flag an instance when its L/R-flip score is at or above this value">
+              <span class="tlbl">threshold</span>
+              <input
+                type="range"
+                min="0.3"
+                max="0.99"
+                step="0.01"
+                value={qc.chiralityThreshold}
+                oninput={(e) => (qc.chiralityThreshold = +e.currentTarget.value)}
+              />
+              <span class="tval">{qc.chiralityThreshold.toFixed(2)}</span>
+            </div>
+          {/if}
+          {#if c.key === "poseSplit" && qc.checks.poseSplit}
+            <!-- Chimera flag threshold (squashed split_score; 0.5 == raw split_score 1). -->
+            <div class="thresh" title="Flag an instance when its chimera (split-pose) score is at or above this value">
+              <span class="tlbl">threshold</span>
+              <input
+                type="range"
+                min="0.3"
+                max="0.99"
+                step="0.01"
+                value={qc.poseSplitThreshold}
+                oninput={(e) => (qc.poseSplitThreshold = +e.currentTarget.value)}
+              />
+              <span class="tval">{qc.poseSplitThreshold.toFixed(2)}</span>
+            </div>
+          {/if}
         </li>
       {/each}
     </ul>
@@ -87,6 +181,7 @@
         {qc.pendingCount} selected check{qc.pendingCount === 1 ? "" : "s"} need{qc.pendingCount === 1 ? "s" : ""} a run{qc.checks.gmm && !qc.checkReady("gmm") ? " · GMM is slow" : ""}
       </p>
     {/if}
+    {/if}
   </section>
 {/if}
 
@@ -101,6 +196,51 @@
   }
   .checks li:last-child {
     border-bottom: 0;
+  }
+  .sec-head {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    width: 100%;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    text-align: left;
+    color: inherit;
+  }
+  .sec-head .side-h {
+    margin: 0;
+    flex: 1;
+  }
+  .schev {
+    flex: none;
+    color: var(--dim);
+    font-size: 0.62rem;
+    transition: transform 0.15s var(--ease), color 0.12s;
+  }
+  .schev.open {
+    transform: rotate(90deg);
+  }
+  .sec-head:hover .schev {
+    color: var(--text);
+  }
+  .sum {
+    font-size: 0.7rem;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+  }
+  .sum.pend {
+    color: var(--accent);
+  }
+  .penddot {
+    flex: none;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--accent);
+    opacity: 0.85;
   }
   label {
     display: flex;
@@ -128,10 +268,41 @@
     font-variant-numeric: tabular-nums;
     font-size: 0.72rem;
   }
-  /* a check that is selected but not yet computed — waiting on a Run QC */
-  .cnt.pend {
+  /* check label + info toggle share one row; label flexes, ⓘ sits at the right edge */
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+  .row label {
+    flex: 1;
+    min-width: 0;
+  }
+  .info-btn {
+    flex: none;
+    background: none;
+    border: none;
+    padding: 0 0.1rem;
+    cursor: pointer;
+    color: var(--dim);
+    font-size: 0.8rem;
+    line-height: 1;
+    transition: color 0.12s;
+  }
+  .info-btn:hover {
+    color: var(--text);
+  }
+  .info-btn.open {
     color: var(--accent);
-    letter-spacing: 0.02em;
+  }
+  /* long-form description, indented to line up with the threshold slider */
+  .info {
+    margin: -0.05rem 0 0.5rem;
+    padding: 0.1rem 0.2rem 0.4rem 1.35rem;
+    font-size: 0.705rem;
+    line-height: 1.5;
+    color: var(--muted);
+    letter-spacing: 0.01em;
   }
   /* anomaly flag-threshold slider, tucked under its check row */
   .thresh {
