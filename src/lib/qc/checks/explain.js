@@ -31,6 +31,7 @@ const ISSUE_MAP = {
   nn_distance: "Unusual pose shape",
   max_curvature: "Unusual curvature",
   hull_area_zscore: "Unusual pose extent",
+  pose_split_score: "Split pose / chimera",
 };
 
 /** The dominant feature -> issue label. Returns { feature, issue }. */

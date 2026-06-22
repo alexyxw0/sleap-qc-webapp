@@ -10,25 +10,25 @@ All `checks/…` citations below are relative to `src/lib/qc/`; `qcStore.svelte.
 
 ## Architecture
 
-**Unit model.** Each detection technique is a pure `computeXUnit(ctx)` function in `checks/detector.js` (`computeAnomalyUnit`, `computeGmmUnit`, `computeFrameUnit`, `computeChiralityUnit`, `computePoseSplitUnit`). A unit takes the shared `ctx` (built once by `buildContext`, carrying `frames`, `allPoses`, `analyzer`, `frameCounts`, `videoIds`, `config`, `labels`, fitted features) and returns `Map`s keyed by `` `${videoIdx}:${frameIdx}:${instIdx}` `` for instance-level results, or `` `${videoIdx}:${frameIdx}` `` for frame-level results.
+**Unit model.** Each detection technique is a pure `computeXUnit(ctx)` function in `checks/detector.js` (`computeAnomalyUnit`, `computeGmmUnit`, `computeFrameUnit`, `computeChiralityUnit`). Pose-split is **not** a unit — `pose_split_score` is a feature in the anomaly/GMM vector (see "The feature vector"), matching the desktop GUI. A unit takes the shared `ctx` (built once by `buildContext`, carrying `frames`, `allPoses`, `analyzer`, `frameCounts`, `videoIds`, `config`, `labels`, fitted features) and returns `Map`s keyed by `` `${videoIdx}:${frameIdx}:${instIdx}` `` for instance-level results, or `` `${videoIdx}:${frameIdx}` `` for frame-level results.
 
 **Memoization.** `qcStore.svelte.js` maps each user-facing check to a unit via `UNIT_OF` (`count`/`negative`/`duplicates` all share the `frame` unit). Results live in `#computed[unit]`; re-selecting a previously-computed technique never recomputes. `#ctx` is rebuilt only when the underlying labels change (`#ctxLabels` identity check), via `buildContext(store.labels, makeQCConfig({ useGmm: false }))` (see GMM Notes for why the `useGmm:false` override is inert for the unit path). After the first run, toggling a new check auto-reruns (an `$effect` in `App.svelte` gated on `status === "done"`), computing only the newly-needed unit.
 
-**Score + threshold convention.** Instance scorers (anomaly, gmm, chirality, pose-split) emit a score in `[0,1]`; an instance is flagged when `score >= threshold`. Frame checks emit booleans. Per-instance scores roll up to a frame via **max** aggregation.
+**Score + threshold convention.** Instance scorers (anomaly, gmm, chirality) emit a score in `[0,1]`; an instance is flagged when `score >= threshold`. Frame checks emit booleans. Per-instance scores roll up to a frame via **max** aggregation.
 
-**UNION flagging.** `flaggedFrameCount` / the flagged set is the UNION of all *enabled-and-computed* checks: anomaly (`>= threshold`), gmm (`>= gmmThreshold`), chirality (`>= chiralityThreshold`), poseSplit (`>= poseSplitThreshold`), plus boolean frame checks `count`/`negative`/`duplicates`. Disabling a check removes its contribution from the union without recomputation.
+**UNION flagging.** `flaggedFrameCount` / the flagged set is the UNION of all *enabled-and-computed* checks: anomaly (`>= threshold`), gmm (`>= gmmThreshold`), chirality (`>= chiralityThreshold`), plus boolean frame checks `count`/`negative`/`duplicates`. Pose-split has no row of its own — it raises the anomaly/GMM score via its feature. Disabling a check removes its contribution from the union without recomputation.
 
-**Default toggle state (as shipped).** `checks = { anomaly:true, gmm:false, chirality:true, poseSplit:true, count:true, negative:true, duplicates:true }`. GMM defaults **OFF** (opt-in/heaviest); chirality defaults ON but self-disables without symmetric pairs; the others (incl. pose-split) default ON.
+**Default toggle state (as shipped).** `checks = { anomaly:true, gmm:false, chirality:true, count:true, negative:true, duplicates:true }`. GMM defaults **OFF** (opt-in/heaviest); chirality defaults ON but self-disables without symmetric pairs; the others default ON.
 
-**Two population-stat implementations.** Z-scores and GMM scaling are both *population* (`/N`, ddof=0) but live in **two independent code paths**: `util.js` (`mean`/`safeStd`, floor `1e-6`) for ZScore and the 18-feature stats; `gmm.js` `standardScalerFit` (zero-variance scale→1). Do not assume a single shared helper.
+**Two population-stat implementations.** Z-scores and GMM scaling are both *population* (`/N`, ddof=0) but live in **two independent code paths**: `util.js` (`mean`/`safeStd`, floor `1e-6`) for ZScore and the 19-feature stats; `gmm.js` `standardScalerFit` (zero-variance scale→1). Do not assume a single shared helper.
 
 ---
 
 ## Anomaly (ZScore)
 
-**Flags:** instance whose worst single-feature deviation across the 18-dim vector is extreme — `sigmoid(maxZ − 3.0) >= threshold(0.7)`, i.e. effective cutoff `maxZ >= ~3.85`.
+**Flags:** instance whose worst single-feature deviation across the 19-dim vector is extreme — `sigmoid(maxZ − 3.0) >= threshold(0.7)`, i.e. effective cutoff `maxZ >= ~3.85`.
 
-**Algorithm:** `ZScoreDetector` (`checks/detector.js`). `fit(matrix)` keeps only NaN-free rows (`valid`); per feature `j` computes `means[j] = mean(col j)` and `stds[j] = max(std(col j), 1e-6)` using **population** mean/std (`/N`, `util.js`). `scoreOne(vector)`: returns `NaN` if any element is NaN, else `maxZ = max_j |(vector[j] − means[j]) / stds[j]|` over all 18 features, returning `sigmoid(maxZ − 3.0) = 1/(1+exp(−(maxZ−3.0)))`. So `z==3 → 0.5`. `computeAnomalyUnit` fits on `fx.rawMatrix` and scores each instance on its `fx.cleanMatrix` row (NaN→0, +Inf→10, −Inf→−10); reported `contributions` are `fx.rawMatrix[row][j] ?? 0`.
+**Algorithm:** `ZScoreDetector` (`checks/detector.js`). `fit(matrix)` keeps only NaN-free rows (`valid`); per feature `j` computes `means[j] = mean(col j)` and `stds[j] = max(std(col j), 1e-6)` using **population** mean/std (`/N`, `util.js`). `scoreOne(vector)`: returns `NaN` if any element is NaN, else `maxZ = max_j |(vector[j] − means[j]) / stds[j]|` over all 19 features, returning `sigmoid(maxZ − 3.0) = 1/(1+exp(−(maxZ−3.0)))`. So `z==3 → 0.5`. `computeAnomalyUnit` fits on `fx.rawMatrix` and scores each instance on its `fx.cleanMatrix` row (NaN→0, +Inf→10, −Inf→−10); reported `contributions` are `fx.rawMatrix[row][j] ?? 0`.
 
 **Threshold/params:** `ZScoreDetector.threshold = 3.0` (hardcoded); flag threshold `0.7` (`config.instanceThreshold`, `qcStore.threshold`); std floor `1e-6`.
 
@@ -58,7 +58,7 @@ All `checks/…` citations below are relative to `src/lib/qc/`; `qcStore.svelte.
 
 ## L/R flip (chirality)
 
-**Flags:** a whole-instance left/right mirror flip — symmetric pairs (Ear_L/Ear_R, …) sitting on the wrong side of the body midline. A reflection preserves every length and unsigned angle, so a flip is **invisible to the 18-feature vector**; chirality is the dedicated *signed* test. Headline detector of the `sleap/qc` update; **default ON** (self-disables without symmetric pairs).
+**Flags:** a whole-instance left/right mirror flip — symmetric pairs (Ear_L/Ear_R, …) sitting on the wrong side of the body midline. A reflection preserves every length and unsigned angle, so a flip is **invisible to the geometric feature vector**; chirality is the dedicated *signed* test. Headline detector of the `sleap/qc` update; **default ON** (self-disables without symmetric pairs).
 
 **Algorithm:** `ChiralityModel` (`checks/features/chirality.js`). **Inputs** (`resolveChiralityInputs`): symmetric index pairs from `analyzer.symmetryPairs`, else name-inferred (`inferSymmetryPairsByName` — shared-stem L/R: suffix `Ear_L`/`Ear_R`, prefix `left_eye`/`right_eye`; `left`/`right` tried before `l`/`r`, suffix before prefix, first match wins); plus a midline = the non-symmetric "spine" nodes ordered nose→tail by mean PCA projection (`orderMidlineByPca`). **fit** (over `ctx.allPoses`): resolve the midline polyline (ordered visible midline nodes → 2 axis anchors → PCA single-segment fallback); for each co-visible pair, `signedSideLocal = sign(cross(local-tangent, left − foot))` where `foot` is the pair *midpoint* projected onto the nearest midline segment — the **local-tangent** construction that stops a *curled* but correct animal reading as flipped; canonical side = `sign(mean side)` (ties → +1). **score** (`scoreInstance`): `wrongFraction = nWrong / nPairs` over co-visible learned pairs; `< 2` scorable pairs → 0 (safety floor). **No SVD in JS:** the PCA axis is the largest-eigenvalue eigenvector of the 2×2 covariance (same direction up to sign; sign is irrelevant since fit and score share the axis).
 
@@ -68,15 +68,13 @@ All `checks/…` citations below are relative to `src/lib/qc/`; `qcStore.svelte.
 
 ---
 
-## Split pose (chimera)
+## Split pose (chimera) — a feature, not a standalone check
 
-**Flags:** one labeled instance that actually spans **two animals** (head of A + abdomen of B), joined by a single over-stretched bridging edge. **Default ON**; coordinate-only.
+**What it catches:** one labeled instance that actually spans **two animals** (head of A + abdomen of B), joined by a single over-stretched bridging edge. Unlike chirality, it has **no standalone check / threshold** — `pose_split_score` is feature #19 of the anomaly/GMM vector (mirroring the desktop GUI, where pose-split is a GMM feature with no hard rule). A chimera is flagged only when it lifts the combined anomaly/GMM score past that detector's threshold, and surfaces as the verdict **"Split pose / chimera"** via `topIssue` when `pose_split_score` is the dominant contribution. No dedicated node attribution (whole-instance).
 
-**Algorithm:** `computePoseSplit` (`checks/features/poseSplit.js`). On the *visible* subgraph: (1) find the edge with the largest length **z-score** `(len − mean) / std` from the learned baseline edge stats — the "bridge"; (2) cut it and require **exactly two** components (a clean bridge — partial occlusion yields >2, a cycle-redundant edge yields 1; both → score 0); (3) `split_score = bridge_z × balance(split_ratio) × gap_term(gap_ratio)`, a **gated product** so all three must be high. `balance` ramps 0→1 across `split_ratio ∈ [0.18, 0.30]` (kills a single stray node / unbalanced 1-vs-N split); `gap_term = max(gap_ratio − 1.5, 0)` with `gap_ratio = ‖centroidA − centroidB‖ / max(spreadA, spreadB)` (kills two genuinely-overlapping merged animals). Star / short / adjacency-less skeletons use a **2-means bimodality fallback** (deterministic 2-means here vs sklearn KMeans upstream; gated by a silhouette floor + the same gap, so a uniformly-spread pose that 2-means halves trivially scores 0).
+**Algorithm:** `computePoseSplit` (`checks/features/poseSplit.js`), called from `extractFeatures`. On the *visible* subgraph: (1) find the edge with the largest length **z-score** `(len − mean) / std` from the learned baseline edge stats — the "bridge"; (2) cut it and require **exactly two** components (a clean bridge — partial occlusion yields >2, a cycle-redundant edge yields 1; both → score 0); (3) `split_score = bridge_z × balance(split_ratio) × gap_term(gap_ratio)`, a **gated product** so all three must be high. `balance` ramps 0→1 across `split_ratio ∈ [0.18, 0.30]`; `gap_term = max(gap_ratio − 1.5, 0)` with `gap_ratio = ‖centroidA − centroidB‖ / max(spreadA, spreadB)`. Star / short / adjacency-less skeletons use a **2-means bimodality fallback**. The unbounded `split_score` is **log1p-compressed** (`Math.log1p`, matching the desktop) before entering the vector; `0` for a normal pose. Uses the extractor's own `baseline.stats.edgeMeans`/`edgeStds` + precomputed `_adjacency`.
 
-**Threshold:** the raw `split_score` is unbounded (z-scores can be large), so `computePoseSplitUnit` squashes it `s/(s+1)` into `[0,1]`; flag at `poseSplitThreshold = 0.5` (== the upstream `split_score = 1` chimera/normal boundary). Verdict **"Split pose / chimera"** sits just under chirality in `instanceIssue`/`faultyNodeFor` (ring = a bridge-edge node). Reuses `ctx._fx.baseline.stats.edgeMeans`/`edgeStds` when present, else fits a lightweight baseline (avoids the O(n²) NN feature).
-
-**Notes:** coordinate-only own-check; `split_ratio`/`gap_ratio` are translation/rotation-invariant (`split_score` is scale-sensitive via the learned edge z, by design). `MIN_VISIBLE_NODES = 4`; never emits NaN.
+**Notes:** coordinate-only; `split_ratio`/`gap_ratio` are translation/rotation-invariant. `MIN_VISIBLE_NODES = 4`; never emits NaN. **Tradeoff:** as one feature among 19 (no dedicated 0.5 threshold) it is *less* independently sensitive than the former standalone check — it only fires when it moves the combined score.
 
 ---
 
@@ -127,19 +125,18 @@ The human-readable sidebar verdict is assembled by `instanceIssue` (`qcStore.sve
 - `confidence(score)` → `"high"` (`>0.8`) / `"medium"` (`>0.5`) / `"low"`.
 - `topContributions(contributions, k=3)` → top-k `[name, value]`, highest first.
 
-**Verdict precedence (`instanceIssue`).** The chirality / pose-split verdicts short-circuit first; below them it returns `null` if anomaly and gmm scores are both absent. In order:
+**Verdict precedence (`instanceIssue`).** The chirality verdict short-circuits first; below it returns `null` if anomaly and gmm scores are both absent. In order:
 1. **Chirality:** if the instance is flagged as a whole-instance L/R flip (`chScore >= chiralityThreshold`), the verdict is `"Whole-instance L/R flip"` — highest precedence.
-2. **Pose-split:** else if flagged as a chimera (`psScore >= poseSplitThreshold`), the verdict is `"Split pose / chimera"`.
-3. Else, if anomaly is absent, **or** GMM flags while anomaly does *not* (`gFlag && checks.gmm && !(checks.anomaly && aScore >= threshold)`), the verdict is the GMM density verdict `"Improbable pose"` (`feature:null`), localized to the GMM leave-one-out node.
-4. Else the **anomaly** explanation wins: `topIssue(contributions)` supplies `issue`/`feature`, `confidence(aScore)` the bucket.
+2. Else, if anomaly is absent, **or** GMM flags while anomaly does *not* (`gFlag && checks.gmm && !(checks.anomaly && aScore >= threshold)`), the verdict is the GMM density verdict `"Improbable pose"` (`feature:null`), localized to the GMM leave-one-out node.
+3. Else the **anomaly** explanation wins: `topIssue(contributions)` supplies `issue`/`feature`, `confidence(aScore)` the bucket. (A chimera surfaces here as `"Split pose / chimera"` when `pose_split_score` is the dominant feature.)
 
-The displayed `worstNode` always comes from `faultyNodeFor` (chirality → pose-split → anomaly → GMM precedence), independent of which verdict string was chosen.
+The displayed `worstNode` always comes from `faultyNodeFor` (chirality → anomaly → GMM precedence), independent of which verdict string was chosen.
 
 ---
 
-## The 18-feature vector
+## The 19-feature vector
 
-Assembled per pose in `LabelQCDetector.extractFeatures` (`checks/detector.js`) as `[...baseline, ...v3]` — **12 baseline** (`checks/features/baseline.js`) then **6 V3**. This vector is what **Anomaly** and **GMM** score. Reference stats are fit over all pooled user instances (`fitFeatures`). `isVisible` requires *both* coords non-NaN; an invisible node is `[NaN,NaN]`. `rawMatrix` feeds the scorers; `cleanMatrix` maps `NaN→0, +Inf→10, −Inf→−10`. All z-score denominators are floored at `1e-6` (`safeStd`).
+Assembled per pose in `LabelQCDetector.extractFeatures` (`checks/detector.js`) as `[...baseline, ...v3]` — **12 baseline** (`checks/features/baseline.js`) then **7 V3** (the 6 below + `pose_split_score`, the log1p-compressed chimera signal). This vector is what **Anomaly** and **GMM** score, and what the read-only "feature vector" panel under the GMM check displays. Reference stats are fit over all pooled user instances (`fitFeatures`). `isVisible` requires *both* coords non-NaN; an invisible node is `[NaN,NaN]`. `rawMatrix` feeds the scorers; `cleanMatrix` maps `NaN→0, +Inf→10, −Inf→−10`. All z-score denominators are floored at `1e-6` (`safeStd`).
 
 Baseline (1–12):
 

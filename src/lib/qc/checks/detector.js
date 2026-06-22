@@ -21,6 +21,7 @@ import { computePoseSplit } from "./features/poseSplit.js";
 export const V3_FEATURE_NAMES = [
   "max_curvature", "curvature_std", "visibility_pattern_score",
   "nn_distance", "hull_area_zscore", "hull_compactness",
+  "pose_split_score", // chimera / pose-split, log1p-compressed (a GMM/anomaly feature, not a standalone check)
 ];
 
 /** Fallback detector: max |z| across features -> sigmoid around a threshold. */
@@ -83,6 +84,9 @@ export class LabelQCDetector {
     this._trainingNN = this.nn.looDistances();
     const areas = instances.map((p) => computeConvexHull(p).hullArea).filter((a) => a > 0);
     this._hullStats = { mean: areas.length ? mean(areas) : 1, std: areas.length ? std(areas) : 1 };
+    // node->neighbors adjacency, reused by the pose_split_score feature (chimera bridging edge).
+    this._adjacency = Array.from({ length: analyzer.nNodes }, () => []);
+    for (const [s, d] of analyzer.edges) { this._adjacency[s].push(d); this._adjacency[d].push(s); }
     this.featureNames = [...BASELINE_FEATURE_NAMES, ...V3_FEATURE_NAMES];
     this.rawMatrix = instances.map((p, i) => this.extractFeatures(p, this._trainingNN[i]));
     this.cleanMatrix = this.rawMatrix.map((row) =>
@@ -91,7 +95,7 @@ export class LabelQCDetector {
     return this;
   }
 
-  /** 18-dim feature vector for one pose. */
+  /** 19-dim feature vector for one pose (18 geometric + pose_split_score). */
   extractFeatures(pose, nnDistance = null) {
     const baseline = this.baseline.extract(pose);
     const v3 = [];
@@ -109,6 +113,11 @@ export class LabelQCDetector {
 
     const hull = computeConvexHull(pose);
     v3.push((hull.hullArea - this._hullStats.mean) / Math.max(this._hullStats.std, 1e-6), hull.compactness);
+
+    // chimera / pose-split as a feature (folded into the anomaly+GMM vector, like the desktop GUI):
+    // log1p-compressed bridging-edge split score over the visible subgraph; 0 for a normal pose.
+    const ps = computePoseSplit(pose, this._adjacency, this.baseline.stats.edgeMeans, this.baseline.stats.edgeStds);
+    v3.push(Math.log1p(ps.splitScore));
 
     return [...baseline, ...v3];
   }
@@ -328,27 +337,3 @@ export function computeChiralityUnit(ctx) {
   return { chiralityScores, chiralityWorst, fitted: true };
 }
 
-/**
- * Pose-split (chimera) — one instance spanning two animals, joined by a stretched bridging
- * edge. Reuses the baseline edge-length stats (from ctx._fx if anomaly/gmm already built
- * them, else fits a lightweight baseline) + skeleton adjacency. The raw split_score is
- * unbounded, so it is squashed s/(s+1) into [0,1] (threshold 0.5 == the upstream
- * split_score==1 chimera/normal boundary).
- */
-export function computePoseSplitUnit(ctx) {
-  const analyzer = ctx.analyzer;
-  const stats =
-    ctx._fx?.baseline?.stats ??
-    new BaselineFeatureExtractor(analyzer.edges, analyzer.nNodes, analyzer.symmetryPairs).fit(ctx.allPoses).stats;
-  const adj = Array.from({ length: analyzer.nNodes }, () => []);
-  for (const [s, d] of analyzer.edges) { adj[s].push(d); adj[d].push(s); }
-  const poseSplitScores = new Map();
-  const poseSplitWorst = new Map();
-  eachInstance(ctx, (f, i, row, key) => {
-    const r = computePoseSplit(ctx.allPoses[row], adj, stats.edgeMeans, stats.edgeStds);
-    const score = r.splitScore / (r.splitScore + 1); // squash unbounded score -> [0,1]
-    poseSplitScores.set(key, Number.isFinite(score) ? score : 0);
-    poseSplitWorst.set(key, r.bridge ? Math.min(r.bridge[0], r.bridge[1]) : -1);
-  });
-  return { poseSplitScores, poseSplitWorst };
-}
