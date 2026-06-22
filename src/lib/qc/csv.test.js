@@ -1,0 +1,41 @@
+import { describe, it, expect } from "vitest";
+import { qcResultsCsv, QC_CSV_HEADER } from "./csv.js";
+
+// A full 18-feature contributions map (matches the keys computeAnomalyUnit emits).
+const contrib = {
+  max_edge_zscore: 1.5, mean_edge_zscore: 0.6, max_angle_zscore: 1.1, mean_angle_zscore: 0.5,
+  max_pairwise_zscore: 1.5, mean_pairwise_zscore: 0.6, bbox_area_zscore: 2.0,
+  max_centroid_distance: 200, centroid_distance_std: 50, min_symmetry_consistency: 1.0,
+  visibility_rate: 1.0, has_isolated_invisible: 0, max_curvature: 2.5, curvature_std: 1.2,
+  visibility_pattern_score: 0, nn_distance: 0.9, hull_area_zscore: 0.3, hull_compactness: 0.31,
+};
+
+describe("qcResultsCsv", () => {
+  it("emits the exact qc_results.csv header (24 cols, hull_area not hull_area_zscore)", () => {
+    expect(qcResultsCsv([])).toBe(QC_CSV_HEADER.join(","));
+    expect(QC_CSV_HEADER.slice(0, 6)).toEqual(["video_idx", "frame_idx", "instance_idx", "score", "confidence", "top_issue"]);
+    expect(QC_CSV_HEADER).toContain("hull_area");
+    expect(QC_CSV_HEADER).not.toContain("hull_area_zscore");
+    expect(QC_CSV_HEADER).toHaveLength(24);
+  });
+
+  it("writes one row per record: identity + score/confidence/top_issue + 18 features", () => {
+    const rows = qcResultsCsv([{ videoIdx: 0, frameIdx: 1737, instIdx: 0, score: 0.88, contributions: contrib }]).split("\n");
+    expect(rows).toHaveLength(2);
+    const cells = rows[1].split(",");
+    expect(cells.slice(0, 5)).toEqual(["0", "1737", "0", "0.88", "high"]); // indices int, score float
+    expect(cells[5]).toBe("Isolated node"); // max_centroid_distance 200/30 dominates topIssue
+    expect(cells[QC_CSV_HEADER.indexOf("hull_area")]).toBe("0.3"); // maps to hull_area_zscore value
+    // whole-number features render as floats (".0"), matching the reference's numpy output
+    expect(cells[QC_CSV_HEADER.indexOf("visibility_rate")]).toBe("1.0");
+    expect(cells[QC_CSV_HEADER.indexOf("has_isolated_invisible")]).toBe("0.0");
+    expect(cells).toHaveLength(24);
+  });
+
+  it("coalesces non-finite feature values to 0.0", () => {
+    const c = { ...contrib, max_curvature: NaN, nn_distance: Infinity };
+    const cells = qcResultsCsv([{ videoIdx: 0, frameIdx: 0, instIdx: 0, score: 0.5, contributions: c }]).split("\n")[1].split(",");
+    expect(cells[QC_CSV_HEADER.indexOf("max_curvature")]).toBe("0.0");
+    expect(cells[QC_CSV_HEADER.indexOf("nn_distance")]).toBe("0.0");
+  });
+});
