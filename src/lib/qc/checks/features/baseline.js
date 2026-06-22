@@ -284,8 +284,8 @@ export class BaselineFeatureExtractor {
     }
 
     // has_isolated_invisible -> the invisible node whose skeleton neighbors are all visible
-    // (matches the break in _visibilityFeatures). The node has no coordinates, so this names
-    // it (sidebar) even though there is nothing to ring on the canvas.
+    // (matches the break in _visibilityFeatures). If the node is unplaced it has no coords to
+    // ring; a placed-but-hidden node (real xy, visible:false) is still ringed/zoomed on canvas.
     const visMask = pose.map(isVisible);
     for (let i = 0; i < this.nNodes; i++) {
       if (visMask[i]) continue;
