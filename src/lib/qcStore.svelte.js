@@ -502,17 +502,24 @@ class QCStore {
    * Every scored instance as a CSV string in the reference `qc_results.csv` format, or null if
    * the anomaly unit hasn't been computed. Iterates videos -> labeled frames -> instances in the
    * same order as the detection context, so the "v:f:i" keys line up with the stored scores.
+   *
+   * The `score`/`confidence` columns mirror the desktop GUI's detector selection: it reports
+   * **GMM** when n_instances >= 50 (and the GMM unit has been computed), else the **ZScore**
+   * anomaly. `top_issue` + the 18 features are detector-independent (they come from the same
+   * contributions either way). Falls back to ZScore per-instance if a GMM score is missing.
    */
   toCsv() {
     this.rev;
     if (!this.canExportCsv) return null;
+    const useGmm = this.checkReady("gmm") && this.#instanceScores.size >= 50; // 50 = gmmMinSamples
     const records = [];
     store.labels.videos.forEach((video, vIdx) => {
       for (const lf of store.labels.labeledFrames.filter((f) => f.video === video)) {
         lf.instances.forEach((inst, iIdx) => {
           const key = `${vIdx}:${lf.frameIdx}:${iIdx}`;
-          const score = this.#instanceScores.get(key);
-          if (score == null) return;
+          if (!this.#instanceScores.has(key)) return; // unscored -> no contributions either
+          const zScore = this.#instanceScores.get(key);
+          const score = useGmm ? this.#gmmScores.get(key) ?? zScore : zScore;
           records.push({ videoIdx: vIdx, frameIdx: lf.frameIdx, instIdx: iIdx, score, contributions: this.#contributions.get(key) });
         });
       }
