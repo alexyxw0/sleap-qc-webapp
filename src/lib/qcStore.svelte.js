@@ -17,6 +17,7 @@ import {
 import { makeQCConfig } from "./qc/checks/config.js";
 import { topIssue, confidence, withDirection, DIRECTIONAL_FEATURES } from "./qc/checks/explain.js";
 import { visibilityMask } from "./qc/checks/util.js";
+import { qcResultsCsv } from "./qc/csv.js";
 import { store } from "./labelsStore.svelte.js";
 
 // A user-facing check maps to a computable unit. count/negative/duplicates share one frame unit.
@@ -610,6 +611,47 @@ class QCStore {
       this.status = "error";
       this.rev++;
     }
+  }
+
+  /** Whether QC results can be exported (anomaly unit computed — it supplies score + the 18 features). */
+  get canExportCsv() {
+    this.rev;
+    return !!store.labels && this.checkReady("anomaly");
+  }
+
+  /**
+   * Every scored instance as a CSV string in the reference `qc_results.csv` format, or null if
+   * the anomaly unit hasn't been computed. Iterates videos -> labeled frames -> instances in the
+   * same order as the detection context, so the "v:f:i" keys line up with the stored scores.
+   */
+  toCsv() {
+    this.rev;
+    if (!this.canExportCsv) return null;
+    const records = [];
+    store.labels.videos.forEach((video, vIdx) => {
+      for (const lf of store.labels.labeledFrames.filter((f) => f.video === video)) {
+        lf.instances.forEach((inst, iIdx) => {
+          const key = `${vIdx}:${lf.frameIdx}:${iIdx}`;
+          const score = this.#instanceScores.get(key);
+          if (score == null) return;
+          records.push({ videoIdx: vIdx, frameIdx: lf.frameIdx, instIdx: iIdx, score, contributions: this.#contributions.get(key) });
+        });
+      }
+    });
+    return qcResultsCsv(records);
+  }
+
+  /** Build the CSV and trigger a browser download (mirrors editStore.save's download). */
+  downloadCsv() {
+    const csv = this.toCsv();
+    if (csv == null) return;
+    const base = (store.fileName || "labels").replace(/\.(pkg\.)?slp$/i, "");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${base}.qc_results.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   reset() {

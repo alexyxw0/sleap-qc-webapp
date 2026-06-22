@@ -171,6 +171,11 @@
         <span>flagged · union</span><b>{qc.flaggedFrameCount}</b>
       </p>
     {/if}
+    {#if qc.canExportCsv}
+      <button class="export" onclick={() => qc.downloadCsv()} title="Download per-instance QC scores + features as a CSV">
+        ⤓ Export results (CSV)
+      </button>
+    {/if}
     {#if qc.pendingCount > 0}
       <p class="hint">
         {qc.pendingCount} selected check{qc.pendingCount === 1 ? "" : "s"} need{qc.pendingCount === 1 ? "s" : ""} a run{qc.checks.gmm && !qc.checkReady("gmm") ? " · GMM is slow" : ""}
@@ -359,5 +364,22 @@
     color: var(--text);
     font-size: 0.92rem;
     font-variant-numeric: tabular-nums;
+  }
+  .export {
+    margin-top: 0.55rem;
+    width: 100%;
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--accent);
+    border-radius: var(--r-xs);
+    padding: 0.32rem 0.5rem;
+    font-size: 0.72rem;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+  }
+  .export:hover {
+    background: rgba(95, 217, 242, 0.07);
+    border-color: rgba(95, 217, 242, 0.4);
   }
 </style>

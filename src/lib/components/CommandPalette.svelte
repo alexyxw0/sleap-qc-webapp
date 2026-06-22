@@ -44,6 +44,9 @@
             { icon: "◂", label: "Previous flagged frame", kbd: "P", run: () => seek(-1) },
           ]
         : []),
+      ...(qc.canExportCsv
+        ? [{ icon: "⤓", label: "Export QC results (.csv)", kbd: "", run: () => qc.downloadCsv() }]
+        : []),
       { icon: "＋", label: "Add instance to this frame", kbd: "", run: () => edit.addInstance() },
       ...(edit.selInstance >= 0
         ? [{ icon: "✕", label: `Delete instance #${edit.selInstance}`, kbd: "⌫", run: () => edit.deleteInstance() }]
