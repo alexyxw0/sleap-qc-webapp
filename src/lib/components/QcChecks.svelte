@@ -16,12 +16,6 @@
       info: "Whole-instance left/right mirror flip — symmetric keypoint pairs (Ear_L/Ear_R, …) sitting on the wrong side of the body midline. A mirror flip preserves every edge length and unsigned angle, so it is invisible to the geometric checks below; this is the dedicated signed-side test, measuring which side of the body axis each left/right keypoint falls on. Coordinate-only and scale-invariant. Auto-disables when the skeleton has no symmetric (or name-inferable) pairs. On by default.",
     },
     {
-      key: "poseSplit",
-      label: "Split pose (chimera)",
-      hint: "One labeled instance spanning two animals, joined by an over-stretched bridging edge.",
-      info: "One labeled instance that actually spans two animals (e.g. the head of one + the body of another), joined by a single over-stretched bridging edge. It finds the most-stretched edge, cuts it, and only flags when that yields two balanced, well-separated clusters — so a lone stray node or two genuinely-touching animals will not trip it. Coordinate-only; reuses the learned edge-length statistics. On by default.",
-    },
-    {
       key: "anomaly",
       label: "Anomaly",
       hint: "Geometrically unusual instance vs. the rest of the file.",
@@ -55,6 +49,7 @@
 
   let collapsed = $state(false); // collapse the whole detection-checks block to de-clutter
   let infoOpen = $state({}); // per-check key -> show the long-form description
+  let featOpen = $state(false); // read-only "feature vector" panel under the GMM check
 </script>
 
 {#if store.labels}
@@ -133,6 +128,26 @@
               <span class="tval">{qc.gmmThreshold.toFixed(2)}</span>
             </div>
           {/if}
+          {#if c.key === "gmm" && qc.vectorFeatures.length}
+            <!-- Read-only view of the shared anomaly/GMM feature vector (incl. pose_split_score).
+                 Values are the worst instance on the current frame, if any. -->
+            {@const wi = qc.frameWorstInstance(store.current)}
+            {@const contrib = qc.contributionsFor(store.current, wi)}
+            <button type="button" class="featbtn" class:open={featOpen} onclick={() => (featOpen = !featOpen)} aria-expanded={featOpen} title="The feature vector the anomaly + GMM scores are computed from">
+              <span class="featchev" class:open={featOpen}>▸</span> feature vector · {qc.vectorFeatures.length}
+            </button>
+            {#if featOpen}
+              <ul class="featlist">
+                {#each qc.vectorFeatures as fname (fname)}
+                  <li class:psf={fname === "pose_split_score"}>
+                    <span class="fn">{fname}</span>
+                    {#if contrib}<span class="fv">{(contrib[fname] ?? 0).toFixed(2)}</span>{/if}
+                  </li>
+                {/each}
+              </ul>
+              <p class="featnote">{contrib ? `values · worst instance on this frame (#${wi})` : "shared by Anomaly + GMM · read-only"}</p>
+            {/if}
+          {/if}
           {#if c.key === "chirality" && qc.checks.chirality}
             <!-- Chirality flag threshold (wrong-side fraction; the hard rule forces >=0.9). -->
             <div class="thresh" title="Flag an instance when its L/R-flip score is at or above this value">
@@ -146,21 +161,6 @@
                 oninput={(e) => (qc.chiralityThreshold = +e.currentTarget.value)}
               />
               <span class="tval">{qc.chiralityThreshold.toFixed(2)}</span>
-            </div>
-          {/if}
-          {#if c.key === "poseSplit" && qc.checks.poseSplit}
-            <!-- Chimera flag threshold (squashed split_score; 0.5 == raw split_score 1). -->
-            <div class="thresh" title="Flag an instance when its chimera (split-pose) score is at or above this value">
-              <span class="tlbl">threshold</span>
-              <input
-                type="range"
-                min="0.3"
-                max="0.99"
-                step="0.01"
-                value={qc.poseSplitThreshold}
-                oninput={(e) => (qc.poseSplitThreshold = +e.currentTarget.value)}
-              />
-              <span class="tval">{qc.poseSplitThreshold.toFixed(2)}</span>
             </div>
           {/if}
         </li>
@@ -381,5 +381,57 @@
   .export:hover {
     background: rgba(95, 217, 242, 0.07);
     border-color: rgba(95, 217, 242, 0.4);
+  }
+  /* read-only feature-vector panel under the GMM check */
+  .featbtn {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    width: 100%;
+    background: none;
+    border: none;
+    padding: 0.15rem 0 0.2rem 1.35rem;
+    color: var(--muted);
+    font-size: 0.68rem;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .featbtn:hover {
+    color: var(--text);
+  }
+  .featchev {
+    color: var(--dim);
+    font-size: 0.6rem;
+    transition: transform 0.15s var(--ease);
+  }
+  .featchev.open {
+    transform: rotate(90deg);
+  }
+  .featlist {
+    list-style: none;
+    margin: 0 0 0 1.35rem;
+    padding: 0;
+    font-size: 0.68rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .featlist li {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.06rem 0.2rem;
+    color: var(--muted);
+  }
+  .featlist li.psf .fn {
+    color: var(--accent);
+  }
+  .featlist .fv {
+    color: var(--text);
+  }
+  .featnote {
+    margin: 0.25rem 0 0 1.35rem;
+    font-size: 0.64rem;
+    color: var(--dim);
+    letter-spacing: 0.02em;
   }
 </style>

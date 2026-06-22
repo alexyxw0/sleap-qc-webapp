@@ -98,7 +98,8 @@ describe("full pipeline on a real .slp (sleap-io.js adapter)", () => {
     const FIX = fileURLToPath(new URL("../fixtures/tracked-preds.slp", import.meta.url));
     const labels = await loadSlp(FIX, { openVideos: false });
     const out = fitAndScoreLabels(labels);
-    expect(out.featureNames).toHaveLength(18);
+    expect(out.featureNames).toHaveLength(19); // 18 geometric + pose_split_score
+    expect(out.featureNames).toContain("pose_split_score");
     expect(out.usedGmm).toBe(true); // 201 instances >= gmmMinSamples (50) -> GMM path
     expect(out.instanceScores.size).toBeGreaterThan(0);
     for (const s of out.instanceScores.values()) {
