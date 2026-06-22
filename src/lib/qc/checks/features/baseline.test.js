@@ -15,7 +15,7 @@ describe("baseline attribute() — node-level anomaly culprits", () => {
   it("has_isolated_invisible -> the invisible node whose neighbors are all visible", () => {
     const pose = chainPose();
     pose[2] = NAN; // neighbors 1 and 3 visible -> isolated invisible
-    expect(fitted().attribute(pose).has_isolated_invisible).toEqual([2]);
+    expect(fitted().attribute(pose).has_isolated_invisible.nodes).toEqual([2]);
   });
 
   it("does not flag an invisible node when a neighbor is also invisible", () => {
@@ -28,13 +28,23 @@ describe("baseline attribute() — node-level anomaly culprits", () => {
   it("max_centroid_distance -> the node yanked far from the body", () => {
     const pose = chainPose();
     pose[4] = [1000, 1000];
-    expect(fitted().attribute(pose).max_centroid_distance).toEqual([4]);
+    expect(fitted().attribute(pose).max_centroid_distance.nodes).toEqual([4]);
   });
 
-  it("max_edge_zscore -> both endpoints of the most length-deviant edge", () => {
+  it("max_edge_zscore -> both endpoints + dir=+1 when the edge is stretched (increased)", () => {
     const pose = chainPose();
-    pose[0] = [-1000, 0]; // only edge (0,1) is stretched
-    expect(fitted().attribute(pose).max_edge_zscore).toEqual([0, 1]);
+    pose[0] = [-1000, 0]; // edge (0,1) is much longer than learned
+    const e = fitted().attribute(pose).max_edge_zscore;
+    expect(e.nodes).toEqual([0, 1]);
+    expect(e.dir).toBe(1);
+  });
+
+  it("max_edge_zscore -> dir=-1 when the edge is compressed (decreased)", () => {
+    const pose = chainPose();
+    pose[0] = [9, 0]; // edge (0,1) length ~1 vs learned ~10 -> shorter
+    const e = fitted().attribute(pose).max_edge_zscore;
+    expect(e.nodes).toEqual([0, 1]);
+    expect(e.dir).toBe(-1);
   });
 
   it("omits whole-instance features (no spurious single-node culprit)", () => {

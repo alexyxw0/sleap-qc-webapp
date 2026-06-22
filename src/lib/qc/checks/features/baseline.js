@@ -192,31 +192,32 @@ export class BaselineFeatureExtractor {
   }
 
   /**
-   * Per-feature culprit node(s) for UI attribution. For the *node-localizable* baseline
-   * features, returns the node/edge that actually drives the feature's value — the argmax
-   * (or argmin) that `extract()`'s reductions discard. Shape: `{ featureName: nodeIdx[] }`
-   * (edges/pairs/symmetry give two indices, the rest one); a feature is omitted when it has
-   * no meaningful single culprit (nothing visible, no isolated node, etc.). The aggregate /
-   * whole-instance features (mean_*, bbox/hull/nn, visibility_rate) are intentionally absent
-   * — they are not about one node.
+   * Per-feature culprit node(s) + direction for UI attribution. For the *node-localizable*
+   * baseline features, returns the node/edge that drives the feature's value — the argmax (or
+   * argmin) that `extract()`'s reductions discard. Shape: `{ featureName: { nodes: idx[], dir? } }`
+   * (edges/pairs/symmetry give two indices, the rest one); `dir` is the **signed z-score sign**
+   * (+1 = larger than learned mean, -1 = smaller) for the z-score features, omitted where
+   * direction is meaningless (centroid distance, symmetry, isolated-invisible). A feature is
+   * absent when it has no single culprit. Whole-instance features (mean_*, bbox/hull/nn,
+   * visibility_rate) are intentionally absent — they are not about one node.
    */
   attribute(pose) {
     if (!this.stats) throw new Error("Must call fit() before attribute()");
     const out = {};
 
-    // max_edge_zscore -> the most length-deviant visible edge (both endpoints).
-    let beZ = -Infinity, beEdge = null;
+    // max_edge_zscore -> the most length-deviant visible edge (both endpoints) + direction.
+    let beZ = -Infinity, beEdge = null, beDir = 0;
     for (const [s, d] of this.edges) {
       if (!isVisible(pose[s]) || !isVisible(pose[d])) continue;
       const k = edgeKey(s, d);
       if (!this.stats.edgeMeans.has(k)) continue;
-      const z = Math.abs((dist(pose[s], pose[d]) - this.stats.edgeMeans.get(k)) / this.stats.edgeStds.get(k));
-      if (z > beZ) { beZ = z; beEdge = [s, d]; }
+      const zRaw = (dist(pose[s], pose[d]) - this.stats.edgeMeans.get(k)) / this.stats.edgeStds.get(k);
+      if (Math.abs(zRaw) > beZ) { beZ = Math.abs(zRaw); beEdge = [s, d]; beDir = Math.sign(zRaw); }
     }
-    if (beEdge) out.max_edge_zscore = beEdge;
+    if (beEdge) out.max_edge_zscore = { nodes: beEdge, dir: beDir };
 
-    // max_angle_zscore -> the joint (center node) with the most-deviant angle.
-    let baZ = -Infinity, baCenter = -1;
+    // max_angle_zscore -> the joint (center node) with the most-deviant angle + direction.
+    let baZ = -Infinity, baCenter = -1, baDir = 0;
     this._adjacency.forEach((neighbors, center) => {
       if (neighbors.length < 2 || !isVisible(pose[center])) return;
       for (let i = 0; i < neighbors.length; i++)
@@ -227,23 +228,24 @@ export class BaselineFeatureExtractor {
           if (a == null) continue;
           const k = [center, Math.min(n1, n2), Math.max(n1, n2)].join(",");
           if (!this.stats.angleMeans.has(k)) continue;
-          const z = Math.abs((a - this.stats.angleMeans.get(k)) / this.stats.angleStds.get(k));
-          if (z > baZ) { baZ = z; baCenter = center; }
+          const zRaw = (a - this.stats.angleMeans.get(k)) / this.stats.angleStds.get(k);
+          if (Math.abs(zRaw) > baZ) { baZ = Math.abs(zRaw); baCenter = center; baDir = Math.sign(zRaw); }
         }
     });
-    if (baCenter >= 0) out.max_angle_zscore = [baCenter];
+    if (baCenter >= 0) out.max_angle_zscore = { nodes: [baCenter], dir: baDir };
 
-    // max_pairwise_zscore -> the most distance-deviant node pair.
-    let bpZ = -Infinity, bpPair = null;
+    // max_pairwise_zscore -> the most distance-deviant node pair + direction.
+    let bpZ = -Infinity, bpPair = null, bpDir = 0;
     for (let i = 0; i < this.nNodes; i++)
       for (let j = i + 1; j < this.nNodes; j++) {
         if (!isVisible(pose[i]) || !isVisible(pose[j])) continue;
-        const z = Math.abs((dist(pose[i], pose[j]) - this.stats.pairwiseMeans.get(`${i},${j}`)) / this.stats.pairwiseStds.get(`${i},${j}`));
-        if (z > bpZ) { bpZ = z; bpPair = [i, j]; }
+        const zRaw = (dist(pose[i], pose[j]) - this.stats.pairwiseMeans.get(`${i},${j}`)) / this.stats.pairwiseStds.get(`${i},${j}`);
+        if (Math.abs(zRaw) > bpZ) { bpZ = Math.abs(zRaw); bpPair = [i, j]; bpDir = Math.sign(zRaw); }
       }
-    if (bpPair) out.max_pairwise_zscore = bpPair;
+    if (bpPair) out.max_pairwise_zscore = { nodes: bpPair, dir: bpDir };
 
-    // max_centroid_distance -> the visible node furthest from the visible centroid.
+    // max_centroid_distance -> the visible node furthest from the visible centroid (no direction:
+    // a distance is one-sided).
     const vis = [];
     for (let i = 0; i < this.nNodes; i++) if (isVisible(pose[i])) vis.push(i);
     if (vis.length >= 2) {
@@ -254,7 +256,7 @@ export class BaselineFeatureExtractor {
         const dd = Math.hypot(pose[i][0] - cx, pose[i][1] - cy);
         if (dd > bestD) { bestD = dd; best = i; }
       }
-      if (best >= 0) out.max_centroid_distance = [best];
+      if (best >= 0) out.max_centroid_distance = { nodes: [best] };
     }
 
     // min_symmetry_consistency -> the least-consistent symmetric pair (the argmin of extract()).
@@ -278,7 +280,7 @@ export class BaselineFeatureExtractor {
           if (sc < worstScore) { worstScore = sc; worstPair = [l1, r1]; }
         }
       }
-      if (worstPair) out.min_symmetry_consistency = worstPair;
+      if (worstPair) out.min_symmetry_consistency = { nodes: worstPair };
     }
 
     // has_isolated_invisible -> the invisible node whose skeleton neighbors are all visible
@@ -288,7 +290,7 @@ export class BaselineFeatureExtractor {
     for (let i = 0; i < this.nNodes; i++) {
       if (visMask[i]) continue;
       const nb = this._adjacency[i];
-      if (nb.length && nb.every((n) => visMask[n])) { out.has_isolated_invisible = [i]; break; }
+      if (nb.length && nb.every((n) => visMask[n])) { out.has_isolated_invisible = { nodes: [i] }; break; }
     }
 
     return out;

@@ -15,7 +15,7 @@ import {
   computePoseSplitUnit,
 } from "./qc/checks/detector.js";
 import { makeQCConfig } from "./qc/checks/config.js";
-import { topIssue, confidence } from "./qc/checks/explain.js";
+import { topIssue, confidence, withDirection, DIRECTIONAL_FEATURES } from "./qc/checks/explain.js";
 import { visibilityMask } from "./qc/checks/util.js";
 import { store } from "./labelsStore.svelte.js";
 
@@ -58,7 +58,7 @@ class QCStore {
   #frameAnom = new Map(); // "v:f" -> max anomaly score
   #frameGmm = new Map(); // "v:f" -> max GMM score
   #gmmWorst = new Map(); // "v:f:i" -> GMM leave-one-out worst node (computed lazily)
-  #anomalyWorst = new Map(); // "v:f:i" -> culprit node of the anomaly's dominant feature (lazy)
+  #anomalyAttr = new Map(); // "v:f:i" -> { node, dir, feature } for the anomaly's dominant feature (lazy)
   #chiralityScores = new Map(); // "v:f:i" -> L/R-flip [0,1] score
   #chiralityWorst = new Map(); // "v:f:i" -> a node from a wrong pair, -1 if none
   #frameChir = new Map(); // "v:f" -> max chirality score
@@ -342,10 +342,20 @@ class QCStore {
    */
   anomalyWorstNode(item, instIdx) {
     this.rev;
-    if (!item || !this.checks.anomaly) return -1;
+    return this.#anomalyAttribution(item, instIdx).node;
+  }
+  /**
+   * Resolve the anomaly's dominant feature (`topIssue`) to `{ node, dir, feature }` — the
+   * culprit node and the signed direction (+1 increased / -1 decreased vs the learned mean,
+   * 0 when not directional). Lazy + cached per instance. `node` is -1 for whole-instance
+   * features (area z-scores still carry a `dir` for the verbal verdict, just no node).
+   */
+  #anomalyAttribution(item, instIdx) {
+    const empty = { node: -1, dir: 0, feature: null };
+    if (!item || !this.checks.anomaly) return empty;
     const key = `${this.#fkey(item)}:${instIdx}`;
-    if (this.#anomalyWorst.has(key)) return this.#anomalyWorst.get(key);
-    let node = -1;
+    if (this.#anomalyAttr.has(key)) return this.#anomalyAttr.get(key);
+    let res = empty;
     const fx = this.#computed.anomaly?.fx;
     const contributions = this.#contributions.get(key);
     if (fx?.baseline && contributions) {
@@ -354,16 +364,18 @@ class QCStore {
       if (feature && pose) {
         if (feature === "visibility_pattern_score") {
           // lives on the co-visibility model, not the baseline extractor
-          const n = fx.visibility?.worstNode(visibilityMask(pose)) ?? -1;
-          if (n >= 0) node = n;
+          res = { node: fx.visibility?.worstNode(visibilityMask(pose)) ?? -1, dir: 0, feature };
+        } else if (feature === "bbox_area_zscore" || feature === "hull_area_zscore") {
+          // whole-instance, but the contribution is a signed z -> a direction with no node
+          res = { node: -1, dir: Math.sign(contributions[feature] ?? 0), feature };
         } else {
-          const nodes = fx.baseline.attribute(pose)[feature];
-          if (nodes?.length) node = nodes[0];
+          const a = fx.baseline.attribute(pose)[feature];
+          res = { node: a?.nodes?.[0] ?? -1, dir: a?.dir ?? 0, feature };
         }
       }
     }
-    this.#anomalyWorst.set(key, node);
-    return node;
+    this.#anomalyAttr.set(key, res);
+    return res;
   }
   /**
    * The single node to indicate for a flagged instance (drives the red ring + zoom):
@@ -450,6 +462,10 @@ class QCStore {
     const base = useGmm
       ? { score: gScore ?? 0, confidence: confidence(gScore ?? 0), feature: null, issue: "Improbable pose" }
       : { score: aScore, confidence: confidence(aScore), ...topIssue(this.#contributions.get(key)) };
+    // For a z-score feature, append "(increased)"/"(decreased)" from the signed deviation.
+    if (!useGmm && DIRECTIONAL_FEATURES.has(base.feature)) {
+      base.issue = withDirection(base.issue, this.#anomalyAttribution(item, instIdx).dir);
+    }
     return {
       ...base,
       worstNode: wn,
@@ -557,7 +573,7 @@ class QCStore {
     frameMax(this.#chiralityScores, this.#frameChir);
     frameMax(this.#poseSplitScores, this.#framePoseSplit);
     this.#gmmWorst = new Map(); // lazy leave-one-out cache — invalidated whenever results change
-    this.#anomalyWorst = new Map(); // lazy anomaly-attribution cache — same invalidation
+    this.#anomalyAttr = new Map(); // lazy anomaly-attribution cache — same invalidation
   }
 
   /** Run the enabled checks that aren't already computed (incremental + memoized). */
