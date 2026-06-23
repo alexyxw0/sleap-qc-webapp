@@ -48,8 +48,9 @@ class QCStore {
   ranAtRev = -1; // store.rev at the time QC last ran (for staleness)
 
   // Which detection techniques to run / include. The flagged frames are the UNION of the
-  // enabled-and-computed checks. GMM is off by default — it's the heaviest, opt-in technique.
-  checks = $state({ anomaly: true, gmm: false, chirality: true, count: true, sparse: true, confidence: true, negative: true, duplicates: true });
+  // enabled-and-computed checks. Defaults ON: anomaly, chirality, gmm, duplicates. The frame /
+  // structural checks (count, sparse, confidence, negative) default OFF — enable them as needed.
+  checks = $state({ anomaly: true, gmm: true, chirality: true, count: false, sparse: false, confidence: false, negative: false, duplicates: true });
 
   #ctx = null; // shared frame/pose/feature context for the current labels
   #ctxLabels = null; // identity of the labels #ctx was built for
