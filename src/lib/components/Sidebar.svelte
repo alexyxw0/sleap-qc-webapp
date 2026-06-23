@@ -165,7 +165,7 @@
         {#if flaggers.length}
           <div class="flaggers">
             {#each flaggers as f (f.key)}
-              <span class="ftag" title="Flagged by {f.label}{f.score != null ? ` · ${f.score.toFixed(2)}` : ''}">
+              <span class="ftag" class:structural={f.score == null} title="Flagged by {f.label}{f.score != null ? ` · ${f.score.toFixed(2)}` : ' · structural (no threshold)'}">
                 {f.label}{#if f.score != null}<i class="fscore">{f.score.toFixed(2)}</i>{/if}
               </span>
             {/each}
@@ -174,7 +174,7 @@
       {/if}
       {#if hasFrameIssue(fq)}
         <ul class="issues">
-          {#if fq.isWrongCount}<li>{fq.actualInstanceCount} / {fq.expectedInstanceCount} expected instances ({fq.isOvercount ? "extra" : "missing"})</li>{/if}
+          {#if fq.isWrongCount}<li>{fq.isEmpty ? "empty frame — no instances" : `${fq.actualInstanceCount} / ${fq.expectedInstanceCount} expected instances (${fq.isOvercount ? "extra" : "missing"})`}</li>{/if}
           {#if fq.isNegativeWithInstances}<li>negative frame has instances</li>{/if}
           {#if fq.duplicatePairs?.length}<li>{fq.duplicatePairs.length} duplicate pair(s): {fq.duplicateReasons.join(", ")}</li>{/if}
         </ul>
@@ -499,12 +499,17 @@
     align-items: center;
     gap: 0.28rem;
     font-size: 0.68rem;
-    color: #e7c08a;
+    color: #e7c08a; /* score-based checks (tunable via a threshold) */
     border: 1px solid rgba(231, 192, 138, 0.4);
     border-radius: var(--r-xs);
     padding: 0.04rem 0.36rem;
     letter-spacing: 0.01em;
     white-space: nowrap;
+  }
+  /* threshold-less structural checks (count / negative / duplicates) — distinct cool hue. */
+  .ftag.structural {
+    color: #a5b4fc;
+    border-color: rgba(165, 180, 252, 0.4);
   }
   .ftag .fscore {
     color: var(--dim);

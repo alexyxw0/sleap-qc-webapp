@@ -80,7 +80,7 @@ All `checks/…` citations below are relative to `src/lib/qc/`; `qcStore.svelte.
 
 ## Instance count
 
-**Flags:** frame whose instance count differs from its expected (typical) count — in **either** direction: `isIncomplete` (too few / a missing instance) **or** `isOvercount` (too many / a spurious extra); `isWrongCount = count !== round(expected)` drives the flag.
+**Flags:** a **non-negative** frame whose instance count differs from its expected (typical) count — in **either** direction: `isIncomplete` (too few / missing) **or** `isOvercount` (too many / spurious extra); `isWrongCount = count !== round(expected)` drives the flag, and `isEmpty` marks the count==0 case ("Empty frame"). **Negative (background) frames are exempt** from the count check (`counted = !isNegative` in `checkFrame`) — their 0 instances are intentional, so they would otherwise always read as "missing". The symmetric case (a negative frame that *does* carry instances) is the separate Negative-frame check.
 
 **Algorithm:** `InstanceCountChecker` (`checks/frameLevel.js`). `fit(frameCounts, videoIds)` computes `globalExpected = median(frameCounts **excluding empties**)` and, when `perVideo` (default true) with video IDs, a per-video median of the non-empty counts in `expectedCounts`. `check(instanceCount, videoId)` selects the per-video median when available else the global, rounds it (`expected = round(expectedRaw)`), and returns `{ isIncomplete: count < expected, isOvercount: count > expected, isWrongCount: count !== expected, expectedCount: expectedRaw, actualCount, countDifference }`. Wired via `computeFrameUnit` → `checkFrame`; the sidebar/review surface "actual / expected (missing|extra)".
 

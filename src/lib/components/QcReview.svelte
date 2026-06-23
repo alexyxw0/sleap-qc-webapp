@@ -341,7 +341,7 @@
         {/if}
         <div class="tags">
           {#each flaggers as f (f.key)}
-            <span class="ftag">{f.label}{#if f.score != null}<i>{f.score.toFixed(2)}</i>{/if}</span>
+            <span class="ftag" class:structural={f.score == null}>{f.label}{#if f.score != null}<i>{f.score.toFixed(2)}</i>{/if}</span>
           {/each}
         </div>
       </div>
@@ -548,10 +548,16 @@
     align-items: center;
     gap: 0.28rem;
     font-size: 0.66rem;
-    color: #e7c08a;
+    color: #e7c08a; /* score-based checks (anomaly / gmm / chirality) — tunable via a threshold */
     border: 1px solid rgba(231, 192, 138, 0.4);
     border-radius: var(--r-xs);
     padding: 0.04rem 0.36rem;
+  }
+  /* threshold-less structural checks (count / negative / duplicates) — a distinct cool hue so it's
+     clear they aren't slider-tunable like the score checks. */
+  .ftag.structural {
+    color: #a5b4fc;
+    border-color: rgba(165, 180, 252, 0.4);
   }
   .ftag i { color: var(--dim); font-style: normal; font-variant-numeric: tabular-nums; }
   .rfoot {

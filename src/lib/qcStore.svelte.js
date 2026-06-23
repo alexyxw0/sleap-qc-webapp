@@ -184,6 +184,7 @@ class QCStore {
       isIncomplete: c.count ? fq.isIncomplete : false,
       isOvercount: c.count ? fq.isOvercount : false,
       isWrongCount: c.count ? fq.isWrongCount : false,
+      isEmpty: c.count ? fq.isEmpty : false,
       isNegativeWithInstances: c.negative ? fq.isNegativeWithInstances : false,
       duplicatePairs: c.duplicates ? fq.duplicatePairs : [],
       duplicateReasons: c.duplicates ? fq.duplicateReasons : [],
@@ -231,7 +232,7 @@ class QCStore {
     score(c.gmm, this.#frameGmm, this.gmmThreshold, "gmm", "GMM");
     const fq = this.#frameResults.get(fk);
     if (fq) {
-      if (c.count && fq.isWrongCount) out.push({ key: "count", label: fq.isOvercount ? "Extra instance" : "Missing instance", score: null });
+      if (c.count && fq.isWrongCount) out.push({ key: "count", label: fq.isEmpty ? "Empty frame" : fq.isOvercount ? "Extra instance" : "Missing instance", score: null });
       if (c.negative && fq.isNegativeWithInstances) out.push({ key: "negative", label: "Negative", score: null });
       if (c.duplicates && (fq.duplicatePairs?.length ?? 0) > 0) out.push({ key: "duplicates", label: "Duplicate", score: null });
     }

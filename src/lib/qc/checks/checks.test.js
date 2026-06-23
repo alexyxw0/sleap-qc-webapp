@@ -8,7 +8,8 @@ import { normalizePose } from "./features/reference.js";
 import { computeCurvature, computeConvexHull } from "./features/structural.js";
 import { VisibilityModel } from "./features/visibility.js";
 import { SkeletonAnalyzer } from "./features/skeleton.js";
-import { ZScoreDetector, fitAndScoreLabels } from "./detector.js";
+import { ZScoreDetector, fitAndScoreLabels, LabelQCDetector } from "./detector.js";
+import { makeQCConfig } from "./config.js";
 
 const NAN = [Number.NaN, Number.NaN];
 
@@ -32,6 +33,13 @@ describe("frame-level checks", () => {
     const c = new InstanceCountChecker(false).fit([0, 0, 0, 0, 2, 2, 2]);
     expect(c.check(2).expectedCount).toBe(2);
     expect(c.check(1).isIncomplete).toBe(true);
+  });
+
+  it("checkFrame: a non-negative empty frame is flagged; a negative empty frame is exempt", () => {
+    const det = new LabelQCDetector(makeQCConfig());
+    det.countChecker = new InstanceCountChecker(true).fit([2, 2, 2], ["v", "v", "v"]);
+    expect(det.checkFrame([], "v", false)).toMatchObject({ isWrongCount: true, isEmpty: true });
+    expect(det.checkFrame([], "v", true)).toMatchObject({ isWrongCount: false, isEmpty: false });
   });
 
   it("negative frame with instances is inconsistent", () => {

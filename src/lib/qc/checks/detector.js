@@ -137,10 +137,15 @@ export class LabelQCDetector {
   /** Frame-level QC for a frame's poses. */
   checkFrame(poses, videoId, isNegative = false) {
     const count = this.countChecker.check(poses.length, videoId);
+    // A negative (background) frame is intentionally empty/odd-count — exempt it from the count
+    // check (otherwise its 0 instances would always read as "missing"). So a NON-negative frame
+    // with no instances is flagged (0 < expected), while a negative empty frame is not.
+    const counted = !isNegative;
     const fq = {
-      isIncomplete: count.isIncomplete,
-      isOvercount: count.isOvercount,
-      isWrongCount: count.isWrongCount,
+      isIncomplete: counted && count.isIncomplete,
+      isOvercount: counted && count.isOvercount,
+      isWrongCount: counted && count.isWrongCount,
+      isEmpty: counted && poses.length === 0,
       expectedInstanceCount: Math.round(count.expectedCount),
       actualInstanceCount: poses.length,
       isNegativeWithInstances: checkNegativeFrame(isNegative, poses.length),
