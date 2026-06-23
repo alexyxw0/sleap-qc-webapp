@@ -173,23 +173,49 @@
     if (!ui.reviewOpen) return;
     void store.index; void store.frameImage; void store.rev; void qc.rev;
     const selI = edit.selInstance, selN = edit.selNode;
-    const vs = s, vcx = cx, vcy = cy; // track zoom/pan
+    let vs = s, vcx = cx, vcy = cy; // track zoom/pan
     const W = vpW, H = vpH;
     if (!ctx || !W || !H || !item) return;
     const cw = Math.round(W * dpr), ch = Math.round(H * dpr);
+    // recover a degenerate transform (e.g. computed before the frame had a size) instead of
+    // drawing the scene at NaN/0 scale, which would show nothing.
+    if (!Number.isFinite(vs) || vs <= 0 || !Number.isFinite(vcx) || !Number.isFinite(vcy)) {
+      frameScene(cw, ch);
+      vs = s; vcx = cx; vcy = cy;
+    }
     if (canvas.width !== cw) canvas.width = cw;
     if (canvas.height !== ch) canvas.height = ch;
 
     const offX = cw / 2 - vcx * vs, offY = ch / 2 - vcy * vs;
     lt = { s: vs, offX, offY };
 
-    const insts = item.lf?.instances ?? [];
-    const worstNodes = insts.map((_, i) => (qc.instanceFlagged(item, i) ? qc.faultyNodeFor(item, i) : -1));
-    drawScene(ctx, store.frameImage, item, store.skeleton, {
-      transform: { s: vs, offX, offY }, dims: dimsNow(), scale: dpr / vs,
-      editing: true, selInstance: selI, selNode: selN, worstNodes, uncertainNodes: null,
-      hiddenAlpha: 0.55, // hidden/occluded nodes are correction targets here — keep them grabbable
-    });
+    // Per-instance attribution (faultyNodeFor) can throw on a freshly-edited / degenerate pose;
+    // never let that blank the canvas or kill this effect's reactivity (which would freeze the
+    // view after the first edit). Compute defensively, and always draw — the image at minimum.
+    let worstNodes = [];
+    try {
+      const insts = item.lf?.instances ?? [];
+      worstNodes = insts.map((_, i) => (qc.instanceFlagged(item, i) ? qc.faultyNodeFor(item, i) : -1));
+    } catch (err) {
+      console.warn("[qc-review] node attribution failed:", err);
+    }
+    try {
+      drawScene(ctx, store.frameImage, item, store.skeleton, {
+        transform: { s: vs, offX, offY }, dims: dimsNow(), scale: dpr / vs,
+        editing: true, selInstance: selI, selNode: selN, worstNodes, uncertainNodes: null,
+        hiddenAlpha: 0.55, // hidden/occluded nodes are correction targets here — keep them grabbable
+      });
+    } catch (err) {
+      console.warn("[qc-review] draw failed:", err);
+    }
+  });
+
+  // Keep the popup's frame image in sync with the current frame itself, rather than relying on the
+  // Viewer behind it (which may be unmounted/paused) — defends against a blank canvas after edits.
+  $effect(() => {
+    if (!ui.reviewOpen) return;
+    void store.index;
+    store.syncFrameImage();
   });
 
   function toImage(e) {
