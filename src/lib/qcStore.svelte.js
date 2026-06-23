@@ -14,6 +14,7 @@ import {
   computeGmmUnit,
   computeFrameUnit,
   computeChiralityUnit,
+  chiralityScoreOne,
 } from "./qc/checks/detector.js";
 import { makeQCConfig } from "./qc/checks/config.js";
 import { topIssue, confidence, withDirection, DIRECTIONAL_FEATURES, issueForFeature } from "./qc/checks/explain.js";
@@ -456,6 +457,44 @@ class QCStore {
     ranked.sort((a, b) => b.conf - a.conf || a.i - b.i);
     return ranked.map((r) => r.i);
   }
+
+  /**
+   * Cheap re-score of ONE edited instance against the already-fitted models — NO refit. The
+   * expensive part of QC (baseline stats, GMM EM, NN, the chirality model) is memoized in
+   * #computed; this re-extracts the edited pose's features and re-runs only the per-instance
+   * scorers, updating that instance's score/contribution maps + re-deriving. Used by the review
+   * loop so correcting a node immediately surfaces the next-biggest issue (the verdict + ring
+   * update) without a full, distribution-shifting re-run. No-op if the units aren't computed yet.
+   */
+  rescoreInstance(item, instIdx) {
+    if (!item || instIdx < 0) return;
+    const fx = this.#computed.anomaly?.fx ?? this.#computed.gmm?.fx;
+    const pose = item.lf?.instances?.[instIdx]?.numpy?.({ invisibleAsNaN: true });
+    if (!fx || !pose) return;
+    const key = `${this.#fkey(item)}:${instIdx}`;
+    const raw = fx.extractFeatures(pose);
+    const clean = raw.map((f) => (Number.isNaN(f) ? 0 : f === Infinity ? 10 : f === -Infinity ? -10 : f));
+
+    if (this.#computed.anomaly?.det) {
+      const s = this.#computed.anomaly.det.scoreOne(clean);
+      this.#computed.anomaly.instanceScores.set(key, Number.isFinite(s) ? s : 0);
+      const c = {};
+      fx.featureNames.forEach((n, j) => (c[n] = raw[j] ?? 0));
+      this.#computed.anomaly.contributions.set(key, c);
+    }
+    if (this.#computed.gmm?.det) {
+      const g = this.#computed.gmm.det.scoreOne(clean);
+      this.#computed.gmm.gmmScores.set(key, Number.isFinite(g) ? g : 0);
+    }
+    if (this.#computed.chirality?.model) {
+      const { score, worstNode } = chiralityScoreOne(this.#computed.chirality.model, pose);
+      this.#computed.chirality.chiralityScores.set(key, score);
+      this.#computed.chirality.chiralityWorst.set(key, worstNode);
+    }
+    this.#derive(); // rebuild frame-max maps + clear the lazy attribution caches for this key
+    this.rev++;
+  }
+
   /** Anomaly score for an instance, or null. */
   instanceScore(item, instIdx) {
     this.rev;

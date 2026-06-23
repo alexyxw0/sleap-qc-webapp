@@ -274,8 +274,9 @@ export function computeAnomalyUnit(ctx) {
   });
   // `fx` (the fitted feature extractor) lets the store attribute a flagged instance's
   // dominant feature to its culprit node on demand (fx.baseline.attribute), so the anomaly
-  // verdict can name *which* node — e.g. the isolated invisible node.
-  return { instanceScores, contributions, featureNames: fx.featureNames, fx };
+  // verdict can name *which* node — e.g. the isolated invisible node. `det` is returned so a
+  // single edited instance can be re-scored against the same fit (no refit) in the review loop.
+  return { instanceScores, contributions, featureNames: fx.featureNames, fx, det };
 }
 
 /** GaussianMixture probability anomaly: per-instance 1 − percentile(log-likelihood). */
@@ -329,11 +330,19 @@ export function computeChiralityUnit(ctx) {
   const chiralityScores = new Map();
   const chiralityWorst = new Map();
   eachInstance(ctx, (f, i, row, key) => {
-    const r = model.scoreInstance(ctx.allPoses[row]);
-    const score = r.wrongFraction >= 0.5 ? Math.max(0.9, r.wrongFraction) : r.wrongFraction; // hard rule
-    chiralityScores.set(key, Number.isFinite(score) ? score : 0);
-    chiralityWorst.set(key, r.wrongPairs.size ? firstWrongPairNode(r.wrongPairs) : -1);
+    const { score, worstNode } = chiralityScoreOne(model, ctx.allPoses[row]);
+    chiralityScores.set(key, score);
+    chiralityWorst.set(key, worstNode);
   });
-  return { chiralityScores, chiralityWorst, fitted: true };
+  // `model` is returned so a single edited instance can be re-scored without refitting.
+  return { chiralityScores, chiralityWorst, model, fitted: true };
+}
+
+/** Score one pose against a fitted ChiralityModel — the hard rule + wrong-pair node, shared by
+ *  the batch unit and the review loop's single-instance re-score. */
+export function chiralityScoreOne(model, pose) {
+  const r = model.scoreInstance(pose);
+  const score = r.wrongFraction >= 0.5 ? Math.max(0.9, r.wrongFraction) : r.wrongFraction; // hard rule
+  return { score: Number.isFinite(score) ? score : 0, worstNode: r.wrongPairs.size ? firstWrongPairNode(r.wrongPairs) : -1 };
 }
 

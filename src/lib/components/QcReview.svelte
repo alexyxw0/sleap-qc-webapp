@@ -35,9 +35,10 @@
   const MAX_ZOOM = 24; // cap zoom-in at 24× the whole-image fit
   const dpr = Math.min((typeof window !== "undefined" && window.devicePixelRatio) || 1, 2);
 
-  // worst-first flagged-frame indices + the current frame's QC summary
-  const ranked = $derived(qc.flaggedRanked);
-  const total = $derived(ranked.length);
+  // Nav list snapshotted on open, so re-scoring after a correction doesn't reshuffle/drop frames
+  // mid-session — you review the set that was flagged when you opened; verdicts still update live.
+  let sessionRanked = $state([]);
+  const total = $derived(sessionRanked.length);
   const item = $derived(store.current);
   const verdict = $derived.by(() => { void qc.rev; void store.rev; return item ? qc.frameTopIssue(item) : null; });
   // Tint the verdict label to the marked node's instance color (the dot color on the canvas), so
@@ -78,11 +79,11 @@
     if (started) return;
     started = true;
     framedIndex = -1; // re-frame the view for this session
-    const r = qc.flaggedRanked;
-    if (!r.length) { pos = 0; return; }
-    const at = r.indexOf(store.index);
+    sessionRanked = qc.flaggedRanked.slice(); // snapshot the worst-first order for this session
+    if (!sessionRanked.length) { pos = 0; return; }
+    const at = sessionRanked.indexOf(store.index);
     pos = at >= 0 ? at : 0;
-    goto(r[pos]);
+    goto(sessionRanked[pos]);
   });
 
   function goto(frameIdx) {
@@ -96,10 +97,9 @@
     edit.select(wi, wi >= 0 ? qc.faultyNodeFor(it, wi) : -1);
   }
   function step(d) {
-    const r = qc.flaggedRanked;
-    if (!r.length) return;
-    pos = Math.max(0, Math.min(r.length - 1, pos + d));
-    goto(r[pos]);
+    if (!sessionRanked.length) return;
+    pos = Math.max(0, Math.min(sessionRanked.length - 1, pos + d));
+    goto(sessionRanked[pos]);
   }
   function close() { ui.reviewOpen = false; }
 
@@ -229,7 +229,11 @@
     }
   }
   function onPointerUp(e) {
-    if (mode === "node" && dragging?.active) edit.commitMove(dragging.instIdx, dragging.nodeIdx, dragging.from);
+    if (mode === "node" && dragging?.active) {
+      edit.commitMove(dragging.instIdx, dragging.nodeIdx, dragging.from);
+      // re-score this instance against the cached fit -> verdict + ring jump to the next issue
+      qc.rescoreInstance(store.current, dragging.instIdx);
+    }
     dragging = null;
     mode = null;
     panStart = null;
@@ -243,12 +247,12 @@
   function onKey(e) {
     if (!ui.reviewOpen) return;
     const mod = e.ctrlKey || e.metaKey;
-    if (mod && (e.key === "z" || e.key === "Z")) { e.shiftKey ? edit.redo() : edit.undo(); e.preventDefault(); return; }
+    if (mod && (e.key === "z" || e.key === "Z")) { e.shiftKey ? edit.redo() : edit.undo(); qc.rescoreInstance(store.current, edit.selInstance); e.preventDefault(); return; }
     if (e.key === "Escape") { close(); e.preventDefault(); }
     else if (e.key === "ArrowRight" || e.key === "d" || e.key === "n") { step(1); e.preventDefault(); }
     else if (e.key === "ArrowLeft" || e.key === "a" || e.key === "p") { step(-1); e.preventDefault(); }
     else if ((e.key === "Delete" || e.key === "Backspace") && edit.selInstance >= 0) { edit.deleteInstance(); e.preventDefault(); }
-    else if (e.key === "v" && edit.selInstance >= 0 && edit.selNode >= 0) { edit.toggleVisible(edit.selInstance, edit.selNode); e.preventDefault(); }
+    else if (e.key === "v" && edit.selInstance >= 0 && edit.selNode >= 0) { edit.toggleVisible(edit.selInstance, edit.selNode); qc.rescoreInstance(store.current, edit.selInstance); e.preventDefault(); }
     else if (e.key === "=" || e.key === "+") { zoomBy(1.2); e.preventDefault(); }
     else if (e.key === "-" || e.key === "_") { zoomBy(1 / 1.2); e.preventDefault(); }
     else if (e.key === "0") { frameScene(Math.round(vpW * dpr), Math.round(vpH * dpr)); e.preventDefault(); }
@@ -302,6 +306,8 @@
           <span class="vissue" style:color={labelColor}>
             {#if labelColor}<i class="swatch" style:background={labelColor}></i>{/if}{verdict.issue}{verdict.worstNodeName ? ` · ${verdict.worstNodeName}` : ""}
           </span>
+        {:else if edited}
+          <span class="resolved">✓ no remaining issues on this frame</span>
         {/if}
         <div class="tags">
           {#each flaggers as f (f.key)}
@@ -479,6 +485,11 @@
     height: 8px;
     border-radius: 50%;
     flex: none;
+  }
+  .resolved {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: #86efac; /* green: this frame is clean now */
   }
   .tags {
     display: flex;
