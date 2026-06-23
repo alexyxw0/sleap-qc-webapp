@@ -17,12 +17,22 @@
   let pos = $state(0); // index into the ranked flagged-frame list
   let started = false;
 
-  let mode = null; // 'node' | 'pan-noop'
+  let mode = null; // 'node' (drag a point) | 'pan' (drag the background)
   let dragging = null;
-  let lt = { s: 1, offX: 0, offY: 0 }; // local image->device transform (this canvas only)
+  let panStart = null;
+  let lt = { s: 1, offX: 0, offY: 0 }; // device transform, recomputed each draw for pointer mapping
+
+  // View state — an ABSOLUTE scale + image-space center, set once when a frame is shown and then
+  // user-controlled (zoom/pan). Decoupling it from the live points is what stops a node-drag from
+  // re-framing the view (the "awkward animation"). Bounds derive from the image size.
+  let s = $state(1);    // device px per image px
+  let cx = $state(0);   // image-space x shown at the canvas center
+  let cy = $state(0);   // image-space y shown at the canvas center
+  let framedIndex = -1; // store.index this view was last auto-framed for
 
   const DRAG_THRESH = 3;
   const HIT_PX = 14;
+  const MAX_ZOOM = 24; // cap zoom-in at 24× the whole-image fit
   const dpr = Math.min((typeof window !== "undefined" && window.devicePixelRatio) || 1, 2);
 
   // worst-first flagged-frame indices + the current frame's QC summary
@@ -86,41 +96,73 @@
   }
   function close() { ui.reviewOpen = false; }
 
-  // Fit the faulty instance's bbox (with context margin) into the canvas; whole-frame fallback.
-  function fit(cw, ch) {
-    const dims = frameDims(item, store.frameImage);
+  const dimsNow = () => frameDims(item, store.frameImage);
+  const fitWhole = (cw, ch, dims) => Math.min(cw / dims.w, ch / dims.h); // scale at which the whole image fits
+  // Pure: clamp a center so the image can't be panned into the void (center a too-small axis).
+  // Pure (no reactive read of s/cx/cy) so callers in the framing EFFECT can't form a write/read cycle.
+  function clampedCenter(scale, ccx, ccy, cw, ch, dims) {
+    const halfW = cw / 2 / scale, halfH = ch / 2 / scale;
+    return {
+      x: halfW * 2 >= dims.w ? dims.w / 2 : Math.max(halfW, Math.min(dims.w - halfW, ccx)),
+      y: halfH * 2 >= dims.h ? dims.h / 2 : Math.max(halfH, Math.min(dims.h - halfH, ccy)),
+    };
+  }
+  function zoomBy(factor) {
+    const cw = Math.round(vpW * dpr), ch = Math.round(vpH * dpr);
+    if (!cw || !ch) return;
+    const dims = dimsNow();
+    const minS = fitWhole(cw, ch, dims);
+    const ns = Math.max(minS, Math.min(minS * MAX_ZOOM, s * factor)); // bound: whole-image .. 24×
+    const c = clampedCenter(ns, cx, cy, cw, ch, dims);
+    s = ns; cx = c.x; cy = c.y;
+  }
+  // Frame the faulty instance's bbox (with context) — set once per frame, never during a drag.
+  function frameInstance(cw, ch) {
+    const dims = dimsNow();
     const pts = item?.lf?.instances?.[worstInst]?.points;
+    const xs = [], ys = [];
+    if (pts) for (const p of pts) { const x = p?.xy?.[0], y = p?.xy?.[1]; if (x != null && !Number.isNaN(x)) { xs.push(x); ys.push(y); } }
     let bx = 0, by = 0, bw = dims.w, bh = dims.h;
-    if (pts) {
-      const xs = [], ys = [];
-      for (const p of pts) { const x = p?.xy?.[0], y = p?.xy?.[1]; if (x != null && !Number.isNaN(x)) { xs.push(x); ys.push(y); } }
-      if (xs.length) { bx = Math.min(...xs); by = Math.min(...ys); bw = Math.max(...xs) - bx; bh = Math.max(...ys) - by; }
-    }
-    const margin = Math.max(bw, bh, 1) * 0.45 + 18;
+    if (xs.length) { bx = Math.min(...xs); by = Math.min(...ys); bw = Math.max(...xs) - bx; bh = Math.max(...ys) - by; }
+    const margin = Math.max(bw, bh, 1) * 0.5 + 18;
     const ow = bw + 2 * margin, oh = bh + 2 * margin;
-    const cx = bx + bw / 2, cy = by + bh / 2;
-    const fill = 0.94;
-    const s = Math.max(0.001, Math.min((cw * fill) / ow, (ch * fill) / oh));
-    return { s, offX: cw / 2 - cx * s, offY: ch / 2 - cy * s, dims };
+    const minS = fitWhole(cw, ch, dims);
+    const ns = Math.max(minS, Math.min(minS * MAX_ZOOM, Math.min((cw * 0.94) / ow, (ch * 0.94) / oh)));
+    const c = clampedCenter(ns, bx + bw / 2, by + bh / 2, cw, ch, dims);
+    s = ns; cx = c.x; cy = c.y;
   }
 
-  // Draw the focused frame + overlay.
+  // (Re)frame whenever the SHOWN FRAME changes — not on every edit. This is the key to a stable
+  // view while dragging: the draw transform comes from s/cx/cy, which only change here or when the
+  // user explicitly zooms/pans, so moving a point no longer re-frames the canvas.
+  $effect(() => {
+    void store.index;
+    const W = vpW, H = vpH;
+    if (!W || !H || !item) return;
+    if (store.index === framedIndex) return;
+    frameInstance(Math.round(W * dpr), Math.round(H * dpr));
+    framedIndex = store.index;
+  });
+
+  // Draw the focused frame + overlay. The transform comes from the STABLE view state (s/cx/cy),
+  // not the live points — so a node-drag (store.rev) redraws the moved point without re-framing.
   $effect(() => {
     void store.index; void store.frameImage; void store.rev; void qc.rev;
     const selI = edit.selInstance, selN = edit.selNode;
+    const vs = s, vcx = cx, vcy = cy; // track zoom/pan
     const W = vpW, H = vpH;
     if (!ctx || !W || !H || !item) return;
     const cw = Math.round(W * dpr), ch = Math.round(H * dpr);
     if (canvas.width !== cw) canvas.width = cw;
     if (canvas.height !== ch) canvas.height = ch;
 
-    const { s, offX, offY, dims } = fit(cw, ch);
-    lt = { s, offX, offY };
+    const offX = cw / 2 - vcx * vs, offY = ch / 2 - vcy * vs;
+    lt = { s: vs, offX, offY };
 
     const insts = item.lf?.instances ?? [];
     const worstNodes = insts.map((_, i) => (qc.instanceFlagged(item, i) ? qc.faultyNodeFor(item, i) : -1));
     drawScene(ctx, store.frameImage, item, store.skeleton, {
-      transform: { s, offX, offY }, dims, scale: dpr / s,
+      transform: { s: vs, offX, offY }, dims: dimsNow(), scale: dpr / vs,
       editing: true, selInstance: selI, selNode: selN, worstNodes, uncertainNodes: null,
     });
   });
@@ -144,24 +186,42 @@
         const p = lf.instances[hit.instIdx].points[hit.nodeIdx];
         dragging = { instIdx: hit.instIdx, nodeIdx: hit.nodeIdx, from: { xy: [...p.xy], visible: p.visible }, sx: e.clientX, sy: e.clientY, active: false };
         mode = "node";
-      } else mode = "pan-noop";
+      } else mode = "node-select"; // selected only; no movement this press
       canvas.setPointerCapture(e.pointerId);
+      return;
     }
+    // background -> pan the view
+    mode = "pan";
+    panStart = { sx: e.clientX, sy: e.clientY, cx0: cx, cy0: cy };
+    canvas.setPointerCapture(e.pointerId);
   }
   function onPointerMove(e) {
-    if (mode !== "node") return;
-    if (!dragging.active) {
-      if (Math.hypot(e.clientX - dragging.sx, e.clientY - dragging.sy) <= DRAG_THRESH) return;
-      dragging.active = true;
+    if (mode === "node") {
+      if (!dragging.active) {
+        if (Math.hypot(e.clientX - dragging.sx, e.clientY - dragging.sy) <= DRAG_THRESH) return;
+        dragging.active = true;
+      }
+      const { x, y } = toImage(e);
+      edit.setPoint(dragging.instIdx, dragging.nodeIdx, x, y, dragging.from.visible);
+    } else if (mode === "pan") {
+      const rect = canvas.getBoundingClientRect();
+      const devPerCss = rect.width ? canvas.width / rect.width : dpr;
+      const nx = panStart.cx0 - ((e.clientX - panStart.sx) * devPerCss) / s;
+      const ny = panStart.cy0 - ((e.clientY - panStart.sy) * devPerCss) / s;
+      const c = clampedCenter(s, nx, ny, Math.round(vpW * dpr), Math.round(vpH * dpr), dimsNow());
+      cx = c.x; cy = c.y;
     }
-    const { x, y } = toImage(e);
-    edit.setPoint(dragging.instIdx, dragging.nodeIdx, x, y, dragging.from.visible);
   }
   function onPointerUp(e) {
     if (mode === "node" && dragging?.active) edit.commitMove(dragging.instIdx, dragging.nodeIdx, dragging.from);
     dragging = null;
     mode = null;
+    panStart = null;
     try { canvas.releasePointerCapture(e.pointerId); } catch { /* gone */ }
+  }
+  function onWheel(e) {
+    e.preventDefault();
+    zoomBy(e.deltaY < 0 ? 1.15 : 1 / 1.15);
   }
 
   function onKey(e) {
@@ -173,7 +233,17 @@
     else if (e.key === "ArrowLeft" || e.key === "a" || e.key === "p") { step(-1); e.preventDefault(); }
     else if ((e.key === "Delete" || e.key === "Backspace") && edit.selInstance >= 0) { edit.deleteInstance(); e.preventDefault(); }
     else if (e.key === "v" && edit.selInstance >= 0 && edit.selNode >= 0) { edit.toggleVisible(edit.selInstance, edit.selNode); e.preventDefault(); }
+    else if (e.key === "=" || e.key === "+") { zoomBy(1.2); e.preventDefault(); }
+    else if (e.key === "-" || e.key === "_") { zoomBy(1 / 1.2); e.preventDefault(); }
+    else if (e.key === "0") { frameInstance(Math.round(vpW * dpr), Math.round(vpH * dpr)); e.preventDefault(); }
   }
+  // zoom % for the readout: current scale relative to the whole-image fit (1× = whole image).
+  const zoomPct = $derived.by(() => {
+    void s; void store.frameImage; void vpW; void vpH;
+    const cw = Math.round(vpW * dpr), ch = Math.round(vpH * dpr);
+    if (!cw || !ch) return 100;
+    return Math.round((s / fitWhole(cw, ch, dimsNow())) * 100);
+  });
 </script>
 
 <svelte:window onkeydown={onKey} />
@@ -195,8 +265,20 @@
     {#if !total}
       <div class="empty">No flagged frames. Run QC (and enable some checks) first.</div>
     {:else}
-      <div class="stage" bind:this={wrap}>
-        <canvas bind:this={canvas} onpointerdown={onPointerDown} onpointermove={onPointerMove} onpointerup={onPointerUp}></canvas>
+      <div class="stage" bind:this={wrap} onwheel={onWheel}>
+        <canvas
+          bind:this={canvas}
+          style:cursor={mode === "pan" ? "grabbing" : "crosshair"}
+          onpointerdown={onPointerDown}
+          onpointermove={onPointerMove}
+          onpointerup={onPointerUp}
+        ></canvas>
+        <div class="zoomctl">
+          <button onclick={() => zoomBy(1 / 1.2)} title="Zoom out (−)">−</button>
+          <span class="pct">{zoomPct}%</span>
+          <button onclick={() => zoomBy(1.2)} title="Zoom in (+)">＋</button>
+          <button onclick={() => frameInstance(Math.round(vpW * dpr), Math.round(vpH * dpr))} title="Refit to instance (0)">⤢</button>
+        </div>
       </div>
 
       <div class="verdict">
@@ -214,7 +296,7 @@
         <button class="nav" onclick={() => step(-1)} disabled={pos <= 0} title="Previous (←)">‹ Prev</button>
         <div class="mid">
           <button class="act danger" onclick={() => edit.deleteInstance()} disabled={edit.selInstance < 0} title="Delete the selected instance (duplicates)">Delete instance</button>
-          <span class="hint">drag the ringed point to fix · <kbd>V</kbd> hide · <kbd>⌘Z</kbd> undo</span>
+          <span class="hint">drag the ringed point to fix · drag bg / scroll to pan-zoom · <kbd>V</kbd> hide · <kbd>⌘Z</kbd> undo</span>
         </div>
         <button class="nav primary" onclick={() => (pos >= total - 1 ? close() : step(1))} title="Next (→)">
           {pos >= total - 1 ? "Done" : "Next ›"}
@@ -322,6 +404,41 @@
     height: 100%;
     touch-action: none;
     cursor: crosshair;
+  }
+  .zoomctl {
+    position: absolute;
+    right: 0.6rem;
+    bottom: 0.6rem;
+    display: flex;
+    align-items: center;
+    gap: 0.1rem;
+    background: rgba(11, 13, 15, 0.82);
+    border: 1px solid var(--border);
+    border-radius: var(--r-xs);
+    padding: 0.12rem 0.18rem;
+    backdrop-filter: blur(8px);
+  }
+  .zoomctl button {
+    width: 1.6rem;
+    height: 1.6rem;
+    background: none;
+    border: none;
+    color: var(--muted);
+    border-radius: var(--r-xs);
+    cursor: pointer;
+    font-size: 0.85rem;
+    line-height: 1;
+  }
+  .zoomctl button:hover {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text);
+  }
+  .zoomctl .pct {
+    min-width: 2.7rem;
+    text-align: center;
+    font-size: 0.66rem;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
   }
   .verdict {
     display: flex;

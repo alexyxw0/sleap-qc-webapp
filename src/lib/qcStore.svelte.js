@@ -16,7 +16,7 @@ import {
   computeChiralityUnit,
 } from "./qc/checks/detector.js";
 import { makeQCConfig } from "./qc/checks/config.js";
-import { topIssue, confidence, withDirection, DIRECTIONAL_FEATURES } from "./qc/checks/explain.js";
+import { topIssue, confidence, withDirection, DIRECTIONAL_FEATURES, issueForFeature } from "./qc/checks/explain.js";
 import { visibilityMask } from "./qc/checks/util.js";
 import { qcResultsCsv } from "./qc/csv.js";
 import { store } from "./labelsStore.svelte.js";
@@ -58,6 +58,7 @@ class QCStore {
   #frameAnom = new Map(); // "v:f" -> max anomaly score
   #frameGmm = new Map(); // "v:f" -> max GMM score
   #gmmWorst = new Map(); // "v:f:i" -> GMM leave-one-out worst node (computed lazily)
+  #gmmWorstFeat = new Map(); // "v:f:i" -> GMM most-improbable feature NAME (computed lazily)
   #anomalyAttr = new Map(); // "v:f:i" -> { node, dir, feature } for the anomaly's dominant feature (lazy)
   #chiralityScores = new Map(); // "v:f:i" -> L/R-flip [0,1] score
   #chiralityWorst = new Map(); // "v:f:i" -> a node from a wrong pair, -1 if none
@@ -317,6 +318,30 @@ class QCStore {
     return worst;
   }
   /**
+   * Which FEATURE the GMM finds most improbable for an instance — the feature with the largest
+   * contribution to the Mahalanobis distance under the most-responsible component (`det.worstFeature`).
+   * Re-extracts the vector from the pose (so it works even when only GMM is enabled). Lazy + cached.
+   * Returns the feature name, or null.
+   */
+  gmmWorstFeature(item, instIdx) {
+    this.rev;
+    if (!item || !this.checks.gmm) return null;
+    const det = this.#computed.gmm?.det;
+    const fx = this.#computed.gmm?.fx;
+    if (!det || !fx) return null;
+    const key = `${this.#fkey(item)}:${instIdx}`;
+    if (this.#gmmWorstFeat.has(key)) return this.#gmmWorstFeat.get(key);
+    const pose = item.lf?.instances?.[instIdx]?.numpy?.({ invisibleAsNaN: true });
+    let name = null;
+    if (pose) {
+      const clean = (row) => row.map((f) => (Number.isNaN(f) ? 0 : f === Infinity ? 10 : f === -Infinity ? -10 : f));
+      const w = det.worstFeature(clean(fx.extractFeatures(pose)));
+      name = w.index >= 0 ? fx.featureNames[w.index] ?? null : null;
+    }
+    this.#gmmWorstFeat.set(key, name);
+    return name;
+  }
+  /**
    * Which node the geometric anomaly (ZScore) verdict is about: the culprit node/edge of its
    * dominant feature (`topIssue`) — e.g. the isolated invisible node, the far "isolated" node,
    * the most length-deviant edge. Lazy + cached per instance. Returns -1 when the winning
@@ -459,13 +484,19 @@ class QCStore {
     if (aScore == null && gScore == null) return null;
     const wn = this.faultyNodeFor(item, instIdx);
     const worstNodeName = wn >= 0 ? store.skeleton?.nodeNames?.[wn] ?? `node ${wn}` : null;
-    // Prefer the anomaly explanation (per-feature attribution); otherwise GMM gives a
-    // density verdict ("improbable pose") localized to its leave-one-out node.
+    // Prefer the anomaly explanation (per-feature attribution); otherwise GMM gives a density
+    // verdict, now named by its most-improbable feature (the max Mahalanobis-distance dimension)
+    // and localized to its leave-one-out node.
     const gFlag = this.#gmmFlagged(key);
     const useGmm = aScore == null || (gFlag && this.checks.gmm && !(this.checks.anomaly && aScore >= this.threshold));
-    const base = useGmm
-      ? { score: gScore ?? 0, confidence: confidence(gScore ?? 0), feature: null, issue: "Improbable pose" }
-      : { score: aScore, confidence: confidence(aScore), ...topIssue(this.#contributions.get(key)) };
+    let base;
+    if (useGmm) {
+      const wf = this.gmmWorstFeature(item, instIdx);
+      const sub = issueForFeature(wf);
+      base = { score: gScore ?? 0, confidence: confidence(gScore ?? 0), feature: wf, issue: sub ? `Improbable pose · ${sub}` : "Improbable pose" };
+    } else {
+      base = { score: aScore, confidence: confidence(aScore), ...topIssue(this.#contributions.get(key)) };
+    }
     // For a z-score feature, append "(increased)"/"(decreased)" from the signed deviation.
     if (!useGmm && DIRECTIONAL_FEATURES.has(base.feature)) {
       base.issue = withDirection(base.issue, this.#anomalyAttribution(item, instIdx).dir);
@@ -568,6 +599,7 @@ class QCStore {
     frameMax(this.#gmmScores, this.#frameGmm);
     frameMax(this.#chiralityScores, this.#frameChir);
     this.#gmmWorst = new Map(); // lazy leave-one-out cache — invalidated whenever results change
+    this.#gmmWorstFeat = new Map(); // lazy GMM worst-feature cache — same invalidation
     this.#anomalyAttr = new Map(); // lazy anomaly-attribution cache — same invalidation
   }
 

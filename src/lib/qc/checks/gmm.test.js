@@ -54,4 +54,14 @@ describe("GMMDetector", () => {
     const b = new GMMDetector({ nComponents: 5 }).fit(cluster).scoreOne([5, 5]);
     expect(a).toBe(b);
   });
+
+  it("attributes improbability to the off dimension (worstFeature)", () => {
+    const det = new GMMDetector({ nComponents: 5 }).fit(cluster);
+    expect(det.worstFeature([100, 0]).index).toBe(0); // far in x -> dimension 0
+    expect(det.worstFeature([0, 100]).index).toBe(1); // far in y -> dimension 1
+    // the per-feature contributions decompose the (positive-definite) Mahalanobis distance
+    const sum = det.worstFeature([100, 0]).contributions.reduce((s, c) => s + c, 0);
+    expect(sum).toBeGreaterThan(0);
+    expect(det.worstFeature([0, 0]).index).toBeGreaterThanOrEqual(0); // interior point: still defined
+  });
 });
