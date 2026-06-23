@@ -67,12 +67,18 @@
     return () => ro.disconnect();
   });
 
-  // On open: jump to the worst flagged frame (or resume where we are if it's flagged).
+  // (Re)initialize each time the popup OPENS. The component stays mounted (only the modal markup
+  // is conditional), so a one-shot mount guard would fire once at app load — before QC has run —
+  // and never again. Keying on ui.reviewOpen (and resetting `started` on close) makes every open
+  // re-read the CURRENT flagged set, so it reflects the latest thresholds / re-run and jumps to
+  // the worst frame. Without this, re-opening after a threshold change showed a stale frame.
   $effect(() => {
+    if (!ui.reviewOpen) { started = false; return; }
     if (started) return;
     started = true;
+    framedIndex = -1; // re-frame the view for this session
     const r = qc.flaggedRanked;
-    if (!r.length) return;
+    if (!r.length) { pos = 0; return; }
     const at = r.indexOf(store.index);
     pos = at >= 0 ? at : 0;
     goto(r[pos]);
@@ -136,6 +142,7 @@
   // view while dragging: the draw transform comes from s/cx/cy, which only change here or when the
   // user explicitly zooms/pans, so moving a point no longer re-frames the canvas.
   $effect(() => {
+    if (!ui.reviewOpen) return;
     void store.index;
     const W = vpW, H = vpH;
     if (!W || !H || !item) return;
@@ -147,6 +154,7 @@
   // Draw the focused frame + overlay. The transform comes from the STABLE view state (s/cx/cy),
   // not the live points — so a node-drag (store.rev) redraws the moved point without re-framing.
   $effect(() => {
+    if (!ui.reviewOpen) return;
     void store.index; void store.frameImage; void store.rev; void qc.rev;
     const selI = edit.selInstance, selN = edit.selNode;
     const vs = s, vcx = cx, vcy = cy; // track zoom/pan
