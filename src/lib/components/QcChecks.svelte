@@ -76,6 +76,15 @@
       {/if}
     </button>
     {#if !collapsed}
+    {#if !qc.hasResults || (qc.hasPredictions && qc.hasUserInstances)}
+      <div class="baseline" title="Which instances define the 'normal' reference the Anomaly / GMM outlier checks score against">
+        <span class="bl-lbl">outlier baseline</span>
+        <div class="seg">
+          <button type="button" class:on={qc.baselineSource === "all"} onclick={() => qc.setBaselineSource("all")}>All labeled</button>
+          <button type="button" class:on={qc.baselineSource === "user"} onclick={() => qc.setBaselineSource("user")} title="Fit the reference on user-annotated instances only (cleaner ground truth)">User only</button>
+        </div>
+      </div>
+    {/if}
     <ul class="checks">
       {#each CHECKS.filter((c) => c.key !== "confidence" || !qc.hasResults || qc.hasPredictions) as c (c.key)}
         {@const ready = qc.checkReady(c.key)}
@@ -228,6 +237,46 @@
 {/if}
 
 <style>
+  .baseline {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.1rem 0.55rem;
+    margin-bottom: 0.3rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .bl-lbl {
+    font-size: 0.66rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--dim);
+  }
+  .seg {
+    display: inline-flex;
+    margin-left: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--r-xs);
+    overflow: hidden;
+  }
+  .seg button {
+    background: none;
+    border: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 0.68rem;
+    padding: 0.16rem 0.5rem;
+    cursor: pointer;
+  }
+  .seg button + button {
+    border-left: 1px solid var(--border);
+  }
+  .seg button.on {
+    background: rgba(95, 217, 242, 0.12);
+    color: var(--accent);
+  }
+  .seg button:hover:not(.on) {
+    color: var(--text);
+  }
   .checks {
     list-style: none;
     margin: 0;

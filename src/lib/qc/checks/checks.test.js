@@ -8,7 +8,7 @@ import { normalizePose } from "./features/reference.js";
 import { computeCurvature, computeConvexHull } from "./features/structural.js";
 import { VisibilityModel } from "./features/visibility.js";
 import { SkeletonAnalyzer } from "./features/skeleton.js";
-import { ZScoreDetector, fitAndScoreLabels, LabelQCDetector } from "./detector.js";
+import { ZScoreDetector, fitAndScoreLabels, LabelQCDetector, buildContext } from "./detector.js";
 import { makeQCConfig } from "./config.js";
 
 const NAN = [Number.NaN, Number.NaN];
@@ -147,5 +147,19 @@ describe("full pipeline on a real .slp (sleap-io.js adapter)", () => {
       expect(s).toBeLessThanOrEqual(1);
     }
     expect(out.frameResults.size).toBeGreaterThan(0);
+  });
+
+  it("baseline source: a fit mask picks the reference subset (fitRows) but scores ALL instances", async () => {
+    const FIX = fileURLToPath(new URL("../fixtures/tracked-preds.slp", import.meta.url));
+    const labels = await loadSlp(FIX, { openVideos: false });
+    const ctx = buildContext(labels, makeQCConfig());
+    const n = ctx.allPoses.length;
+    const mask = ctx.allPoses.map((_, i) => i % 2 === 0); // reference = even-indexed instances
+    const fx = new LabelQCDetector(makeQCConfig()).fitFeatures(ctx.allPoses, ctx.analyzer, mask);
+    expect(fx.rawMatrix).toHaveLength(n); // scored over ALL
+    expect(fx.fitRows).toEqual(ctx.allPoses.map((_, i) => i).filter((i) => i % 2 === 0));
+    expect(fx.fitRawMatrix).toHaveLength(fx.fitRows.length);
+    // null mask === all (the default path, unchanged)
+    expect(new LabelQCDetector(makeQCConfig()).fitFeatures(ctx.allPoses, ctx.analyzer, null).fitRows).toHaveLength(n);
   });
 });

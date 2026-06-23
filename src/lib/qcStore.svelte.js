@@ -43,6 +43,7 @@ class QCStore {
   sparseThreshold = $state(2); // flag an instance localized by fewer than this many visible nodes
   confidenceThreshold = $state(0.3); // flag a predicted instance whose weakest visible keypoint scores below this
   uncThreshold = $state(0.6); // (stable build: confidence channel absent; kept for the shared UI)
+  baselineSource = $state("all"); // outlier reference: "all" labeled instances, or "user"-annotated only
   rev = $state(0); // bump when results / selection change
   ranAtRev = -1; // store.rev at the time QC last ran (for staleness)
 
@@ -53,6 +54,7 @@ class QCStore {
   #ctx = null; // shared frame/pose/feature context for the current labels
   #ctxLabels = null; // identity of the labels #ctx was built for
   #ctxRev = -1; // store.rev the #ctx was built at — bumps when instances are edited in place
+  #ctxBaselineSource = "all"; // baselineSource the #ctx was fit with (rebuild on change)
   #computed = {}; // unit -> result maps (the memoization cache)
 
   // Derived per-frame maps (rebuilt from #computed after each run).
@@ -77,6 +79,18 @@ class QCStore {
   get hasPredictions() {
     this.rev;
     return this.#ctx?.hasPredictions ?? false;
+  }
+  /** Whether the loaded labels contain any user-annotated instances (for the baseline-source choice). */
+  get hasUserInstances() {
+    this.rev;
+    return this.#ctx?.userMask?.some(Boolean) ?? false;
+  }
+  /** Switch the outlier baseline source ("all" | "user") and re-fit/recompute if QC has run. */
+  setBaselineSource(src) {
+    if (src === this.baselineSource) return;
+    this.baselineSource = src;
+    this.rev++;
+    if (this.status === "done") this.run(); // run() rebuilds the context against the new reference
   }
   get stale() {
     this.rev;
@@ -677,10 +691,11 @@ class QCStore {
       // changed — either a new file (identity) OR an in-place instance edit (store.rev bumps
       // without changing identity). Without the rev check, editing a keypoint and re-running
       // would silently reuse the stale pose snapshot and cached unit results.
-      if (store.labels !== this.#ctxLabels || store.rev !== this.#ctxRev) {
-        this.#ctx = buildContext(store.labels, makeQCConfig({ useGmm: false }));
+      if (store.labels !== this.#ctxLabels || store.rev !== this.#ctxRev || this.baselineSource !== this.#ctxBaselineSource) {
+        this.#ctx = buildContext(store.labels, makeQCConfig({ useGmm: false, baselineSource: this.baselineSource }));
         this.#ctxLabels = store.labels;
         this.#ctxRev = store.rev;
+        this.#ctxBaselineSource = this.baselineSource;
         this.#computed = {};
       }
       // compute the units the enabled checks need, skipping anything already cached

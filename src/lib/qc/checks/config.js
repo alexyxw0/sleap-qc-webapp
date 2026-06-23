@@ -20,6 +20,10 @@ export function makeQCConfig(overrides = {}) {
 
     autoCalibrate: true, // reserved / unused, mirrors the Python dead field
     calibrationPercentile: 95.0,
+
+    // Which instances define the outlier "normal" reference: "all" labeled, or "user" (user-
+    // annotated only — cleaner ground truth, so predictions are measured against it).
+    baselineSource: "all",
     ...overrides,
   };
 }

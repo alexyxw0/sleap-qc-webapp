@@ -22,6 +22,8 @@ All `checks/…` citations below are relative to `src/lib/qc/`; `qcStore.svelte.
 
 **Two population-stat implementations.** Z-scores and GMM scaling are both *population* (`/N`, ddof=0) but live in **two independent code paths**: `util.js` (`mean`/`safeStd`, floor `1e-6`) for ZScore and the 19-feature stats; `gmm.js` `standardScalerFit` (zero-variance scale→1). Do not assume a single shared helper.
 
+**Outlier baseline source (`config.baselineSource`, `qc.baselineSource`).** The "normal" reference for the **Anomaly + GMM** outlier checks is either `"all"` labeled instances (default) or `"user"`-annotated only. `fitFeatures(instances, analyzer, fitMask)` decouples *fit* from *score*: the baseline stats / NN reference / hull stats and the ZScore/GMM detectors are fit on `fitMask`'s subset (a fit row reuses its leave-one-out NN; a non-fit row gets the full NN to the fit set), but `rawMatrix`/`cleanMatrix` are built over **all** instances and `fitRows` records the reference subset. `"user"` falls back to `"all"` when the file has no user instances. Fitting on clean ground truth means predictions are measured against it — useful because the anomaly check is baseline-relative (occlusion-heavy predictions otherwise inflate the std and dilute the z-scores). Changing it rebuilds the context (`#ctxBaselineSource`) and re-runs.
+
 ---
 
 ## Anomaly (ZScore)

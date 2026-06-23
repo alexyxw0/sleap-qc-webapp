@@ -75,24 +75,46 @@ export class LabelQCDetector {
     return this;
   }
 
-  /** Fit just the feature extractors + build the per-instance feature matrix (raw + cleaned). */
-  fitFeatures(instances, analyzer) {
+  /**
+   * Fit the feature extractors + build the per-instance feature matrix (raw + cleaned).
+   * `fitMask` (per-instance, aligned with `instances`) selects the "normal" REFERENCE subset —
+   * the baseline stats / NN reference / detectors are fit on it, but the matrix (for scoring) is
+   * built over ALL `instances`. `null` => all (the default, identical to the old behavior). Used
+   * to fit on user-annotated instances only so predictions are measured against clean ground truth.
+   */
+  fitFeatures(instances, analyzer, fitMask = null) {
     this.analyzer = analyzer;
-    this.baseline = new BaselineFeatureExtractor(analyzer.edges, analyzer.nNodes, analyzer.symmetryPairs).fit(instances);
-    this.visibility = new VisibilityModel().fit(instances.map(visibilityMask));
-    this.nn = new NearestNeighborScorer({ normalize: true }).fit(instances);
-    this._trainingNN = this.nn.looDistances();
-    const areas = instances.map((p) => computeConvexHull(p).hullArea).filter((a) => a > 0);
+    const fitPoses = fitMask ? instances.filter((_, i) => fitMask[i]) : instances;
+    this.baseline = new BaselineFeatureExtractor(analyzer.edges, analyzer.nNodes, analyzer.symmetryPairs).fit(fitPoses);
+    this.visibility = new VisibilityModel().fit(fitPoses.map(visibilityMask));
+    this.nn = new NearestNeighborScorer({ normalize: true }).fit(fitPoses);
+    const looNN = this.nn.looDistances(); // leave-one-out, aligned with fitPoses
+    const areas = fitPoses.map((p) => computeConvexHull(p).hullArea).filter((a) => a > 0);
     this._hullStats = { mean: areas.length ? mean(areas) : 1, std: areas.length ? std(areas) : 1 };
     // node->neighbors adjacency, reused by the pose_split_score feature (chimera bridging edge).
     this._adjacency = Array.from({ length: analyzer.nNodes }, () => []);
     for (const [s, d] of analyzer.edges) { this._adjacency[s].push(d); this._adjacency[d].push(s); }
     this.featureNames = [...BASELINE_FEATURE_NAMES, ...V3_FEATURE_NAMES];
-    this.rawMatrix = instances.map((p, i) => this.extractFeatures(p, this._trainingNN[i]));
+    // Matrix over ALL instances; a fit row reuses its LOO NN distance (avoids self-match), a
+    // non-fit row gets the full NN to the fit set. `fitRows` are the matrix rows used to fit.
+    const fitIdxByAll = new Map();
+    let fi = 0;
+    instances.forEach((_, i) => { if (!fitMask || fitMask[i]) fitIdxByAll.set(i, fi++); });
+    this.rawMatrix = instances.map((p, i) =>
+      this.extractFeatures(p, !fitMask || fitMask[i] ? looNN[fitIdxByAll.get(i)] : null),
+    );
     this.cleanMatrix = this.rawMatrix.map((row) =>
       row.map((f) => (Number.isNaN(f) ? 0 : f === Infinity ? 10 : f === -Infinity ? -10 : f)),
     );
+    this.fitRows = [...fitIdxByAll.keys()];
     return this;
+  }
+  /** The clean feature rows used to fit the detectors (the baseline-source subset). */
+  get fitCleanMatrix() {
+    return this.fitRows.map((r) => this.cleanMatrix[r]);
+  }
+  get fitRawMatrix() {
+    return this.fitRows.map((r) => this.rawMatrix[r]);
   }
 
   /** 19-dim feature vector for one pose (18 geometric + pose_split_score). */
@@ -290,7 +312,13 @@ export function buildContext(labels, config = makeQCConfig()) {
 // The shared feature matrix + extractors (built once; reused by anomaly + gmm). This is the
 // expensive part (incl. the O(n^2) NN feature), so it is computed at most once per context.
 function ensureFeatures(ctx) {
-  if (!ctx._fx) ctx._fx = new LabelQCDetector(ctx.config).fitFeatures(ctx.allPoses, ctx.analyzer);
+  if (!ctx._fx) {
+    // baselineSource "user" fits the reference on user-annotated instances only — but fall back to
+    // "all" if there are none (a pure-predictions file), so it never fits on an empty set.
+    const useUser = ctx.config.baselineSource === "user" && ctx.userMask?.some(Boolean);
+    const fitMask = useUser ? ctx.userMask : null;
+    ctx._fx = new LabelQCDetector(ctx.config).fitFeatures(ctx.allPoses, ctx.analyzer, fitMask);
+  }
   return ctx._fx;
 }
 
@@ -308,7 +336,7 @@ function eachInstance(ctx, fn) {
 /** ZScore geometric anomaly: per-instance score + raw feature contributions. */
 export function computeAnomalyUnit(ctx) {
   const fx = ensureFeatures(ctx);
-  const det = new ZScoreDetector(3.0).fit(fx.rawMatrix);
+  const det = new ZScoreDetector(3.0).fit(fx.fitRawMatrix);
   const instanceScores = new Map();
   const contributions = new Map();
   eachInstance(ctx, (f, i, row, key) => {
@@ -334,7 +362,7 @@ export function computeGmmUnit(ctx) {
     det = new GMMDetector({
       nComponents: ctx.config.gmmNComponents,
       percentileThreshold: ctx.config.gmmPercentileThreshold,
-    }).fit(fx.rawMatrix);
+    }).fit(fx.fitRawMatrix);
   } catch {
     det = null; // too few instances to fit a mixture — leave the unit empty
   }
