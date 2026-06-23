@@ -39,15 +39,6 @@
   const ranked = $derived(qc.flaggedRanked);
   const total = $derived(ranked.length);
   const item = $derived(store.current);
-  // The instance to focus: the graded worst, or the first instance for a frame flagged only by
-  // a boolean check (duplicates/count/negative) so it's still selectable/deletable.
-  const worstInst = $derived.by(() => {
-    void qc.rev; void store.rev;
-    if (!item) return -1;
-    const w = qc.frameWorstInstance(item);
-    if (w >= 0) return w;
-    return item.lf?.instances?.length ? 0 : -1;
-  });
   const verdict = $derived.by(() => { void qc.rev; void store.rev; return item ? qc.frameTopIssue(item) : null; });
   const conf = $derived.by(() => { void qc.rev; return item ? qc.flagConfidence(item) : null; });
   const flaggers = $derived.by(() => { void qc.rev; return item ? qc.frameFlaggingChecks(item) : []; });
@@ -122,18 +113,25 @@
     const c = clampedCenter(ns, cx, cy, cw, ch, dims);
     s = ns; cx = c.x; cy = c.y;
   }
-  // Frame the faulty instance's bbox (with context) — set once per frame, never during a drag.
-  function frameInstance(cw, ch) {
+  // Frame ALL instances' visible nodes (the whole labeled scene) with a little adjustment room —
+  // set once per frame, never during a drag. Seeing every animal matters for the cross-instance
+  // flags (duplicates, L/R swaps, chimeras), and it avoids the over-zoom when a single instance's
+  // bbox is tiny. A single-instance frame is unchanged. Whole-image floor + max-zoom cap still apply.
+  function frameScene(cw, ch) {
     const dims = dimsNow();
-    const pts = item?.lf?.instances?.[worstInst]?.points;
     const xs = [], ys = [];
-    if (pts) for (const p of pts) { const x = p?.xy?.[0], y = p?.xy?.[1]; if (x != null && !Number.isNaN(x)) { xs.push(x); ys.push(y); } }
+    for (const inst of item?.lf?.instances ?? []) {
+      for (const p of inst.points ?? []) {
+        const x = p?.xy?.[0], y = p?.xy?.[1];
+        if (x != null && !Number.isNaN(x)) { xs.push(x); ys.push(y); }
+      }
+    }
     let bx = 0, by = 0, bw = dims.w, bh = dims.h;
     if (xs.length) { bx = Math.min(...xs); by = Math.min(...ys); bw = Math.max(...xs) - bx; bh = Math.max(...ys) - by; }
-    const margin = Math.max(bw, bh, 1) * 0.5 + 18;
+    const margin = Math.max(bw, bh, 1) * 0.22 + 16; // breathing room so a dragged node stays in view
     const ow = bw + 2 * margin, oh = bh + 2 * margin;
     const minS = fitWhole(cw, ch, dims);
-    const ns = Math.max(minS, Math.min(minS * MAX_ZOOM, Math.min((cw * 0.94) / ow, (ch * 0.94) / oh)));
+    const ns = Math.max(minS, Math.min(minS * MAX_ZOOM, Math.min((cw * 0.92) / ow, (ch * 0.92) / oh)));
     const c = clampedCenter(ns, bx + bw / 2, by + bh / 2, cw, ch, dims);
     s = ns; cx = c.x; cy = c.y;
   }
@@ -147,7 +145,7 @@
     const W = vpW, H = vpH;
     if (!W || !H || !item) return;
     if (store.index === framedIndex) return;
-    frameInstance(Math.round(W * dpr), Math.round(H * dpr));
+    frameScene(Math.round(W * dpr), Math.round(H * dpr));
     framedIndex = store.index;
   });
 
@@ -243,7 +241,7 @@
     else if (e.key === "v" && edit.selInstance >= 0 && edit.selNode >= 0) { edit.toggleVisible(edit.selInstance, edit.selNode); e.preventDefault(); }
     else if (e.key === "=" || e.key === "+") { zoomBy(1.2); e.preventDefault(); }
     else if (e.key === "-" || e.key === "_") { zoomBy(1 / 1.2); e.preventDefault(); }
-    else if (e.key === "0") { frameInstance(Math.round(vpW * dpr), Math.round(vpH * dpr)); e.preventDefault(); }
+    else if (e.key === "0") { frameScene(Math.round(vpW * dpr), Math.round(vpH * dpr)); e.preventDefault(); }
   }
   // zoom % for the readout: current scale relative to the whole-image fit (1× = whole image).
   const zoomPct = $derived.by(() => {
@@ -285,7 +283,7 @@
           <button onclick={() => zoomBy(1 / 1.2)} title="Zoom out (−)">−</button>
           <span class="pct">{zoomPct}%</span>
           <button onclick={() => zoomBy(1.2)} title="Zoom in (+)">＋</button>
-          <button onclick={() => frameInstance(Math.round(vpW * dpr), Math.round(vpH * dpr))} title="Refit to instance (0)">⤢</button>
+          <button onclick={() => frameScene(Math.round(vpW * dpr), Math.round(vpH * dpr))} title="Refit to frame (0)">⤢</button>
         </div>
       </div>
 
