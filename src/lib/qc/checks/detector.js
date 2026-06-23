@@ -141,6 +141,17 @@ export class LabelQCDetector {
     // check (otherwise its 0 instances would always read as "missing"). So a NON-negative frame
     // with no instances is flagged (0 < expected), while a negative empty frame is not.
     const counted = !isNegative;
+    // Sparsest instance's visible-node count (threshold-free — the store applies the live cutoff).
+    // An instance localized by only a node or two is barely usable; the anomaly check can't catch
+    // it reliably because it's baseline-relative, so this deterministic count does.
+    let minVisibleNodeCount = Infinity, sparsestInstance = -1;
+    if (counted) {
+      poses.forEach((pose, i) => {
+        let v = 0;
+        for (const xy of pose) if (!Number.isNaN(xy?.[0])) v++;
+        if (v < minVisibleNodeCount) { minVisibleNodeCount = v; sparsestInstance = i; }
+      });
+    }
     const fq = {
       isIncomplete: counted && count.isIncomplete,
       isOvercount: counted && count.isOvercount,
@@ -148,6 +159,8 @@ export class LabelQCDetector {
       isEmpty: counted && poses.length === 0,
       expectedInstanceCount: Math.round(count.expectedCount),
       actualInstanceCount: poses.length,
+      minVisibleNodeCount,
+      sparsestInstance,
       isNegativeWithInstances: checkNegativeFrame(isNegative, poses.length),
       duplicatePairs: [],
       duplicateReasons: [],

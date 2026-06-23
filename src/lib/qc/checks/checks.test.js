@@ -42,6 +42,14 @@ describe("frame-level checks", () => {
     expect(det.checkFrame([], "v", true)).toMatchObject({ isWrongCount: false, isEmpty: false });
   });
 
+  it("checkFrame: reports the sparsest instance's visible-node count (negative frame exempt)", () => {
+    const det = new LabelQCDetector(makeQCConfig());
+    det.countChecker = new InstanceCountChecker(true).fit([1], ["v"]);
+    const oneNode = [[100, 100], NAN, NAN]; // 1 visible node
+    expect(det.checkFrame([oneNode], "v", false)).toMatchObject({ minVisibleNodeCount: 1, sparsestInstance: 0 });
+    expect(det.checkFrame([oneNode], "v", true).minVisibleNodeCount).toBe(Infinity); // negative -> exempt
+  });
+
   it("negative frame with instances is inconsistent", () => {
     expect(checkNegativeFrame(true, 1)).toBe(true);
     expect(checkNegativeFrame(true, 0)).toBe(false);

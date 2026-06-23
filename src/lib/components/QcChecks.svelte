@@ -30,8 +30,14 @@
     {
       key: "count",
       label: "Instance count",
-      hint: "Frame has fewer instances than expected.",
-      info: "Frame-level: flags a frame with fewer instances than expected, where “expected” is the median instance-count per frame (computed per video). Only under-counting is flagged — a likely missed or un-labeled animal; extra instances are left to the Duplicates check. On by default.",
+      hint: "Frame has the wrong number of instances.",
+      info: "Frame-level: flags a frame whose instance count differs from the expected (the median per-frame count of NON-empty frames, per video) — too few (a missed/un-labeled animal, incl. a non-negative empty frame) OR too many (a spurious extra). Negative frames are exempt. Boolean — no threshold. On by default.",
+    },
+    {
+      key: "sparse",
+      label: "Sparse instance",
+      hint: "An instance localized by too few visible nodes.",
+      info: "Flags a frame containing an instance placed with fewer than N visible nodes — a barely-localized / off-frame instance the anomaly check can miss (it's baseline-relative, so messy data dilutes it). Deterministic; N is the slider below (default 2 = flag instances with 0–1 visible nodes). Negative frames are exempt. On by default.",
     },
     {
       key: "negative",
@@ -161,6 +167,21 @@
                 oninput={(e) => (qc.chiralityThreshold = +e.currentTarget.value)}
               />
               <span class="tval">{qc.chiralityThreshold.toFixed(2)}</span>
+            </div>
+          {/if}
+          {#if c.key === "sparse" && qc.checks.sparse}
+            <!-- Min visible nodes: flag instances localized by fewer than this many nodes. -->
+            <div class="thresh" title="Flag an instance localized by fewer than this many visible nodes">
+              <span class="tlbl">min&nbsp;nodes</span>
+              <input
+                type="range"
+                min="1"
+                max="8"
+                step="1"
+                value={qc.sparseThreshold}
+                oninput={(e) => (qc.sparseThreshold = +e.currentTarget.value)}
+              />
+              <span class="tval">&lt;&thinsp;{qc.sparseThreshold}</span>
             </div>
           {/if}
         </li>
