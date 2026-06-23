@@ -54,6 +54,14 @@
   const conf = $derived.by(() => { void qc.rev; return item ? qc.flagConfidence(item) : null; });
   const flaggers = $derived.by(() => { void qc.rev; return item ? qc.frameFlaggingChecks(item) : []; });
   const edited = $derived.by(() => { void edit.dirtyRev; return item?.lf ? edit.isFrameModified(item.lf) : false; });
+  // When the selected (e.g. faulty) node has no position yet, prompt to click-to-place it.
+  const unplacedHint = $derived.by(() => {
+    void store.rev; void edit.selInstance; void edit.selNode;
+    if (edit.selInstance < 0 || edit.selNode < 0) return null;
+    const p = item?.lf?.instances?.[edit.selInstance]?.points?.[edit.selNode];
+    if (p && Number.isNaN(p.xy?.[0])) return store.skeleton?.nodeNames?.[edit.selNode] ?? `node ${edit.selNode}`;
+    return null;
+  });
 
   $effect(() => {
     if (canvas && !ctx) ctx = canvas.getContext("2d");
@@ -180,6 +188,7 @@
     drawScene(ctx, store.frameImage, item, store.skeleton, {
       transform: { s: vs, offX, offY }, dims: dimsNow(), scale: dpr / vs,
       editing: true, selInstance: selI, selNode: selN, worstNodes, uncertainNodes: null,
+      hiddenAlpha: 0.55, // hidden/occluded nodes are correction targets here — keep them grabbable
     });
   });
 
@@ -206,9 +215,9 @@
       canvas.setPointerCapture(e.pointerId);
       return;
     }
-    // background -> pan the view
+    // background -> pan the view (or, if it doesn't move, a click that places an unplaced node)
     mode = "pan";
-    panStart = { sx: e.clientX, sy: e.clientY, cx0: cx, cy0: cy };
+    panStart = { sx: e.clientX, sy: e.clientY, cx0: cx, cy0: cy, moved: false };
     canvas.setPointerCapture(e.pointerId);
   }
   function onPointerMove(e) {
@@ -218,8 +227,11 @@
         dragging.active = true;
       }
       const { x, y } = toImage(e);
-      edit.setPoint(dragging.instIdx, dragging.nodeIdx, x, y, dragging.from.visible);
+      // a correction asserts the node IS here -> make it visible (so hidden/occluded nodes can be fixed)
+      edit.setPoint(dragging.instIdx, dragging.nodeIdx, x, y, true);
     } else if (mode === "pan") {
+      if (!panStart.moved && Math.hypot(e.clientX - panStart.sx, e.clientY - panStart.sy) <= DRAG_THRESH) return;
+      panStart.moved = true;
       const rect = canvas.getBoundingClientRect();
       const devPerCss = rect.width ? canvas.width / rect.width : dpr;
       const nx = panStart.cx0 - ((e.clientX - panStart.sx) * devPerCss) / s;
@@ -233,6 +245,17 @@
       edit.commitMove(dragging.instIdx, dragging.nodeIdx, dragging.from);
       // re-score this instance against the cached fit -> verdict + ring jump to the next issue
       qc.rescoreInstance(store.current, dragging.instIdx);
+    } else if (mode === "pan" && panStart && !panStart.moved) {
+      // a click on the background PLACES the selected node if it's unplaced (NaN coords). This is
+      // how a missing/never-placed node gets a position in the popup (matches the main editor).
+      const p = edit.selectedInstance?.points?.[edit.selNode];
+      if (edit.selInstance >= 0 && edit.selNode >= 0 && p && Number.isNaN(p.xy?.[0])) {
+        const { x, y } = toImage(e);
+        const from = { xy: [...p.xy], visible: p.visible };
+        edit.setPoint(edit.selInstance, edit.selNode, x, y, true);
+        edit.commitMove(edit.selInstance, edit.selNode, from);
+        qc.rescoreInstance(store.current, edit.selInstance);
+      }
     }
     dragging = null;
     mode = null;
@@ -293,6 +316,9 @@
           onpointermove={onPointerMove}
           onpointerup={onPointerUp}
         ></canvas>
+        {#if unplacedHint}
+          <div class="placehint"><b>{unplacedHint}</b> isn't placed — click on the image to place it</div>
+        {/if}
         <div class="zoomctl">
           <button onclick={() => zoomBy(1 / 1.2)} title="Zoom out (−)">−</button>
           <span class="pct">{zoomPct}%</span>
@@ -429,6 +455,22 @@
     touch-action: none;
     cursor: crosshair;
   }
+  .placehint {
+    position: absolute;
+    top: 0.6rem;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(11, 13, 15, 0.86);
+    border: 1px solid rgba(231, 192, 138, 0.45);
+    color: #e7c08a;
+    border-radius: var(--r-xs);
+    padding: 0.28rem 0.7rem;
+    font-size: 0.72rem;
+    white-space: nowrap;
+    backdrop-filter: blur(8px);
+    pointer-events: none;
+  }
+  .placehint b { color: #fff; }
   .zoomctl {
     position: absolute;
     right: 0.6rem;
