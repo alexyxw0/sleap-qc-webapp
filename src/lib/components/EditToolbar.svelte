@@ -67,6 +67,7 @@
     {#if qc.flaggedFrameCount > 0}
       <button class="ic seek" onclick={() => seekFlagged(-1)} title="Previous flagged frame (P)">‹</button>
       <button class="ic seek" onclick={() => seekFlagged(1)} title="Next flagged frame (N)">›</button>
+      <button class="review" onclick={() => ui.toggleReview()} title="Step through flagged frames worst-first and correct them">REVIEW</button>
     {/if}
   {/if}
   {#if qc.status === "error"}<span class="qcstat err">QC failed</span>{/if}
@@ -210,6 +211,22 @@
     color: var(--accent);
     border-color: rgba(95, 217, 242, 0.45);
     background: rgba(95, 217, 242, 0.06);
+  }
+  .review {
+    background: none;
+    border: 1px solid rgba(231, 192, 138, 0.45);
+    color: #e7c08a;
+    border-radius: var(--r-xs);
+    padding: 0.3rem 0.6rem;
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    transition: background 0.12s;
+  }
+  .review:hover {
+    background: rgba(231, 192, 138, 0.1);
   }
 
   .qcstat {

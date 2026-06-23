@@ -136,9 +136,11 @@
     view.clearFocus();
   });
 
-  // Clear selection when navigating to another frame.
+  // Clear selection when navigating to another frame. (Yields while the QC-review popup is
+  // open — it drives navigation and keeps the faulty node selected for correction.)
   $effect(() => {
     void store.index;
+    if (ui.reviewOpen) return;
     edit.clearSelection();
   });
 

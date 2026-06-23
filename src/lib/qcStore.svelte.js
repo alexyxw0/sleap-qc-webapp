@@ -397,6 +397,40 @@ class QCStore {
     }
     return -1;
   }
+
+  /**
+   * Worst flagging confidence in `[0,1]` for a frame — the max over the enabled checks that
+   * flag it (anomaly / gmm / chirality scores; the boolean frame checks count/negative/
+   * duplicates contribute 1.0 since a structural issue is certain). `null` if not flagged.
+   * This is the score the QC-review popup orders flagged frames by (worst-first).
+   */
+  flagConfidence(item) {
+    this.rev;
+    if (!item) return null;
+    const fk = this.#fkey(item);
+    const c = this.checks;
+    let best = null;
+    const bump = (v) => { if (v != null && (best == null || v > best)) best = v; };
+    if (c.anomaly) { const s = this.#frameAnom.get(fk); if (s != null && s >= this.threshold) bump(s); }
+    if (c.gmm) { const s = this.#frameGmm.get(fk); if (s != null && s >= this.gmmThreshold) bump(s); }
+    if (c.chirality) { const s = this.#frameChir.get(fk); if (s != null && s >= this.chiralityThreshold) bump(s); }
+    const fq = this.#frameResults.get(fk);
+    if (fq && ((c.count && fq.isIncomplete) || (c.negative && fq.isNegativeWithInstances) || (c.duplicates && (fq.duplicatePairs?.length ?? 0) > 0))) bump(1);
+    return best;
+  }
+
+  /** Flagged frames as store-frame indices, **worst-first** by `flagConfidence` (ties → frame order). */
+  get flaggedRanked() {
+    this.rev;
+    const frames = store.frames ?? [];
+    const ranked = [];
+    for (let i = 0; i < frames.length; i++) {
+      const conf = this.flagConfidence(frames[i]);
+      if (conf != null) ranked.push({ i, conf });
+    }
+    ranked.sort((a, b) => b.conf - a.conf || a.i - b.i);
+    return ranked.map((r) => r.i);
+  }
   /** Anomaly score for an instance, or null. */
   instanceScore(item, instIdx) {
     this.rev;
