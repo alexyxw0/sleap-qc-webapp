@@ -134,9 +134,13 @@ export class LabelQCDetector {
     return { score: Number.isFinite(score) ? score : 0, contributions };
   }
 
-  /** Frame-level QC for a frame's poses. */
-  checkFrame(poses, videoId, isNegative = false) {
+  /** Frame-level QC for a frame's poses. `conf` is the per-instance {minScore,minNode} (predicted). */
+  checkFrame(poses, videoId, isNegative = false, conf = null) {
     const count = this.countChecker.check(poses.length, videoId);
+    // Weakest visible keypoint across the frame's predicted instances (threshold-free — the store
+    // applies the live cutoff). Lets confidence scores act as QC when some labels are predicted.
+    let minPointScore = Infinity, lowConfInstance = -1, lowConfNode = -1;
+    if (conf) conf.forEach((c, i) => { if (c.minScore < minPointScore) { minPointScore = c.minScore; lowConfInstance = i; lowConfNode = c.minNode; } });
     // A negative (background) frame is intentionally empty/odd-count — exempt it from the count
     // check (otherwise its 0 instances would always read as "missing"). So a NON-negative frame
     // with no instances is flagged (0 < expected), while a negative empty frame is not.
@@ -161,6 +165,9 @@ export class LabelQCDetector {
       actualInstanceCount: poses.length,
       minVisibleNodeCount,
       sparsestInstance,
+      minPointScore,
+      lowConfInstance,
+      lowConfNode,
       isNegativeWithInstances: checkNegativeFrame(isNegative, poses.length),
       duplicatePairs: [],
       duplicateReasons: [],
@@ -223,7 +230,7 @@ export function fitAndScoreLabels(labels, { config = makeQCConfig(), getInstance
       instanceScores.set(key, r.score);
       contributions.set(key, r.contributions);
     });
-    frameResults.set(`${f.videoIdx}:${f.frameIdx}`, det.checkFrame(f.poses, f.vid, f.isNegative));
+    frameResults.set(`${f.videoIdx}:${f.frameIdx}`, det.checkFrame(f.poses, f.vid, f.isNegative, f.conf));
   }
   return {
     instanceScores, contributions,
@@ -244,21 +251,40 @@ export function buildContext(labels, config = makeQCConfig()) {
   if (!labels.skeletons?.length) throw new Error("Labels must have at least one skeleton");
   const analyzer = analyzerFromSkeleton(labels.skeletons[0]);
   const toPose = (inst) => inst.numpy({ invisibleAsNaN: true });
+  // Weakest VISIBLE keypoint confidence for a predicted instance — {minScore, minNode}; Infinity
+  // for a user instance (no per-point scores). Used by the prediction-confidence QC check.
+  const instConf = (inst) => {
+    let minScore = Infinity, minNode = -1;
+    const pts = inst.points ?? [];
+    for (let k = 0; k < pts.length; k++) {
+      const p = pts[k];
+      if (p?.visible && typeof p.score === "number" && p.score < minScore) { minScore = p.score; minNode = k; }
+    }
+    return { minScore, minNode };
+  };
   const frames = [];
   const allPoses = [];
   const frameCounts = [];
   const videoIds = [];
+  const userMask = []; // per-instance (allPoses order): true = user-annotated, false = predicted
+  let hasPredictions = false;
   labels.videos.forEach((video, videoIdx) => {
     const vid = videoIdString(video, videoIdx);
     for (const lf of labels.labeledFrames.filter((f) => f.video === video)) {
       const poses = lf.instances.map(toPose);
-      frames.push({ videoIdx, frameIdx: lf.frameIdx, isNegative: lf.isNegative ?? false, poses, vid });
+      const conf = lf.instances.map(instConf);
+      frames.push({ videoIdx, frameIdx: lf.frameIdx, isNegative: lf.isNegative ?? false, poses, conf, vid });
       allPoses.push(...poses);
       frameCounts.push(poses.length);
       videoIds.push(vid);
+      for (const inst of lf.instances) {
+        const predicted = inst.score != null; // PredictedInstance carries an instance-level score
+        userMask.push(!predicted);
+        if (predicted) hasPredictions = true;
+      }
     }
   });
-  return { config, analyzer, frames, allPoses, frameCounts, videoIds, labels, _fx: null };
+  return { config, analyzer, frames, allPoses, frameCounts, videoIds, userMask, hasPredictions, labels, _fx: null };
 }
 
 // The shared feature matrix + extractors (built once; reused by anomaly + gmm). This is the
@@ -329,7 +355,7 @@ export function computeFrameUnit(ctx) {
   det.countChecker = new InstanceCountChecker(true).fit(ctx.frameCounts, ctx.videoIds);
   const frameResults = new Map();
   for (const f of ctx.frames) {
-    frameResults.set(`${f.videoIdx}:${f.frameIdx}`, det.checkFrame(f.poses, f.vid, f.isNegative));
+    frameResults.set(`${f.videoIdx}:${f.frameIdx}`, det.checkFrame(f.poses, f.vid, f.isNegative, f.conf));
   }
   return { frameResults };
 }

@@ -40,6 +40,12 @@
       info: "Flags a frame containing an instance placed with fewer than N visible nodes — a barely-localized / off-frame instance the anomaly check can miss (it's baseline-relative, so messy data dilutes it). Deterministic; N is the slider below (default 2 = flag instances with 0–1 visible nodes). Negative frames are exempt. On by default.",
     },
     {
+      key: "confidence",
+      label: "Low confidence",
+      hint: "A predicted keypoint with a low confidence score.",
+      info: "For PREDICTED labels only: flags a frame whose weakest visible keypoint scores below the threshold below (the SLEAP confidence-map peak value, 0–1). Identifies uncertain placements to review. Shown only when the file has predicted instances; user-labeled instances have no scores. On by default.",
+    },
+    {
       key: "negative",
       label: "Negative frames",
       hint: "A negative frame that still has instances.",
@@ -71,7 +77,7 @@
     </button>
     {#if !collapsed}
     <ul class="checks">
-      {#each CHECKS as c (c.key)}
+      {#each CHECKS.filter((c) => c.key !== "confidence" || !qc.hasResults || qc.hasPredictions) as c (c.key)}
         {@const ready = qc.checkReady(c.key)}
         {@const pending = qc.checkPending(c.key)}
         <li class:off={!qc.checks[c.key]}>
@@ -182,6 +188,21 @@
                 oninput={(e) => (qc.sparseThreshold = +e.currentTarget.value)}
               />
               <span class="tval">&lt;&thinsp;{qc.sparseThreshold}</span>
+            </div>
+          {/if}
+          {#if c.key === "confidence" && qc.checks.confidence}
+            <!-- Min keypoint confidence: flag predicted instances with a weaker visible keypoint. -->
+            <div class="thresh" title="Flag a predicted instance whose weakest visible keypoint scores below this">
+              <span class="tlbl">min&nbsp;score</span>
+              <input
+                type="range"
+                min="0.05"
+                max="0.95"
+                step="0.05"
+                value={qc.confidenceThreshold}
+                oninput={(e) => (qc.confidenceThreshold = +e.currentTarget.value)}
+              />
+              <span class="tval">&lt;&thinsp;{qc.confidenceThreshold.toFixed(2)}</span>
             </div>
           {/if}
         </li>

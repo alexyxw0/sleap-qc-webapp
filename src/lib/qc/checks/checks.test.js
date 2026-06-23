@@ -50,6 +50,15 @@ describe("frame-level checks", () => {
     expect(det.checkFrame([oneNode], "v", true).minVisibleNodeCount).toBe(Infinity); // negative -> exempt
   });
 
+  it("checkFrame: reports the weakest predicted-keypoint confidence (Infinity without scores)", () => {
+    const det = new LabelQCDetector(makeQCConfig());
+    det.countChecker = new InstanceCountChecker(true).fit([1], ["v"]);
+    const pose = [[10, 10], [20, 20]];
+    expect(det.checkFrame([pose], "v", false, [{ minScore: 0.18, minNode: 1 }]))
+      .toMatchObject({ minPointScore: 0.18, lowConfInstance: 0, lowConfNode: 1 });
+    expect(det.checkFrame([pose], "v", false, null).minPointScore).toBe(Infinity); // user labels -> no scores
+  });
+
   it("negative frame with instances is inconsistent", () => {
     expect(checkNegativeFrame(true, 1)).toBe(true);
     expect(checkNegativeFrame(true, 0)).toBe(false);

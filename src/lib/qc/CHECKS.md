@@ -16,9 +16,9 @@ All `checks/…` citations below are relative to `src/lib/qc/`; `qcStore.svelte.
 
 **Score + threshold convention.** Instance scorers (anomaly, gmm, chirality) emit a score in `[0,1]`; an instance is flagged when `score >= threshold`. Frame checks emit booleans. Per-instance scores roll up to a frame via **max** aggregation.
 
-**UNION flagging.** `flaggedFrameCount` / the flagged set is the UNION of all *enabled-and-computed* checks: anomaly (`>= threshold`), gmm (`>= gmmThreshold`), chirality (`>= chiralityThreshold`), plus the frame checks `count`/`sparse`/`negative`/`duplicates`. `sparse` carries a live integer threshold (`minVisibleNodeCount < sparseThreshold`); the others are boolean. Pose-split has no row of its own — it raises the anomaly/GMM score via its feature. Disabling a check removes its contribution from the union without recomputation.
+**UNION flagging.** `flaggedFrameCount` / the flagged set is the UNION of all *enabled-and-computed* checks: anomaly (`>= threshold`), gmm (`>= gmmThreshold`), chirality (`>= chiralityThreshold`), plus the frame checks `count`/`sparse`/`confidence`/`negative`/`duplicates`. `sparse` (`minVisibleNodeCount < sparseThreshold`) and `confidence` (`minPointScore < confidenceThreshold`) carry live thresholds; the others are boolean. Pose-split has no row of its own — it raises the anomaly/GMM score via its feature. Disabling a check removes its contribution from the union without recomputation.
 
-**Default toggle state (as shipped).** `checks = { anomaly:true, gmm:false, chirality:true, count:true, sparse:true, negative:true, duplicates:true }`. GMM defaults **OFF** (opt-in/heaviest); chirality defaults ON but self-disables without symmetric pairs; the others default ON.
+**Default toggle state (as shipped).** `checks = { anomaly:true, gmm:false, chirality:true, count:true, sparse:true, confidence:true, negative:true, duplicates:true }`. GMM defaults **OFF** (opt-in/heaviest); chirality defaults ON but self-disables without symmetric pairs; `confidence` only shows/flags when the file has predicted instances; the others default ON.
 
 **Two population-stat implementations.** Z-scores and GMM scaling are both *population* (`/N`, ddof=0) but live in **two independent code paths**: `util.js` (`mean`/`safeStd`, floor `1e-6`) for ZScore and the 19-feature stats; `gmm.js` `standardScalerFit` (zero-variance scale→1). Do not assume a single shared helper.
 
@@ -97,6 +97,18 @@ All `checks/…` citations below are relative to `src/lib/qc/`; `qcStore.svelte.
 **Why a dedicated check:** the Anomaly (ZScore) check *should* catch these — a 1-node pose scores ~1.0 against a clean baseline (huge `nn_distance` / `visibility_rate` z). But it is **baseline-relative**: on occlusion-heavy data the baseline tolerates degenerate instances (large per-feature std), so the z-scores get diluted below threshold and the instance reads "OK". This check is **deterministic** — a plain visible-node count — so it doesn't depend on the population.
 
 **Algorithm:** `checkFrame` (`checks/detector.js`) computes, over the frame's non-negative instances, `minVisibleNodeCount = min_i (count of nodes with non-NaN coords)` and `sparsestInstance = argmin` — both **threshold-free**. The store flags `minVisibleNodeCount < sparseThreshold` (a live integer slider, 1–8), so re-tuning re-flags without recompute. Negative frames are exempt (`Infinity`). Surfaces as the structural tag "Sparse instance (N nodes)".
+
+---
+
+## Prediction confidence
+
+**Flags:** a frame whose weakest **visible predicted keypoint** scores below `confidenceThreshold` (the SLEAP confidence-map peak value, 0–1) — an uncertain placement to review. Predicted-only: a user-labeled instance has no per-point scores, and the check row hides itself when the file has no predictions (`qc.hasPredictions`, from `inst.score != null`). Not in upstream `sleap/qc`.
+
+**Algorithm:** `buildContext` records per instance `{ minScore, minNode }` = the min over visible points with a numeric `point.score` (`Infinity`/`-1` for user instances). `checkFrame` reduces these to the frame's `minPointScore` + `lowConfInstance`/`lowConfNode` (threshold-free). The store flags `minPointScore < confidenceThreshold` (live slider, 0.05–0.95, default 0.3). Surfaces as a score-style tag "Low confidence · <node>" showing the value.
+
+---
+
+## Negative frames
 
 **Flags:** a frame marked negative (background) that nonetheless carries instances — `isNegativeWithInstances = isNegative && instanceCount > 0`.
 
