@@ -11,7 +11,10 @@ const PALETTE = [
 
 const trackColors = new Map();
 
-function colorFor(instance, fallbackIdx) {
+// Instance/track color (shared, stable per track). Exported so overlays (e.g. the QC-review
+// popup) can tint UI to match a node's on-canvas color. The map is populated as instances are
+// drawn; by the time an overlay reads it the Viewer has long since drawn the tracks.
+export function colorFor(instance, fallbackIdx) {
   const track = instance?.track;
   const key = track?.name ?? track ?? null;
   if (key != null) {

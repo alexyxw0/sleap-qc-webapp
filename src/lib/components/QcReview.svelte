@@ -7,7 +7,7 @@
   import { edit } from "../editStore.svelte.js";
   import { qc, heatColor } from "../qcStore.svelte.js";
   import { ui } from "../uiStore.svelte.js";
-  import { drawScene, frameDims, hitTestNode } from "../draw.js";
+  import { drawScene, frameDims, hitTestNode, colorFor } from "../draw.js";
 
   let wrap = $state();
   let canvas = $state();
@@ -40,6 +40,16 @@
   const total = $derived(ranked.length);
   const item = $derived(store.current);
   const verdict = $derived.by(() => { void qc.rev; void store.rev; return item ? qc.frameTopIssue(item) : null; });
+  // Tint the verdict label to the marked node's instance color (the dot color on the canvas), so
+  // the text and the ringed node read as the same thing. Only when a specific node is ringed.
+  const labelColor = $derived.by(() => {
+    void qc.rev; void store.rev;
+    if (!item || !(verdict?.worstNode >= 0)) return null;
+    const fi = qc.frameWorstInstance(item);
+    const idx = fi >= 0 ? fi : 0;
+    const inst = item.lf?.instances?.[idx];
+    return inst ? colorFor(inst, idx) : null;
+  });
   const conf = $derived.by(() => { void qc.rev; return item ? qc.flagConfidence(item) : null; });
   const flaggers = $derived.by(() => { void qc.rev; return item ? qc.frameFlaggingChecks(item) : []; });
   const edited = $derived.by(() => { void edit.dirtyRev; return item?.lf ? edit.isFrameModified(item.lf) : false; });
@@ -289,7 +299,9 @@
 
       <div class="verdict">
         {#if verdict?.issue}
-          <span class="vissue">{verdict.issue}{verdict.worstNodeName ? ` · ${verdict.worstNodeName}` : ""}</span>
+          <span class="vissue" style:color={labelColor}>
+            {#if labelColor}<i class="swatch" style:background={labelColor}></i>{/if}{verdict.issue}{verdict.worstNodeName ? ` · ${verdict.worstNodeName}` : ""}
+          </span>
         {/if}
         <div class="tags">
           {#each flaggers as f (f.key)}
@@ -455,9 +467,18 @@
     border-top: 1px solid var(--border);
   }
   .vissue {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.34rem;
     font-size: 0.82rem;
     font-weight: 600;
-    color: #e7c08a;
+    color: #e7c08a; /* default when no specific node is marked */
+  }
+  .vissue .swatch {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: none;
   }
   .tags {
     display: flex;
