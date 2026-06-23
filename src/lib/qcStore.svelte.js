@@ -472,29 +472,24 @@ class QCStore {
     const pose = item.lf?.instances?.[instIdx]?.numpy?.({ invisibleAsNaN: true });
     if (!fx || !pose) return;
     const key = `${this.#fkey(item)}:${instIdx}`;
-    try {
-      const raw = fx.extractFeatures(pose);
-      const clean = raw.map((f) => (Number.isNaN(f) ? 0 : f === Infinity ? 10 : f === -Infinity ? -10 : f));
+    const raw = fx.extractFeatures(pose);
+    const clean = raw.map((f) => (Number.isNaN(f) ? 0 : f === Infinity ? 10 : f === -Infinity ? -10 : f));
 
-      if (this.#computed.anomaly?.det) {
-        const s = this.#computed.anomaly.det.scoreOne(clean);
-        this.#computed.anomaly.instanceScores.set(key, Number.isFinite(s) ? s : 0);
-        const c = {};
-        fx.featureNames.forEach((n, j) => (c[n] = raw[j] ?? 0));
-        this.#computed.anomaly.contributions.set(key, c);
-      }
-      if (this.#computed.gmm?.det) {
-        const g = this.#computed.gmm.det.scoreOne(clean);
-        this.#computed.gmm.gmmScores.set(key, Number.isFinite(g) ? g : 0);
-      }
-      if (this.#computed.chirality?.model) {
-        const { score, worstNode } = chiralityScoreOne(this.#computed.chirality.model, pose);
-        this.#computed.chirality.chiralityScores.set(key, score);
-        this.#computed.chirality.chiralityWorst.set(key, worstNode);
-      }
-    } catch (err) {
-      // a degenerate edited pose mustn't break the correction loop — keep the stale score
-      console.warn("[qc] rescoreInstance failed:", err);
+    if (this.#computed.anomaly?.det) {
+      const s = this.#computed.anomaly.det.scoreOne(clean);
+      this.#computed.anomaly.instanceScores.set(key, Number.isFinite(s) ? s : 0);
+      const c = {};
+      fx.featureNames.forEach((n, j) => (c[n] = raw[j] ?? 0));
+      this.#computed.anomaly.contributions.set(key, c);
+    }
+    if (this.#computed.gmm?.det) {
+      const g = this.#computed.gmm.det.scoreOne(clean);
+      this.#computed.gmm.gmmScores.set(key, Number.isFinite(g) ? g : 0);
+    }
+    if (this.#computed.chirality?.model) {
+      const { score, worstNode } = chiralityScoreOne(this.#computed.chirality.model, pose);
+      this.#computed.chirality.chiralityScores.set(key, score);
+      this.#computed.chirality.chiralityWorst.set(key, worstNode);
     }
     this.#derive(); // rebuild frame-max maps + clear the lazy attribution caches for this key
     this.rev++;

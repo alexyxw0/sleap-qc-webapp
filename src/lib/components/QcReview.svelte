@@ -29,7 +29,6 @@
   let cx = $state(0);   // image-space x shown at the canvas center
   let cy = $state(0);   // image-space y shown at the canvas center
   let framedIndex = -1; // store.index this view was last auto-framed for
-  let framedWithImg = false; // whether that framing happened with the real image decoded
 
   const DRAG_THRESH = 3;
   const HIT_PX = 14;
@@ -91,7 +90,7 @@
     if (!ui.reviewOpen) { started = false; return; }
     if (started) return;
     started = true;
-    framedIndex = -1; framedWithImg = false; // re-frame the view for this session
+    framedIndex = -1; // re-frame the view for this session
     sessionRanked = qc.flaggedRanked.slice(); // snapshot the worst-first order for this session
     if (!sessionRanked.length) { pos = 0; return; }
     const at = sessionRanked.indexOf(store.index);
@@ -116,14 +115,7 @@
   }
   function close() { ui.reviewOpen = false; }
 
-  // Prefer the ACTUAL decoded image size for the transform — that's what gets blitted, so framing
-  // against video.shape (which can disagree) is what strands the view off-pixels. Fall back to
-  // shape/default only before the image has loaded.
-  const dimsNow = () => {
-    const img = store.frameImage;
-    if (img && img.width && img.height) return { w: img.width, h: img.height };
-    return frameDims(item, null);
-  };
+  const dimsNow = () => frameDims(item, store.frameImage);
   const fitWhole = (cw, ch, dims) => Math.min(cw / dims.w, ch / dims.h); // scale at which the whole image fits
   // Pure: clamp a center so the image can't be panned into the void (center a too-small axis).
   // Pure (no reactive read of s/cx/cy) so callers in the framing EFFECT can't form a write/read cycle.
@@ -169,18 +161,14 @@
   // (Re)frame whenever the SHOWN FRAME changes — not on every edit. This is the key to a stable
   // view while dragging: the draw transform comes from s/cx/cy, which only change here or when the
   // user explicitly zooms/pans, so moving a point no longer re-frames the canvas.
-  // Also re-frame once the REAL image arrives for a frame we framed without it: framing before the
-  // decode finishes uses fallback dims (shape/default), which can strand the view off-pixels.
   $effect(() => {
     if (!ui.reviewOpen) return;
     void store.index;
-    const hasImg = !!store.frameImage;
     const W = vpW, H = vpH;
     if (!W || !H || !item) return;
-    if (store.index === framedIndex && (framedWithImg || !hasImg)) return;
+    if (store.index === framedIndex) return;
     frameScene(Math.round(W * dpr), Math.round(H * dpr));
     framedIndex = store.index;
-    framedWithImg = hasImg;
   });
 
   // Draw the focused frame + overlay. The transform comes from the STABLE view state (s/cx/cy),
@@ -189,62 +177,23 @@
     if (!ui.reviewOpen) return;
     void store.index; void store.frameImage; void store.rev; void qc.rev;
     const selI = edit.selInstance, selN = edit.selNode;
-    let vs = s, vcx = cx, vcy = cy; // track zoom/pan
+    const vs = s, vcx = cx, vcy = cy; // track zoom/pan
     const W = vpW, H = vpH;
     if (!ctx || !W || !H || !item) return;
     const cw = Math.round(W * dpr), ch = Math.round(H * dpr);
-    // recover a degenerate transform (e.g. computed before the frame had a size) instead of
-    // drawing the scene at NaN/0 scale, which would show nothing.
-    if (!Number.isFinite(vs) || vs <= 0 || !Number.isFinite(vcx) || !Number.isFinite(vcy)) {
-      frameScene(cw, ch);
-      vs = s; vcx = cx; vcy = cy;
-    }
     if (canvas.width !== cw) canvas.width = cw;
     if (canvas.height !== ch) canvas.height = ch;
 
-    let offX = cw / 2 - vcx * vs, offY = ch / 2 - vcy * vs;
-    // HARD GUARANTEE the image is on-screen: if the framed transform would show none of the image
-    // rect (a degenerate bbox, an off-image flagged node, or a shape/decoded-size mismatch), re-fit
-    // the whole frame so the user always sees pixels. Persist it so nav/zoom continue sanely.
-    {
-      const d = dimsNow();
-      const onScreen = offX < cw && d.w * vs + offX > 0 && offY < ch && d.h * vs + offY > 0;
-      if (!onScreen) {
-        console.warn("[qc-review] framed off-screen — refitting whole frame", { vs, vcx, vcy, dims: d, cw, ch });
-        vs = fitWhole(cw, ch, d); vcx = d.w / 2; vcy = d.h / 2;
-        s = vs; cx = vcx; cy = vcy;
-        offX = cw / 2 - vcx * vs; offY = ch / 2 - vcy * vs;
-      }
-    }
+    const offX = cw / 2 - vcx * vs, offY = ch / 2 - vcy * vs;
     lt = { s: vs, offX, offY };
 
-    // Per-instance attribution (faultyNodeFor) can throw on a freshly-edited / degenerate pose;
-    // never let that blank the canvas or kill this effect's reactivity (which would freeze the
-    // view after the first edit). Compute defensively, and always draw — the image at minimum.
-    let worstNodes = [];
-    try {
-      const insts = item.lf?.instances ?? [];
-      worstNodes = insts.map((_, i) => (qc.instanceFlagged(item, i) ? qc.faultyNodeFor(item, i) : -1));
-    } catch (err) {
-      console.warn("[qc-review] node attribution failed:", err);
-    }
-    try {
-      drawScene(ctx, store.frameImage, item, store.skeleton, {
-        transform: { s: vs, offX, offY }, dims: dimsNow(), scale: dpr / vs,
-        editing: true, selInstance: selI, selNode: selN, worstNodes, uncertainNodes: null,
-        hiddenAlpha: 0.55, // hidden/occluded nodes are correction targets here — keep them grabbable
-      });
-    } catch (err) {
-      console.warn("[qc-review] draw failed:", err);
-    }
-  });
-
-  // Keep the popup's frame image in sync with the current frame itself, rather than relying on the
-  // Viewer behind it (which may be unmounted/paused) — defends against a blank canvas after edits.
-  $effect(() => {
-    if (!ui.reviewOpen) return;
-    void store.index;
-    store.syncFrameImage();
+    const insts = item.lf?.instances ?? [];
+    const worstNodes = insts.map((_, i) => (qc.instanceFlagged(item, i) ? qc.faultyNodeFor(item, i) : -1));
+    drawScene(ctx, store.frameImage, item, store.skeleton, {
+      transform: { s: vs, offX, offY }, dims: dimsNow(), scale: dpr / vs,
+      editing: true, selInstance: selI, selNode: selN, worstNodes, uncertainNodes: null,
+      hiddenAlpha: 0.55, // hidden/occluded nodes are correction targets here — keep them grabbable
+    });
   });
 
   function toImage(e) {
