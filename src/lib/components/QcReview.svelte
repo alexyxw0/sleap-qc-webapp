@@ -64,8 +64,12 @@
     return null;
   });
 
+  // Re-acquire the 2D context whenever the canvas element is (re)created. The modal markup is torn
+  // down on close, so on the NEXT open `canvas` rebinds to a brand-new element — a stale `!ctx`
+  // guard would keep drawing to the first session's detached canvas, leaving the re-opened one
+  // blank (the reported "second time it's always blank").
   $effect(() => {
-    if (canvas && !ctx) ctx = canvas.getContext("2d");
+    ctx = canvas ? canvas.getContext("2d") : null;
   });
 
   // Track the canvas wrap size.
