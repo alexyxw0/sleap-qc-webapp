@@ -174,7 +174,7 @@
       {/if}
       {#if hasFrameIssue(fq)}
         <ul class="issues">
-          {#if fq.isIncomplete}<li>{fq.actualInstanceCount} / {fq.expectedInstanceCount} expected instances</li>{/if}
+          {#if fq.isWrongCount}<li>{fq.actualInstanceCount} / {fq.expectedInstanceCount} expected instances ({fq.isOvercount ? "extra" : "missing"})</li>{/if}
           {#if fq.isNegativeWithInstances}<li>negative frame has instances</li>{/if}
           {#if fq.duplicatePairs?.length}<li>{fq.duplicatePairs.length} duplicate pair(s): {fq.duplicateReasons.join(", ")}</li>{/if}
         </ul>

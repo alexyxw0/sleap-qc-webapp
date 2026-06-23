@@ -139,6 +139,8 @@ export class LabelQCDetector {
     const count = this.countChecker.check(poses.length, videoId);
     const fq = {
       isIncomplete: count.isIncomplete,
+      isOvercount: count.isOvercount,
+      isWrongCount: count.isWrongCount,
       expectedInstanceCount: Math.round(count.expectedCount),
       actualInstanceCount: poses.length,
       isNegativeWithInstances: checkNegativeFrame(isNegative, poses.length),

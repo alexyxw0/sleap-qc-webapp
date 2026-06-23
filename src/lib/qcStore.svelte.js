@@ -107,7 +107,7 @@ class QCStore {
     if (c.chirality) for (const [fk, s] of this.#frameChir) if (s >= this.chiralityThreshold) u.add(fk);
     for (const [fk, fq] of this.#frameResults) {
       if (
-        (c.count && fq.isIncomplete) ||
+        (c.count && fq.isWrongCount) ||
         (c.negative && fq.isNegativeWithInstances) ||
         (c.duplicates && (fq.duplicatePairs?.length ?? 0) > 0)
       ) {
@@ -139,7 +139,7 @@ class QCStore {
     let n = 0;
     for (const fq of this.#frameResults.values()) {
       if (
-        (name === "count" && fq.isIncomplete) ||
+        (name === "count" && fq.isWrongCount) ||
         (name === "negative" && fq.isNegativeWithInstances) ||
         (name === "duplicates" && (fq.duplicatePairs?.length ?? 0) > 0)
       ) {
@@ -182,6 +182,8 @@ class QCStore {
     return {
       ...fq,
       isIncomplete: c.count ? fq.isIncomplete : false,
+      isOvercount: c.count ? fq.isOvercount : false,
+      isWrongCount: c.count ? fq.isWrongCount : false,
       isNegativeWithInstances: c.negative ? fq.isNegativeWithInstances : false,
       duplicatePairs: c.duplicates ? fq.duplicatePairs : [],
       duplicateReasons: c.duplicates ? fq.duplicateReasons : [],
@@ -229,7 +231,7 @@ class QCStore {
     score(c.gmm, this.#frameGmm, this.gmmThreshold, "gmm", "GMM");
     const fq = this.#frameResults.get(fk);
     if (fq) {
-      if (c.count && fq.isIncomplete) out.push({ key: "count", label: "Count", score: null });
+      if (c.count && fq.isWrongCount) out.push({ key: "count", label: fq.isOvercount ? "Extra instance" : "Missing instance", score: null });
       if (c.negative && fq.isNegativeWithInstances) out.push({ key: "negative", label: "Negative", score: null });
       if (c.duplicates && (fq.duplicatePairs?.length ?? 0) > 0) out.push({ key: "duplicates", label: "Duplicate", score: null });
     }
@@ -441,7 +443,7 @@ class QCStore {
     if (c.gmm) { const s = this.#frameGmm.get(fk); if (s != null && s >= this.gmmThreshold) bump(s); }
     if (c.chirality) { const s = this.#frameChir.get(fk); if (s != null && s >= this.chiralityThreshold) bump(s); }
     const fq = this.#frameResults.get(fk);
-    if (fq && ((c.count && fq.isIncomplete) || (c.negative && fq.isNegativeWithInstances) || (c.duplicates && (fq.duplicatePairs?.length ?? 0) > 0))) bump(1);
+    if (fq && ((c.count && fq.isWrongCount) || (c.negative && fq.isNegativeWithInstances) || (c.duplicates && (fq.duplicatePairs?.length ?? 0) > 0))) bump(1);
     return best;
   }
 
@@ -754,7 +756,7 @@ class QCStore {
 
 export function hasFrameIssue(fq) {
   if (!fq) return false;
-  return fq.isIncomplete || fq.isNegativeWithInstances || (fq.duplicatePairs?.length ?? 0) > 0;
+  return fq.isWrongCount || fq.isNegativeWithInstances || (fq.duplicatePairs?.length ?? 0) > 0;
 }
 
 // Bounding box (image space) over an instance's placed points — the zoom fallback when a

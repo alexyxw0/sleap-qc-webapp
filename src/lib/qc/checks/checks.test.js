@@ -19,6 +19,21 @@ describe("frame-level checks", () => {
     expect(c.check(2)).toMatchObject({ isIncomplete: false, expectedCount: 2 });
   });
 
+  it("instance count flags over-count too (an extra / spurious instance)", () => {
+    const c = new InstanceCountChecker(false).fit([2, 2, 2, 2]);
+    expect(c.check(3)).toMatchObject({ isOvercount: true, isWrongCount: true, isIncomplete: false });
+    expect(c.check(1)).toMatchObject({ isOvercount: false, isWrongCount: true, isIncomplete: true });
+    expect(c.check(2).isWrongCount).toBe(false);
+  });
+
+  it("instance count: expected ignores empty frames (so they can't drag the median to 0)", () => {
+    // 4 empty/background frames + 3 two-instance frames: median over ALL is 0 (would flag nothing);
+    // over non-empty it's 2, so 1-instance frames are correctly flagged as incomplete.
+    const c = new InstanceCountChecker(false).fit([0, 0, 0, 0, 2, 2, 2]);
+    expect(c.check(2).expectedCount).toBe(2);
+    expect(c.check(1).isIncomplete).toBe(true);
+  });
+
   it("negative frame with instances is inconsistent", () => {
     expect(checkNegativeFrame(true, 1)).toBe(true);
     expect(checkNegativeFrame(true, 0)).toBe(false);

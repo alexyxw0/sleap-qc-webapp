@@ -80,13 +80,13 @@ All `checks/…` citations below are relative to `src/lib/qc/`; `qcStore.svelte.
 
 ## Instance count
 
-**Flags:** frame with fewer instances than its expected (median) count — `isIncomplete = instanceCount < expected`.
+**Flags:** frame whose instance count differs from its expected (typical) count — in **either** direction: `isIncomplete` (too few / a missing instance) **or** `isOvercount` (too many / a spurious extra); `isWrongCount = count !== round(expected)` drives the flag.
 
-**Algorithm:** `InstanceCountChecker` (`checks/frameLevel.js`). `fit(frameCounts, videoIds)` computes `globalExpected = median(frameCounts)` and, when `perVideo` (default true) with video IDs, a per-video median in `expectedCounts`. `check(instanceCount, videoId)` selects the per-video median when available else the global median, returning `{ isIncomplete: count < expected, expectedCount, actualCount, countDifference }`. Wired via `computeFrameUnit` → `checkFrame`; `expectedInstanceCount` is `Math.round(expected)`.
+**Algorithm:** `InstanceCountChecker` (`checks/frameLevel.js`). `fit(frameCounts, videoIds)` computes `globalExpected = median(frameCounts **excluding empties**)` and, when `perVideo` (default true) with video IDs, a per-video median of the non-empty counts in `expectedCounts`. `check(instanceCount, videoId)` selects the per-video median when available else the global, rounds it (`expected = round(expectedRaw)`), and returns `{ isIncomplete: count < expected, isOvercount: count > expected, isWrongCount: count !== expected, expectedCount: expectedRaw, actualCount, countDifference }`. Wired via `computeFrameUnit` → `checkFrame`; the sidebar/review surface "actual / expected (missing|extra)".
 
-**Threshold/params:** no numeric threshold — the boundary is the (per-video) **median** count. `perVideo=true`.
+**Threshold/params:** no numeric threshold — the boundary is the **rounded median of non-empty** (per-video) counts. `perVideo=true`.
 
-**Notes:** Strictly less-than median (a frame exactly at median is not incomplete). Per-video median requires `videoId != null` and a fitted entry, else falls back to global. Only *under*-count is flagged; over-count is not an `isIncomplete`. Median is computed over all fitted frame counts.
+**Deliberate deviations from upstream `sleap/qc`** (which only flagged `count < median(all_counts)`): (1) the expected is the median of **non-empty** frames — empty/background frames (count 0) are not evidence of the expected animal count and used to drag the median down so nothing got flagged; (2) **over-count is flagged too** — an extra/spurious instance is as wrong as a missing one. *Limitation:* when most frames are genuinely partial, the median still reflects the partial count and those frames won't flag (no statistic can recover the true animal count from the labels alone).
 
 ---
 

@@ -10,7 +10,18 @@ function median(xs) {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
-/** Detect frames with fewer instances than the per-video (or global) median. */
+/**
+ * Detect frames whose instance count differs from the per-video (or global) typical count.
+ *
+ * Differs from the upstream sleap/qc checker in two ways, because that one missed real cases:
+ *  - the expected count is the median of NON-EMPTY frames — empty/background frames (count 0) are
+ *    not evidence of how many animals a frame should have, and including them dragged the median
+ *    down so genuinely-incomplete frames were never flagged.
+ *  - both directions are reported: `isIncomplete` (too few / missing) AND `isOvercount` (too many
+ *    / a spurious extra instance), since an extra instance is just as wrong as a missing one and
+ *    the upstream "< expected" silently ignored it. The expected is rounded for the comparison
+ *    (a frame has a whole number of instances).
+ */
 export class InstanceCountChecker {
   constructor(perVideo = true) {
     this.perVideo = perVideo;
@@ -18,10 +29,13 @@ export class InstanceCountChecker {
     this.globalExpected = 0;
   }
   fit(frameCounts, videoIds = null) {
-    this.globalExpected = median(frameCounts);
+    const nonEmpty = (xs) => xs.filter((c) => c > 0);
+    const ne = nonEmpty(frameCounts);
+    this.globalExpected = median(ne.length ? ne : frameCounts);
     if (this.perVideo && videoIds) {
       const byVid = new Map();
       frameCounts.forEach((c, i) => {
+        if (c <= 0) return; // empties don't define the expected animal count
         const v = videoIds[i];
         if (!byVid.has(v)) byVid.set(v, []);
         byVid.get(v).push(c);
@@ -31,13 +45,16 @@ export class InstanceCountChecker {
     return this;
   }
   check(instanceCount, videoId = null) {
-    const expected =
+    const expectedRaw =
       this.perVideo && videoId != null && this.expectedCounts.has(videoId)
         ? this.expectedCounts.get(videoId)
         : this.globalExpected;
+    const expected = Math.round(expectedRaw);
     return {
-      isIncomplete: instanceCount < expected,
-      expectedCount: expected,
+      isIncomplete: instanceCount < expected, // missing instance(s)
+      isOvercount: instanceCount > expected, // extra / spurious instance(s)
+      isWrongCount: instanceCount !== expected,
+      expectedCount: expectedRaw,
       actualCount: instanceCount,
       countDifference: instanceCount - expected,
     };
