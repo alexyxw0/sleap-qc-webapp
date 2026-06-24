@@ -142,6 +142,16 @@ describe("chain ordering", () => {
     expect(linearizeChains([[0, 1, 2, 3]], [1, 2, 2, 1])).toEqual([[0, 1, 2, 3]]);
   });
 
+  it("adapts to ANY skeleton via node degree (no hardcoding): a nose-hub + tail keeps only the tail", () => {
+    // 0=nose(hub) 1=trunk 2=ear_right 3=ear_left 4=tti 5=t1 6=t2 — topology comes entirely from edges
+    const a = new SkeletonAnalyzer(7, [[0, 1], [0, 2], [0, 3], [1, 4], [5, 4], [6, 5]]);
+    expect(a.degree).toEqual([3, 2, 1, 1, 2, 2, 1]); // computed from the edges, for any topology
+    const chains = linearizeChains(a.getCurvatureChains(), a.degree);
+    for (const c of chains) expect(c.slice(1, -1)).not.toContain(0); // nose (deg 3) never a flagged interior
+    const tail = chains.find((c) => c.includes(4) && c.includes(5) && c.includes(6));
+    expect(tail).toBeTruthy(); // the genuine tail sequence still gets ordering-checked
+  });
+
   it("resolveChains: user names win, else auto, dropping chains < 3 nodes", () => {
     const names = ["a", "b", "c", "d"];
     expect(resolveChains(names, [["a", "b", "c"]], null)).toEqual([[0, 1, 2]]);

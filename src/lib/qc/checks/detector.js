@@ -431,14 +431,13 @@ export function chiralityScoreOne(model, pose) {
 export function computeOrderingUnit(ctx) {
   const sk = ctx.labels?.skeletons?.[0];
   const names = sk?.nodeNames ?? sk?.nodes?.map((n) => n.name) ?? [];
-  // Only run ordering on SEQUENTIAL segments — split chains at junction nodes (degree != 2) so a
-  // hub (e.g. `nose` -> ear_left/ear_right/trunk) is never a flagged interior. (Curvature chains
-  // route paths through hubs, which would otherwise flag the hub on every instance.)
-  const degree = new Array(ctx.analyzer.nNodes).fill(0);
-  for (const [a, b] of ctx.analyzer.edges) { degree[a]++; degree[b]++; }
+  // Only run ordering on SEQUENTIAL segments — split chains at junction nodes (any node whose
+  // skeleton degree != 2) so a hub (e.g. `nose` -> ear_left/ear_right/trunk) is never a flagged
+  // interior. Fully general: `analyzer.degree` is derived from the skeleton's edges, so this adapts
+  // to whatever topology the file has (star, tail, multi-limb …) with no per-skeleton assumptions.
   const chains = linearizeChains(
     resolveChains(names, ctx.config.orderedChains ?? null, ctx.analyzer.getCurvatureChains()),
-    degree,
+    ctx.analyzer.degree,
   );
   const orderingScores = new Map();
   const orderInversion = new Map();

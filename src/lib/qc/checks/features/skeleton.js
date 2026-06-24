@@ -16,6 +16,7 @@ export class SkeletonAnalyzer {
     this._adj = Array.from({ length: nNodes }, () => new Set());
     for (const [s, d] of edges) { this._adj[s].add(d); this._adj[d].add(s); }
     this._adj = this._adj.map((s) => [...s]);
+    this.degree = this._adj.map((a) => a.length); // per-node degree, derived from edges (any skeleton)
 
     this.endpoints = this._nodes().filter((n) => this._adj[n].length === 1);
     this.branchPoints = this._nodes().filter((n) => this._adj[n].length > 2);
