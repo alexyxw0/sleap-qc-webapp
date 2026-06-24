@@ -8,6 +8,7 @@ import { normalizePose } from "./features/reference.js";
 import { computeCurvature, computeConvexHull } from "./features/structural.js";
 import { VisibilityModel } from "./features/visibility.js";
 import { SkeletonAnalyzer } from "./features/skeleton.js";
+import { computeChainOrdering, resolveChains } from "./features/ordering.js";
 import { ZScoreDetector, fitAndScoreLabels, LabelQCDetector, buildContext } from "./detector.js";
 import { makeQCConfig } from "./config.js";
 
@@ -114,6 +115,29 @@ describe("visibility model", () => {
     const r = m.score([true, false]); // node1 expected visible (p=1) but isn't
     expect(r.nViolations).toBe(1);
     expect(r.patternScore).toBeCloseTo(0.5, 6);
+  });
+});
+
+describe("chain ordering", () => {
+  it("a straight, correctly-ordered chain has no inversions or crossings", () => {
+    const r = computeChainOrdering([[0, 0], [1, 0], [2, 0], [3, 0]], [[0, 1, 2, 3]]);
+    expect(r.orderInversionRate).toBe(0);
+    expect(r.chainIntersectionCount).toBe(0);
+  });
+
+  it("an out-of-order chain shows sharp turning angles + a self-crossing", () => {
+    // intended order 0->1->2->3, but a non-adjacent swap makes seg 0->1 cross seg 2->3
+    const r = computeChainOrdering([[0, 0], [2, 2], [2, 0], [0, 2]], [[0, 1, 2, 3]]);
+    expect(r.orderInversionRate).toBeGreaterThan(0);
+    expect(r.chainIntersectionCount).toBeGreaterThanOrEqual(1);
+    expect(r.worstNode).toBeGreaterThanOrEqual(0);
+  });
+
+  it("resolveChains: user names win, else auto, dropping chains < 3 nodes", () => {
+    const names = ["a", "b", "c", "d"];
+    expect(resolveChains(names, [["a", "b", "c"]], null)).toEqual([[0, 1, 2]]);
+    expect(resolveChains(names, [["a", "b"]], [[0, 1, 2, 3]])).toEqual([[0, 1, 2, 3]]); // user too short -> auto
+    expect(resolveChains(names, null, [[0, 1]])).toEqual([]); // auto too short -> dropped
   });
 });
 

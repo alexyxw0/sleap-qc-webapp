@@ -18,8 +18,12 @@ const FEATURE_COLS = [
 ];
 const CONTRIB_KEY = { hull_area: "hull_area_zscore" }; // CSV column -> contributions key (only this differs)
 
+// Chain-ordering metrics (come from the ordering unit, not the feature `contributions`). Appended
+// last, matching the desktop's V3 feature order; 0 when the ordering check wasn't computed.
+const ORDERING_COLS = ["order_inversion_rate", "chain_intersection_count"];
+
 export const QC_CSV_HEADER = [
-  "video_idx", "frame_idx", "instance_idx", "score", "confidence", "top_issue", ...FEATURE_COLS,
+  "video_idx", "frame_idx", "instance_idx", "score", "confidence", "top_issue", ...FEATURE_COLS, ...ORDERING_COLS,
 ];
 
 // RFC-4180 minimal quoting: wrap in quotes (and double internal quotes) only when needed.
@@ -48,6 +52,7 @@ export function qcResultsCsv(records) {
       r.videoIdx, r.frameIdx, r.instIdx,
       fnum(s), confidence(s), csvField(topIssue(c).issue),
       ...FEATURE_COLS.map((col) => fnum(c[CONTRIB_KEY[col] ?? col])),
+      fnum(r.orderInversion), fnum(r.chainIntersection),
     ].join(","));
   }
   return lines.join("\n");

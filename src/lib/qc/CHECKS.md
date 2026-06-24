@@ -16,9 +16,9 @@ All `checks/…` citations below are relative to `src/lib/qc/`; `qcStore.svelte.
 
 **Score + threshold convention.** Instance scorers (anomaly, gmm, chirality) emit a score in `[0,1]`; an instance is flagged when `score >= threshold`. Frame checks emit booleans. Per-instance scores roll up to a frame via **max** aggregation.
 
-**UNION flagging.** `flaggedFrameCount` / the flagged set is the UNION of all *enabled-and-computed* checks: anomaly (`>= threshold`), gmm (`>= gmmThreshold`), chirality (`>= chiralityThreshold`), plus the frame checks `count`/`sparse`/`confidence`/`negative`/`duplicates`. `sparse` (`minVisibleNodeCount < sparseThreshold`) and `confidence` (`minPointScore < confidenceThreshold`) carry live thresholds; the others are boolean. Pose-split has no row of its own — it raises the anomaly/GMM score via its feature. Disabling a check removes its contribution from the union without recomputation.
+**UNION flagging.** `flaggedFrameCount` / the flagged set is the UNION of all *enabled-and-computed* checks: anomaly (`>= threshold`), gmm (`>= gmmThreshold`), chirality (`>= chiralityThreshold`), ordering (`>= orderingThreshold`), plus the frame checks `count`/`sparse`/`confidence`/`negative`/`duplicates`. `sparse` (`minVisibleNodeCount < sparseThreshold`) and `confidence` (`minPointScore < confidenceThreshold`) carry live thresholds; the others are boolean. Pose-split has no row of its own — it raises the anomaly/GMM score via its feature. Disabling a check removes its contribution from the union without recomputation.
 
-**Default toggle state (as shipped).** `checks = { anomaly:true, gmm:true, chirality:true, count:false, sparse:false, confidence:false, negative:false, duplicates:true }`. **ON by default:** anomaly, chirality, gmm, duplicates. **OFF by default:** count, sparse, confidence, negative (enable as needed). Chirality self-disables without symmetric pairs; `confidence` only shows/flags when the file has predicted instances.
+**Default toggle state (as shipped).** `checks = { anomaly:true, gmm:true, chirality:true, ordering:false, count:false, sparse:false, confidence:false, negative:false, duplicates:true }`. **ON by default:** anomaly, chirality, gmm, duplicates. **OFF by default:** ordering (experimental), count, sparse, confidence, negative (enable as needed). Chirality self-disables without symmetric pairs; `confidence` only shows/flags when the file has predicted instances.
 
 **Two population-stat implementations.** Z-scores and GMM scaling are both *population* (`/N`, ddof=0) but live in **two independent code paths**: `util.js` (`mean`/`safeStd`, floor `1e-6`) for ZScore and the 19-feature stats; `gmm.js` `standardScalerFit` (zero-variance scale→1). Do not assume a single shared helper.
 
@@ -67,6 +67,18 @@ All `checks/…` citations below are relative to `src/lib/qc/`; `qcStore.svelte.
 **Hard rule + threshold:** `wrongFraction >= 0.5` forces the emitted score to `>= 0.9` (`computeChiralityUnit`); flag at `chiralityThreshold = 0.5`. The verdict — **"Whole-instance L/R flip"** — has **top precedence** in `instanceIssue` and `faultyNodeFor` (a flip is the dominant, most-actionable error, so it preempts the anomaly/gmm chain).
 
 **Notes:** coordinate-only own-check; translation/rotation/scale-invariant. Requires both pair members visible at fit and score; on-axis pairs (cross == 0) contribute nothing; never emits NaN. The legacy `min_symmetry_consistency` baseline feature → "Likely L/R swap" is the *weak* geometric signal; chirality is the strong standalone verdict that overrides it.
+
+---
+
+## Chain ordering (experimental)
+
+**Flags:** keypoints labeled **out of order** along an ordered chain (tail / spine / limb) — e.g. `Tail_1` swapped with `Tail_3`. Deterministic and translation/rotation/uniform-scale-invariant (a hard rule, no learned stats — like chirality). **Default OFF** (experimental). Port of `sleap/qc/features/ordering.py`.
+
+**Algorithm:** `computeChainOrdering` (`checks/features/ordering.js`). For each ordered chain (≥ 3 nodes): the **turning angle** `π − interior_angle` between consecutive segments at every interior node — `order_inversion_rate` = fraction whose turn exceeds 60° (a sharp reversal); and the **non-adjacent segment crossing** count (`chain_intersection_count`) via an orientation/straddle test (a strong, unambiguous signal of a non-local swap that the angle z-score can't see). Chains come from `resolveChains(node_names, config.orderedChains, analyzer.getCurvatureChains())` — user-declared orderings win, else the auto curvature chains.
+
+**Combined score + threshold.** The store flags on a single per-instance score: **a crossing forces `1.0`**, else `order_inversion_rate`; flag at `orderingThreshold = 0.3` (= the desktop's `order_inversion_threshold`). Verdict **"Out-of-order keypoints"** ("…(chain crosses)" when `chain_intersection_count ≥ 1`), ringing the worst (sharpest-turn) interior node; sits just under chirality in `instanceIssue`/`faultyNodeFor`. The raw `order_inversion_rate` + `chain_intersection_count` are also written as the **last two CSV columns** (matching the desktop's V3 feature order).
+
+**Relation to the angle z-score** (deliberately NOT folded into the anomaly vector): the *turning-angle* half overlaps `max_angle_zscore` (same triplets, hard-rule vs. learned-z); the *crossing* half + the dataset-invariant hard rule are the novel signal — see the redundancy analysis. Kept standalone (like chirality), so on naturally-curled chains a genuine swap still fires even when the z-score's large std would dilute it.
 
 ---
 

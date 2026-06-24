@@ -16,6 +16,12 @@
       info: "Whole-instance left/right mirror flip — symmetric keypoint pairs (Ear_L/Ear_R, …) sitting on the wrong side of the body midline. A mirror flip preserves every edge length and unsigned angle, so it is invisible to the geometric checks below; this is the dedicated signed-side test, measuring which side of the body axis each left/right keypoint falls on. Coordinate-only and scale-invariant. Auto-disables when the skeleton has no symmetric (or name-inferable) pairs. On by default.",
     },
     {
+      key: "ordering",
+      label: "Chain ordering",
+      hint: "Keypoints labeled out of order along a chain (e.g. a tail).",
+      info: "Flags an instance whose keypoints are labeled out of order along an ordered chain (tail / spine / limb): sharp turning angles between consecutive segments and/or self-crossing segments (a strong, unambiguous signal of a non-adjacent swap). Deterministic and scale-invariant (a hard rule, like chirality), keyed to the skeleton's curvature chains. The slider is the order-inversion rate; a chain crossing always flags. Off by default (experimental).",
+    },
+    {
       key: "anomaly",
       label: "Anomaly",
       hint: "Geometrically unusual instance vs. the rest of the file.",
@@ -182,6 +188,21 @@
                 oninput={(e) => (qc.chiralityThreshold = +e.currentTarget.value)}
               />
               <span class="tval">{qc.chiralityThreshold.toFixed(2)}</span>
+            </div>
+          {/if}
+          {#if c.key === "ordering" && qc.checks.ordering}
+            <!-- Order-inversion rate threshold (a chain crossing always flags regardless). -->
+            <div class="thresh" title="Flag when the order-inversion rate is at or above this value (a chain crossing always flags)">
+              <span class="tlbl">inversion</span>
+              <input
+                type="range"
+                min="0.05"
+                max="0.95"
+                step="0.05"
+                value={qc.orderingThreshold}
+                oninput={(e) => (qc.orderingThreshold = +e.currentTarget.value)}
+              />
+              <span class="tval">{qc.orderingThreshold.toFixed(2)}</span>
             </div>
           {/if}
           {#if c.key === "sparse" && qc.checks.sparse}

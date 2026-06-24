@@ -17,6 +17,7 @@ import { analyzerFromSkeleton } from "./features/skeleton.js";
 import { InstanceCountChecker, checkNegativeFrame, detectDuplicates } from "./frameLevel.js";
 import { ChiralityModel, resolveChiralityInputs, firstWrongPairNode } from "./features/chirality.js";
 import { computePoseSplit } from "./features/poseSplit.js";
+import { resolveChains, computeChainOrdering } from "./features/ordering.js";
 
 export const V3_FEATURE_NAMES = [
   "max_curvature", "curvature_std", "visibility_pattern_score",
@@ -418,5 +419,43 @@ export function chiralityScoreOne(model, pose) {
   const r = model.scoreInstance(pose);
   const score = r.wrongFraction >= 0.5 ? Math.max(0.9, r.wrongFraction) : r.wrongFraction; // hard rule
   return { score: Number.isFinite(score) ? score : 0, worstNode: r.wrongPairs.size ? firstWrongPairNode(r.wrongPairs) : -1 };
+}
+
+/**
+ * Keypoint chain-ordering — flags instances whose keypoints are labeled out of order along an
+ * ordered chain (sharp turning angles and/or self-crossing segments). Deterministic / scale-
+ * invariant (a hard rule, like chirality), keyed to the skeleton's curvature chains. Per instance
+ * it returns the raw `orderInversionRate` + `chainIntersectionCount` (also written to the CSV) and
+ * a combined `score` for flagging: a crossing forces 1.0, else the inversion rate.
+ */
+export function computeOrderingUnit(ctx) {
+  const sk = ctx.labels?.skeletons?.[0];
+  const names = sk?.nodeNames ?? sk?.nodes?.map((n) => n.name) ?? [];
+  const chains = resolveChains(names, ctx.config.orderedChains ?? null, ctx.analyzer.getCurvatureChains());
+  const orderingScores = new Map();
+  const orderInversion = new Map();
+  const chainIntersection = new Map();
+  const orderingWorst = new Map();
+  if (chains.length) {
+    eachInstance(ctx, (f, i, row, key) => {
+      const r = orderingScoreOne(chains, ctx.allPoses[row]);
+      orderInversion.set(key, r.orderInversion);
+      chainIntersection.set(key, r.chainIntersection);
+      orderingWorst.set(key, r.worstNode);
+      orderingScores.set(key, r.score);
+    });
+  }
+  return { orderingScores, orderInversion, chainIntersection, orderingWorst, chains, fitted: chains.length > 0 };
+}
+
+/** Score one pose against the ordered chains — shared by the batch unit and the review re-score. */
+export function orderingScoreOne(chains, pose) {
+  const r = computeChainOrdering(pose, chains);
+  return {
+    score: r.chainIntersectionCount >= 1 ? 1.0 : r.orderInversionRate, // a crossing forces a flag
+    orderInversion: r.orderInversionRate,
+    chainIntersection: r.chainIntersectionCount,
+    worstNode: r.worstNode,
+  };
 }
 
