@@ -10,6 +10,46 @@
 
 import { loadSlp, loadVideo } from "@talmolab/sleap-io.js";
 
+// Predicted instances often carry keypoints the model never placed (NaN coords). With no position
+// they can't be clicked or dragged, so seed each with an arbitrary IN-FRAME spot — clustered (by the
+// golden angle) near the instance's visible centroid, kept `visible:false` — a faint "ghost" the user
+// drags to fix (drag makes it visible). Only PREDICTED instances (`inst.score != null`); already-placed
+// keypoints are untouched. Runs once at load, so it's part of the initial state (not an undoable edit).
+function placeUnplacedNodes(labels) {
+  const isPlaced = (xy) => xy && xy[0] != null && !Number.isNaN(xy[0]);
+  for (const lf of labels.labeledFrames ?? []) {
+    let fcx = 0, fcy = 0, fn = 0; // frame-wide placed centroid (fallback if an instance has none)
+    for (const inst of lf.instances ?? []) for (const p of inst.points ?? []) {
+      if (isPlaced(p.xy)) { fcx += p.xy[0]; fcy += p.xy[1]; fn++; }
+    }
+    const frameCenter = fn ? [fcx / fn, fcy / fn] : null;
+    for (const inst of lf.instances ?? []) {
+      if (inst.score == null) continue; // predicted only
+      const pts = inst.points ?? [];
+      let cx = 0, cy = 0, nc = 0, minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      const unplaced = [];
+      for (let k = 0; k < pts.length; k++) {
+        const xy = pts[k].xy;
+        if (isPlaced(xy)) {
+          cx += xy[0]; cy += xy[1]; nc++;
+          if (xy[0] < minX) minX = xy[0];
+          if (xy[1] < minY) minY = xy[1];
+          if (xy[0] > maxX) maxX = xy[0];
+          if (xy[1] > maxY) maxY = xy[1];
+        } else unplaced.push(k);
+      }
+      if (!unplaced.length) continue;
+      const center = nc ? [cx / nc, cy / nc] : (frameCenter ?? [50, 50]);
+      const spread = nc ? Math.max(18, Math.hypot(maxX - minX, maxY - minY) * 0.25) : 40;
+      unplaced.forEach((k, idx) => {
+        const a = idx * 2.39996; // golden angle -> a spread cluster, not a single stack
+        pts[k].xy = [center[0] + Math.cos(a) * spread, center[1] + Math.sin(a) * spread];
+        pts[k].visible = false; // a ghost; dragging it makes it visible (visible-on-drag)
+      });
+    }
+  }
+}
+
 class LabelsStore {
   // Monotonic load generation. Every new load() bumps this; an in-flight load whose
   // token is no longer current discards its result instead of clobbering the newer
@@ -85,6 +125,7 @@ class LabelsStore {
       }
       if (token !== this.#loadToken) return; // a newer load won; discard this result
 
+      placeUnplacedNodes(labels); // give predicted instances' un-placed keypoints an in-frame position to edit
       this.labels = labels;
       this.hasEmbedded = (labels.videos ?? []).some((v) => v?.hasEmbeddedImages);
 
