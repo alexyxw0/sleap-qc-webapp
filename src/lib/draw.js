@@ -100,7 +100,11 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
   const labelOff = r + 3 * s;
   const font = `${fontPx}px system-ui, -apple-system, "Segoe UI", sans-serif`;
 
-  const label = (name, px, py, alpha, accent) => {
+  // Node-name labels are colored by visibility (green = visible, gray = invisible) — a clearer
+  // signal than the dot's transparency. `color` overrides the fill.
+  const LABEL_VISIBLE = "#4ade80"; // green
+  const LABEL_HIDDEN = "#9ca3af"; // gray
+  const label = (name, px, py, alpha, color) => {
     if (!name) return;
     ctx.globalAlpha = alpha;
     ctx.font = font;
@@ -109,7 +113,7 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
     ctx.lineWidth = 3 * s;
     ctx.strokeStyle = "rgba(0,0,0,0.82)";
     ctx.strokeText(name, px + labelOff, py - labelOff);
-    ctx.fillStyle = accent ? "#ffffff" : "#eaf0f7";
+    ctx.fillStyle = color ?? "#eaf0f7";
     ctx.fillText(name, px + labelOff, py - labelOff);
   };
 
@@ -179,15 +183,16 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
       // Default label opacity: half-transparent (so overlapping labels don't fight),
       // fainter still when the node is hidden. The focused node's label is drawn on
       // top fully opaque in a final pass below.
-      // labels for hidden nodes only while the instance is selected — a ghosted node is just a dot
-      if (!focused && (p.visible || isSel)) label(names[ni], px, py, p.visible ? 0.5 : 0.22, false);
+      // label colored by visibility (green = visible, gray = invisible), legible even when the
+      // instance isn't selected so invisible nodes read at a glance
+      if (!focused) label(names[ni], px, py, p.visible ? 0.75 : 0.62, p.visible ? LABEL_VISIBLE : LABEL_HIDDEN);
     });
   });
 
   // Focused node's label, opaque and on top of everything.
   if (selInstance >= 0 && selNode >= 0) {
     const p = instances[selInstance]?.points?.[selNode];
-    if (placed(p)) label(names[selNode], p.xy[0], p.xy[1], 1, true);
+    if (placed(p)) label(names[selNode], p.xy[0], p.xy[1], 1, p.visible ? LABEL_VISIBLE : LABEL_HIDDEN);
   }
 
   ctx.globalAlpha = 1;
