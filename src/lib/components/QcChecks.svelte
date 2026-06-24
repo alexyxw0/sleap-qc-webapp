@@ -36,8 +36,9 @@
     {
       key: "gmm",
       label: "GMM (probability)",
-      hint: "Low-probability instance under a Gaussian-mixture density model. Heaviest check — opt-in.",
-      info: "Probabilistic counterpart to the anomaly check: it fits a Gaussian-mixture density over the same 18 features and flags poses that are rare under it (threshold 0.95 ≈ the rarest 5%). Catches subtle, multi-feature weirdness the single-feature anomaly score misses. It is the heaviest check to compute (and needs ≥ 50 instances). On by default.",
+      slow: true, // the EM fit is by far the heaviest check — flagged so users can turn it off for speed
+      hint: "Low-probability instance under a Gaussian-mixture density model. Heaviest check — turn off to speed up QC.",
+      info: "Probabilistic counterpart to the anomaly check: it fits a Gaussian-mixture density over the same 18 features and flags poses that are rare under it (threshold 0.95 ≈ the rarest 5%). Catches subtle, multi-feature weirdness the single-feature anomaly score misses. It is by far the heaviest check to compute — its EM fit dominates QC time (and it needs ≥ 50 instances) — so turn it off if a run feels slow. On by default.",
     },
     {
       key: "count",
@@ -118,7 +119,7 @@
               title="What this check detects"
             >ⓘ</button>
             <label title={c.hint}>
-              <span class="lbl">{c.label}</span>
+              <span class="lbl">{c.label}{#if c.slow}<i class="slow" title="Heaviest check (the GMM EM fit) — turn off to speed up QC">slow</i>{/if}</span>
               {#if pending}
                 <span class="penddot" title="Selected — needs a Run QC to compute"></span>
               {:else if ready}
@@ -488,6 +489,20 @@
   .lbl {
     flex: 1;
     letter-spacing: 0.01em;
+  }
+  /* "slow" marker on the heaviest check (GMM) so users know what to turn off for speed */
+  .lbl .slow {
+    margin-left: 0.45rem;
+    font-style: normal;
+    font-size: 0.56rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--warn, #f59e0b);
+    border: 1px solid color-mix(in srgb, var(--warn, #f59e0b) 45%, transparent);
+    border-radius: var(--r-xs);
+    padding: 0.02rem 0.26rem;
+    vertical-align: middle;
   }
   .cnt {
     color: var(--muted);
