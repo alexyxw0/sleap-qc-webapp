@@ -153,12 +153,6 @@
             {/if}
           </span>
         {/if}
-        {#if qc.hasConfidence}
-          {@const mc = qc.frameMinConfidence(item)}
-          {#if mc != null && mc <= 1 - qc.uncThreshold}
-            <span class="conf" title="Lowest model confidence in this frame">conf {mc.toFixed(2)}</span>
-          {/if}
-        {/if}
       </div>
       {#if flagged}
         {@const flaggers = qc.frameFlaggingChecks(item)}
@@ -465,11 +459,6 @@
   .verdict.flagged {
     color: #e7c08a;
     font-weight: 600;
-  }
-  .conf {
-    font-size: 0.72rem;
-    color: var(--warn);
-    font-variant-numeric: tabular-nums;
   }
   .qchip {
     color: #04181d;

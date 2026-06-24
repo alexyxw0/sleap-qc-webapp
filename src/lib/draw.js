@@ -89,7 +89,7 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
   const edges = skeleton.edges ?? [];
   const instances = lf.instances ?? [];
   const names = skeleton.nodeNames ?? [];
-  const { editing = false, selInstance = -1, selNode = -1, scale = 1, worstNodes = null, uncertainNodes = null, hiddenAlpha = 0.28 } = sel;
+  const { editing = false, selInstance = -1, selNode = -1, scale = 1, worstNodes = null, hiddenAlpha = 0.28 } = sel;
 
   // Sizes are specified in on-screen pixels and converted to image-space via `scale`
   // (image px per screen px), so the overlay + labels look consistent at any video
@@ -169,7 +169,6 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
         ctx.setLineDash([]);
       };
       if (worstNodes && worstNodes[idx] === ni) qcRing(r + 4 * s, "#fb7185");
-      if (uncertainNodes && uncertainNodes[idx] === ni) qcRing(r + (worstNodes && worstNodes[idx] === ni ? 7.5 : 4) * s, "#fbbf24");
       if (focused) {
         ctx.globalAlpha = 1;
         ctx.beginPath();

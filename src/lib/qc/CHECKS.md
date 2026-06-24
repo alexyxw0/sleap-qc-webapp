@@ -198,12 +198,10 @@ Edge cases: edge/angle/pairwise z-scores are only computed over nodes visible *a
 
 ---
 
-## Config: dead / reserved fields
+## Config: notes on subtle fields
 
-`makeQCConfig` (`config.js`) mirrors the Python `QCConfig` and carries fields the unit pipeline does **not** consult — do not hunt for where they apply:
-- `frameThreshold=0.5` — defined but unused by the unit pipeline (frame checks are boolean).
-- `autoCalibrate=true`, `calibrationPercentile=95.0` — reserved / dead, mirror the Python dead fields.
-- `useGmm=true` (default) — overridden to `false` by the store, but inert anyway since `computeGmmUnit` ignores it.
+`makeQCConfig` (`config.js`) was trimmed to the fields the pipeline actually consults — the former dead/reserved mirrors of the Python `QCConfig` (`frameThreshold`, `autoCalibrate`, `calibrationPercentile`, `useAnatomical`) were **removed**. Two surviving fields have non-obvious behavior:
+- `useGmm=true` — consulted by `LabelQCDetector.fit` (the `fitAndScoreLabels` / CSV path); the store's interactive `computeGmmUnit` calls `GMMDetector` directly, so there the `gmm` toggle is what matters.
 - `gmmPercentileThreshold=5.0` — passed into `GMMDetector` but unused by `scoreOne` (the 0.95 cut is `gmmThreshold` in the store).
 
 ---

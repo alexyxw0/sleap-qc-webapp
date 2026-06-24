@@ -46,7 +46,6 @@ class QCStore {
   orderingThreshold = $state(0.3); // chain-ordering flag (combined: a crossing -> 1.0, else order_inversion_rate)
   sparseThreshold = $state(2); // flag an instance localized by fewer than this many visible nodes
   confidenceThreshold = $state(0.3); // flag a predicted instance whose weakest visible keypoint scores below this
-  uncThreshold = $state(0.6); // (stable build: confidence channel absent; kept for the shared UI)
   baselineSource = $state("all"); // outlier reference: "all" labeled instances, or "user"-annotated only
   rev = $state(0); // bump when results / selection change
   ranAtRev = -1; // store.rev at the time QC last ran (for staleness)
@@ -295,18 +294,6 @@ class QCStore {
   }
 
   // --- confidence channel is absent in this build (inert) ---
-  get hasConfidence() {
-    return false;
-  }
-  frameMinConfidence() {
-    return null;
-  }
-  instanceUncertainty() {
-    return null;
-  }
-  uncertainNodeFor() {
-    return -1;
-  }
   /** GMM probability anomaly for an instance, or null. */
   gmmScore(item, instIdx) {
     this.rev;

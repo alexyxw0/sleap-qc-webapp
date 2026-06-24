@@ -19,7 +19,7 @@ import { ChiralityModel, resolveChiralityInputs, firstWrongPairNode } from "./fe
 import { computePoseSplit } from "./features/poseSplit.js";
 import { resolveChains, computeChainOrdering, linearizeChains } from "./features/ordering.js";
 
-export const V3_FEATURE_NAMES = [
+const V3_FEATURE_NAMES = [
   "max_curvature", "curvature_std", "visibility_pattern_score",
   "nn_distance", "hull_area_zscore", "hull_compactness",
   "pose_split_score", // chimera / pose-split, log1p-compressed (a GMM/anomaly feature, not a standalone check)

@@ -13,7 +13,7 @@
 
 import { isVisible, dist } from "../util.js";
 
-export const MIN_VISIBLE_NODES = 4;
+const MIN_VISIBLE_NODES = 4;
 const EPS = 1e-9;
 const FALLBACK_SILHOUETTE_FLOOR = 0.5; // mean silhouette below this => not bimodal
 const GAP_FLOOR = 1.5; // gap_ratio must clear this before it contributes

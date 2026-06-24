@@ -81,7 +81,7 @@ export function standardScalerFit(X) {
 }
 export const scalerTransform = (X, { mean, scale }) =>
   X.map((row) => row.map((v, j) => (v - mean[j]) / scale[j]));
-export const scalerTransformRow = (row, { mean, scale }) => row.map((v, j) => (v - mean[j]) / scale[j]);
+const scalerTransformRow = (row, { mean, scale }) => row.map((v, j) => (v - mean[j]) / scale[j]);
 
 // ---- Gaussian Mixture (full covariance) ----
 export class GaussianMixture {

@@ -1,8 +1,8 @@
-// Port of sleap/qc/features/reference.py — normalize_pose, pose_distance, and the
-// nearest-neighbor reference scorer (brute-force euclidean; the Python KD-tree is just a
-// speed optimization that yields identical distances).
+// Port of sleap/qc/features/reference.py — normalize_pose and the nearest-neighbor reference
+// scorer (brute-force euclidean; the Python KD-tree is just a speed optimization that yields
+// identical distances).
 
-import { isVisible, dist, visiblePoints } from "../util.js";
+import { isVisible, visiblePoints } from "../util.js";
 
 const NAN2 = [Number.NaN, Number.NaN];
 
@@ -19,16 +19,6 @@ export function normalizePose(pose) {
   let scale = Math.hypot(maxX - minX, maxY - minY);
   if (scale < 1e-6) scale = 1.0;
   return pose.map((p) => (isVisible(p) ? [(p[0] - cx) / scale, (p[1] - cy) / scale] : [...NAN2]));
-}
-
-/** Mean euclidean distance over commonly-visible nodes (Infinity if < 2 in common). */
-export function poseDistance(a, b) {
-  const ds = [];
-  for (let i = 0; i < a.length; i++) {
-    if (isVisible(a[i]) && isVisible(b[i])) ds.push(dist(a[i], b[i]));
-  }
-  if (ds.length < 2) return Infinity;
-  return ds.reduce((s, d) => s + d, 0) / ds.length;
 }
 
 // Flatten a normalized pose to a vector with NaN imputed to 0 (mirrors np.nan_to_num),

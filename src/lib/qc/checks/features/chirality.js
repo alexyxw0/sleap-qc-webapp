@@ -17,7 +17,7 @@ const LR_TOKENS = [["left", "right"], ["l", "r"]];
 const SEP = "[ _\\-.]?"; // optional single space / underscore / hyphen / dot
 
 /** Unit vector, or null if degenerate / NaN (minNorm floor). */
-export function normalizeAxis(v, minNorm = 1e-6) {
+function normalizeAxis(v, minNorm = 1e-6) {
   if (!v || v.length !== 2 || Number.isNaN(v[0]) || Number.isNaN(v[1])) return null;
   const n = Math.hypot(v[0], v[1]);
   if (n < minNorm) return null;
@@ -25,7 +25,7 @@ export function normalizeAxis(v, minNorm = 1e-6) {
 }
 
 /** First principal axis of the visible non-excluded points (2x2 covariance eigenvector). */
-export function pcaAxis(points, excludeSet, minPoints = 2, minNorm = 1e-6) {
+function pcaAxis(points, excludeSet, minPoints = 2, minNorm = 1e-6) {
   const keep = [];
   for (let i = 0; i < points.length; i++) {
     if (excludeSet.has(i) || !isVisible(points[i])) continue;
@@ -209,7 +209,7 @@ export function inferSymmetryPairsByName(nodeNames) {
 }
 
 /** Order midline node indices nose->tail by mean PCA projection (axis sign is absorbed). */
-export function orderMidlineByPca(instances, midlineIndices, minPoints = 2) {
+function orderMidlineByPca(instances, midlineIndices, minPoints = 2) {
   if (!midlineIndices || midlineIndices.length < 2) return midlineIndices;
   const empty = new Set();
   const projSums = new Map(), projCounts = new Map();

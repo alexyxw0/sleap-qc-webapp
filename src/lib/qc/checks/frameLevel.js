@@ -86,7 +86,7 @@ export function computeInstanceIou(poseA, poseB) {
 }
 
 /** Node-wise overlap at commonly-visible nodes (for partial-duplicate detection). */
-export function computeNodeOverlap(poseA, poseB, distanceThreshold = 10.0) {
+function computeNodeOverlap(poseA, poseB, distanceThreshold = 10.0) {
   const common = [];
   for (let i = 0; i < poseA.length; i++) {
     if (isVisible(poseA[i]) && isVisible(poseB[i])) common.push(i);
