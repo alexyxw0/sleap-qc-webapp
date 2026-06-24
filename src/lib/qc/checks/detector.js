@@ -22,7 +22,6 @@ import { resolveChains, computeChainOrdering, linearizeChains } from "./features
 const V3_FEATURE_NAMES = [
   "max_curvature", "curvature_std", "visibility_pattern_score",
   "nn_distance", "hull_area_zscore", "hull_compactness",
-  "pose_split_score", // chimera / pose-split, log1p-compressed (a GMM/anomaly feature, not a standalone check)
 ];
 
 /** Fallback detector: max |z| across features -> sigmoid around a threshold. */
@@ -118,7 +117,7 @@ export class LabelQCDetector {
     return this.fitRows.map((r) => this.rawMatrix[r]);
   }
 
-  /** 19-dim feature vector for one pose (18 geometric + pose_split_score). */
+  /** 18-dim geometric feature vector for one pose. */
   extractFeatures(pose, nnDistance = null) {
     const baseline = this.baseline.extract(pose);
     const v3 = [];
@@ -136,11 +135,6 @@ export class LabelQCDetector {
 
     const hull = computeConvexHull(pose);
     v3.push((hull.hullArea - this._hullStats.mean) / Math.max(this._hullStats.std, 1e-6), hull.compactness);
-
-    // chimera / pose-split as a feature (folded into the anomaly+GMM vector, like the desktop GUI):
-    // log1p-compressed bridging-edge split score over the visible subgraph; 0 for a normal pose.
-    const ps = computePoseSplit(pose, this._adjacency, this.baseline.stats.edgeMeans, this.baseline.stats.edgeStds);
-    v3.push(Math.log1p(ps.splitScore));
 
     return [...baseline, ...v3];
   }
@@ -464,5 +458,32 @@ export function orderingScoreOne(chains, pose) {
     chainIntersection: r.chainIntersectionCount,
     worstNode: r.worstNode,
   };
+}
+
+/**
+ * Split pose / chimera — one instance whose keypoints span two animals, joined by an abnormally
+ * stretched "bridging" edge (see features/poseSplit.js). A standalone structural check (its own
+ * toggle + threshold + bridge-node attribution) rather than a feature folded into the GMM/anomaly
+ * vector. Uses the fitted edge-length stats (the bridge z-score), so it depends on the same `fx`.
+ */
+export function poseSplitScoreOne(fx, pose) {
+  const ps = computePoseSplit(pose, fx._adjacency, fx.baseline.stats.edgeMeans, fx.baseline.stats.edgeStds);
+  return {
+    score: ps.splitScore / (ps.splitScore + 1), // saturating [0,1]: raw 1 -> 0.5, larger -> 1
+    splitScore: ps.splitScore,
+    worstNode: ps.bridge ? ps.bridge[0] : -1, // an endpoint of the over-stretched bridge edge
+  };
+}
+
+export function computePoseSplitUnit(ctx) {
+  const fx = ensureFeatures(ctx);
+  const poseSplitScores = new Map();
+  const poseSplitWorst = new Map();
+  eachInstance(ctx, (f, i, row, key) => {
+    const r = poseSplitScoreOne(fx, ctx.allPoses[row]);
+    poseSplitScores.set(key, r.score);
+    poseSplitWorst.set(key, r.worstNode);
+  });
+  return { poseSplitScores, poseSplitWorst, fx };
 }
 

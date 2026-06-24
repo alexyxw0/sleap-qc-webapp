@@ -17,6 +17,8 @@ import {
   chiralityScoreOne,
   computeOrderingUnit,
   orderingScoreOne,
+  computePoseSplitUnit,
+  poseSplitScoreOne,
 } from "./qc/checks/detector.js";
 import { makeQCConfig } from "./qc/checks/config.js";
 import { topIssue, confidence, withDirection, DIRECTIONAL_FEATURES, issueForFeature } from "./qc/checks/explain.js";
@@ -30,6 +32,7 @@ const UNIT_OF = {
   gmm: "gmm",
   chirality: "chirality",
   ordering: "ordering",
+  poseSplit: "poseSplit",
   count: "frame",
   sparse: "frame",
   confidence: "frame",
@@ -44,6 +47,7 @@ class QCStore {
   gmmThreshold = $state(0.95); // GMM anomaly (1 − likelihood-percentile) flag — top ~5%
   chiralityThreshold = $state(0.5); // L/R-flip flag ([0,1] wrong-side fraction; hard rule forces >=0.9)
   orderingThreshold = $state(0.3); // chain-ordering flag (combined: a crossing -> 1.0, else order_inversion_rate)
+  poseSplitThreshold = $state(0.5); // chimera flag: saturating split score (raw split 1.0 -> 0.5)
   sparseThreshold = $state(2); // flag an instance localized by fewer than this many visible nodes
   confidenceThreshold = $state(0.3); // flag a predicted instance whose weakest visible keypoint scores below this
   baselineSource = $state("all"); // outlier reference: "all" labeled instances, or "user"-annotated only
@@ -53,7 +57,7 @@ class QCStore {
   // Which detection techniques to run / include. The flagged frames are the UNION of the
   // enabled-and-computed checks. Defaults ON: anomaly, chirality, gmm, duplicates. The frame /
   // structural checks (count, sparse, confidence, negative) default OFF — enable them as needed.
-  checks = $state({ anomaly: true, gmm: true, chirality: true, ordering: false, count: false, sparse: false, confidence: false, negative: false, duplicates: true });
+  checks = $state({ anomaly: true, gmm: true, chirality: true, ordering: false, poseSplit: true, count: false, sparse: false, confidence: false, negative: false, duplicates: true });
 
   #ctx = null; // shared frame/pose/feature context for the current labels
   #ctxLabels = null; // identity of the labels #ctx was built for
@@ -79,6 +83,9 @@ class QCStore {
   #orderInversion = new Map(); // "v:f:i" -> raw order_inversion_rate (for CSV)
   #chainIntersection = new Map(); // "v:f:i" -> raw chain_intersection_count (for CSV)
   #frameOrdering = new Map(); // "v:f" -> max ordering score
+  #poseSplitScores = new Map(); // "v:f:i" -> chimera split score [0,1]
+  #poseSplitWorst = new Map(); // "v:f:i" -> a bridge-edge node, -1 if none
+  #framePoseSplit = new Map(); // "v:f" -> max split score
 
   get hasResults() {
     this.rev;
@@ -144,6 +151,7 @@ class QCStore {
     if (c.gmm) for (const [fk, s] of this.#frameGmm) if (s >= this.gmmThreshold) u.add(fk);
     if (c.chirality) for (const [fk, s] of this.#frameChir) if (s >= this.chiralityThreshold) u.add(fk);
     if (c.ordering) for (const [fk, s] of this.#frameOrdering) if (s >= this.orderingThreshold) u.add(fk);
+    if (c.poseSplit) for (const [fk, s] of this.#framePoseSplit) if (s >= this.poseSplitThreshold) u.add(fk);
     for (const [fk, fq] of this.#frameResults) {
       if (
         (c.count && fq.isWrongCount) ||
@@ -180,6 +188,11 @@ class QCStore {
     if (name === "ordering") {
       let n = 0;
       for (const s of this.#frameOrdering.values()) if (s >= this.orderingThreshold) n++;
+      return n;
+    }
+    if (name === "poseSplit") {
+      let n = 0;
+      for (const s of this.#framePoseSplit.values()) if (s >= this.poseSplitThreshold) n++;
       return n;
     }
     let n = 0;
@@ -262,6 +275,10 @@ class QCStore {
       const s = this.#frameOrdering.get(fk);
       if (s != null && s >= this.orderingThreshold) return true;
     }
+    if (c.poseSplit) {
+      const s = this.#framePoseSplit.get(fk);
+      if (s != null && s >= this.poseSplitThreshold) return true;
+    }
     return hasFrameIssue(this.frameQC(item));
   }
 
@@ -283,6 +300,7 @@ class QCStore {
     };
     score(c.chirality, this.#frameChir, this.chiralityThreshold, "chirality", "L/R flip");
     score(c.ordering, this.#frameOrdering, this.orderingThreshold, "ordering", "Out of order");
+    score(c.poseSplit, this.#framePoseSplit, this.poseSplitThreshold, "poseSplit", "Split pose");
     score(c.anomaly, this.#frameAnom, this.threshold, "anomaly", "Anomaly");
     score(c.gmm, this.#frameGmm, this.gmmThreshold, "gmm", "GMM");
     const fq = this.#frameResults.get(fk);
@@ -326,6 +344,10 @@ class QCStore {
     if (this.checks.ordering) {
       const s = this.#orderingScores.get(key);
       if (s != null && s >= this.orderingThreshold) return true;
+    }
+    if (this.checks.poseSplit) {
+      const s = this.#poseSplitScores.get(key);
+      if (s != null && s >= this.poseSplitThreshold) return true;
     }
     return false;
   }
@@ -463,6 +485,13 @@ class QCStore {
         if (n >= 0) return n;
       }
     }
+    if (this.checks.poseSplit) {
+      const s = this.#poseSplitScores.get(key);
+      if (s != null && s >= this.poseSplitThreshold) {
+        const n = this.#poseSplitWorst.get(key) ?? -1;
+        if (n >= 0) return n;
+      }
+    }
     if (this.checks.anomaly) {
       const a = this.#instanceScores.get(key);
       if (a != null && a >= this.threshold) {
@@ -503,6 +532,7 @@ class QCStore {
     if (c.gmm) { const s = this.#frameGmm.get(fk); if (s != null && s >= this.gmmThreshold) bump(s); }
     if (c.chirality) { const s = this.#frameChir.get(fk); if (s != null && s >= this.chiralityThreshold) bump(s); }
     if (c.ordering) { const s = this.#frameOrdering.get(fk); if (s != null && s >= this.orderingThreshold) bump(s); }
+    if (c.poseSplit) { const s = this.#framePoseSplit.get(fk); if (s != null && s >= this.poseSplitThreshold) bump(s); }
     const fq = this.#frameResults.get(fk);
     if (fq && ((c.count && fq.isWrongCount) || (c.sparse && fq.minVisibleNodeCount < this.sparseThreshold) || (c.confidence && fq.minPointScore < this.confidenceThreshold) || (c.negative && fq.isNegativeWithInstances) || (c.duplicates && (fq.duplicatePairs?.length ?? 0) > 0))) bump(1);
     return best;
@@ -561,6 +591,11 @@ class QCStore {
       this.#computed.ordering.chainIntersection.set(key, r.chainIntersection);
       this.#computed.ordering.orderingWorst.set(key, r.worstNode);
     }
+    if (this.#computed.poseSplit?.fx) {
+      const r = poseSplitScoreOne(this.#computed.poseSplit.fx, pose);
+      this.#computed.poseSplit.poseSplitScores.set(key, r.score);
+      this.#computed.poseSplit.poseSplitWorst.set(key, r.worstNode);
+    }
     this.#derive(); // rebuild frame-max maps + clear the lazy attribution caches for this key
     this.rev++;
   }
@@ -580,13 +615,20 @@ class QCStore {
     const gScore = this.#gmmScores.get(key);
     const chScore = this.#chiralityScores.get(key);
     const ordScore = this.#orderingScores.get(key);
-    if (aScore == null && gScore == null && chScore == null && ordScore == null) return null;
+    const psScore = this.#poseSplitScores.get(key);
+    if (aScore == null && gScore == null && chScore == null && ordScore == null && psScore == null) return null;
 
     // Chirality wins the verdict: a whole-instance L/R flip is the dominant, most-actionable error.
     if (this.checks.chirality && chScore != null && chScore >= this.chiralityThreshold) {
       const cn = this.#chiralityWorst.get(key) ?? -1;
       const cName = cn >= 0 ? store.skeleton?.nodeNames?.[cn] ?? `node ${cn}` : null;
       return { score: chScore, confidence: confidence(chScore), feature: null, issue: "Whole-instance L/R flip", worstNode: cn, worstNodeName: cName, worstNodeDist: null };
+    }
+    // Split pose / chimera — a whole-instance structural error (two animals in one), under chirality.
+    if (this.checks.poseSplit && psScore != null && psScore >= this.poseSplitThreshold) {
+      const pn = this.#poseSplitWorst.get(key) ?? -1;
+      const pName = pn >= 0 ? store.skeleton?.nodeNames?.[pn] ?? `node ${pn}` : null;
+      return { score: psScore, confidence: confidence(psScore), feature: null, issue: "Split pose / chimera", worstNode: pn, worstNodeName: pName, worstNodeDist: null };
     }
     // Chain-ordering (out-of-order keypoints), just under chirality.
     if (this.checks.ordering && ordScore != null && ordScore >= this.orderingThreshold) {
@@ -595,8 +637,6 @@ class QCStore {
       const xings = this.#chainIntersection.get(key) ?? 0;
       return { score: ordScore, confidence: confidence(ordScore), feature: null, issue: xings >= 1 ? "Out-of-order keypoints (chain crosses)" : "Out-of-order keypoints", worstNode: on, worstNodeName: oName, worstNodeDist: null };
     }
-    // (Chimera has no dedicated verdict — pose_split_score is a feature, so a chimera surfaces
-    // as the anomaly/GMM verdict "Split pose / chimera" via topIssue below.)
 
     if (aScore == null && gScore == null) return null;
     const wn = this.faultyNodeFor(item, instIdx);
@@ -661,6 +701,10 @@ class QCStore {
         const s = this.#orderingScores.get(key);
         if (s != null) margin = Math.max(margin, s - this.orderingThreshold);
       }
+      if (this.checks.poseSplit) {
+        const s = this.#poseSplitScores.get(key);
+        if (s != null) margin = Math.max(margin, s - this.poseSplitThreshold);
+      }
       if (margin > bestMargin) {
         bestMargin = margin;
         best = i;
@@ -695,6 +739,7 @@ class QCStore {
     if (unit === "frame") return computeFrameUnit(this.#ctx);
     if (unit === "chirality") return computeChiralityUnit(this.#ctx);
     if (unit === "ordering") return computeOrderingUnit(this.#ctx);
+    if (unit === "poseSplit") return computePoseSplitUnit(this.#ctx);
     return null;
   }
 
@@ -710,6 +755,8 @@ class QCStore {
     this.#orderingWorst = this.#computed.ordering?.orderingWorst ?? new Map();
     this.#orderInversion = this.#computed.ordering?.orderInversion ?? new Map();
     this.#chainIntersection = this.#computed.ordering?.chainIntersection ?? new Map();
+    this.#poseSplitScores = this.#computed.poseSplit?.poseSplitScores ?? new Map();
+    this.#poseSplitWorst = this.#computed.poseSplit?.poseSplitWorst ?? new Map();
 
     const frameMax = (src, dst) => {
       dst.clear();
@@ -722,10 +769,12 @@ class QCStore {
     this.#frameGmm = new Map();
     this.#frameChir = new Map();
     this.#frameOrdering = new Map();
+    this.#framePoseSplit = new Map();
     frameMax(this.#instanceScores, this.#frameAnom);
     frameMax(this.#gmmScores, this.#frameGmm);
     frameMax(this.#chiralityScores, this.#frameChir);
     frameMax(this.#orderingScores, this.#frameOrdering);
+    frameMax(this.#poseSplitScores, this.#framePoseSplit);
     this.#gmmWorst = new Map(); // lazy leave-one-out cache — invalidated whenever results change
     this.#gmmWorstFeat = new Map(); // lazy GMM worst-feature cache — same invalidation
     this.#anomalyAttr = new Map(); // lazy anomaly-attribution cache — same invalidation

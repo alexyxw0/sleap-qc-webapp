@@ -9,7 +9,7 @@ import { computeCurvature, computeConvexHull } from "./features/structural.js";
 import { VisibilityModel } from "./features/visibility.js";
 import { SkeletonAnalyzer } from "./features/skeleton.js";
 import { computeChainOrdering, resolveChains, linearizeChains } from "./features/ordering.js";
-import { ZScoreDetector, fitAndScoreLabels, LabelQCDetector, buildContext } from "./detector.js";
+import { ZScoreDetector, fitAndScoreLabels, LabelQCDetector, buildContext, computePoseSplitUnit } from "./detector.js";
 import { makeQCConfig } from "./config.js";
 
 const NAN = [Number.NaN, Number.NaN];
@@ -181,8 +181,8 @@ describe("full pipeline on a real .slp (sleap-io.js adapter)", () => {
     const FIX = fileURLToPath(new URL("../fixtures/tracked-preds.slp", import.meta.url));
     const labels = await loadSlp(FIX, { openVideos: false });
     const out = fitAndScoreLabels(labels);
-    expect(out.featureNames).toHaveLength(19); // 18 geometric + pose_split_score
-    expect(out.featureNames).toContain("pose_split_score");
+    expect(out.featureNames).toHaveLength(18); // geometric vector (pose-split is now a standalone check)
+    expect(out.featureNames).not.toContain("pose_split_score");
     expect(out.usedGmm).toBe(true); // 201 instances >= gmmMinSamples (50) -> GMM path
     expect(out.instanceScores.size).toBeGreaterThan(0);
     for (const s of out.instanceScores.values()) {
@@ -204,5 +204,17 @@ describe("full pipeline on a real .slp (sleap-io.js adapter)", () => {
     expect(fx.fitRawMatrix).toHaveLength(fx.fitRows.length);
     // null mask === all (the default path, unchanged)
     expect(new LabelQCDetector(makeQCConfig()).fitFeatures(ctx.allPoses, ctx.analyzer, null).fitRows).toHaveLength(n);
+  });
+
+  it("pose-split unit: a standalone check producing per-instance chimera scores in [0,1]", async () => {
+    const FIX = fileURLToPath(new URL("../fixtures/tracked-preds.slp", import.meta.url));
+    const labels = await loadSlp(FIX, { openVideos: false });
+    const ctx = buildContext(labels, makeQCConfig());
+    const unit = computePoseSplitUnit(ctx);
+    expect(unit.poseSplitScores.size).toBeGreaterThan(0);
+    for (const s of unit.poseSplitScores.values()) {
+      expect(s).toBeGreaterThanOrEqual(0);
+      expect(s).toBeLessThanOrEqual(1);
+    }
   });
 });

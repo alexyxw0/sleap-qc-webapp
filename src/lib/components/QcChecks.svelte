@@ -22,6 +22,12 @@
       info: "Flags an instance whose keypoints are labeled out of order along an ordered chain (tail / spine / limb): sharp turning angles between consecutive segments and/or self-crossing segments (a strong, unambiguous signal of a non-adjacent swap). Deterministic and scale-invariant (a hard rule, like chirality), keyed to the skeleton's curvature chains. The slider is the order-inversion rate; a chain crossing always flags. Off by default (experimental).",
     },
     {
+      key: "poseSplit",
+      label: "Split pose (chimera)",
+      hint: "One instance whose keypoints span two animals, joined by a stretched bridging edge.",
+      info: "Flags a chimera — a single labeled instance whose keypoints actually belong to two animals (head of A + body of B), joined by one abnormally-stretched bridging edge that cleanly splits the pose into two clusters. A dedicated structural check with its own threshold + bridge-node ring (it was previously folded into the GMM/anomaly vector as a feature, where it was less sensitive). The slider is the split-strength threshold. Uses learned edge-length statistics (the bridge z-score), so unlike the other two it isn't a pure hard rule. On by default.",
+    },
+    {
       key: "anomaly",
       label: "Anomaly",
       hint: "Geometrically unusual instance vs. the rest of the file.",
@@ -73,7 +79,7 @@
   // file's distribution (they share the feature vector + the outlier-baseline control — only GMM is
   // non-deterministic, the z-score is deterministic); Frame-level = whole-frame consistency checks.
   const GROUPS = [
-    { id: "geometric", label: "Geometric", hint: "Deterministic geometric hard rules — scale-invariant, no learned baseline.", keys: ["chirality", "ordering"] },
+    { id: "geometric", label: "Geometric", hint: "Structural checks: L/R flip + chain ordering (scale-invariant hard rules) and split-pose / chimera.", keys: ["chirality", "ordering", "poseSplit"] },
     { id: "statistical", label: "Statistical", hint: "Outlier detectors that score each instance against the file's distribution (shared feature vector + baseline control). Only GMM is non-deterministic (EM fit); the z-score is deterministic.", keys: ["anomaly", "gmm"] },
     { id: "frame", label: "Frame-level", hint: "Whole-frame consistency: count, sparsity, confidence, negative frames, duplicates.", keys: ["count", "sparse", "confidence", "negative", "duplicates"] },
   ];
@@ -208,6 +214,21 @@
                 oninput={(e) => (qc.orderingThreshold = +e.currentTarget.value)}
               />
               <span class="tval">{qc.orderingThreshold.toFixed(2)}</span>
+            </div>
+          {/if}
+          {#if c.key === "poseSplit" && qc.checks.poseSplit}
+            <!-- Split-strength threshold (saturating split score; higher = a clearer two-animal split). -->
+            <div class="thresh" title="Flag an instance when its split-pose / chimera score is at or above this value">
+              <span class="tlbl">split</span>
+              <input
+                type="range"
+                min="0.3"
+                max="0.95"
+                step="0.05"
+                value={qc.poseSplitThreshold}
+                oninput={(e) => (qc.poseSplitThreshold = +e.currentTarget.value)}
+              />
+              <span class="tval">{qc.poseSplitThreshold.toFixed(2)}</span>
             </div>
           {/if}
           {#if c.key === "sparse" && qc.checks.sparse}
