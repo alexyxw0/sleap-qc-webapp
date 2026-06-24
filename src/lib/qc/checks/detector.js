@@ -17,7 +17,7 @@ import { analyzerFromSkeleton } from "./features/skeleton.js";
 import { InstanceCountChecker, checkNegativeFrame, detectDuplicates } from "./frameLevel.js";
 import { ChiralityModel, resolveChiralityInputs, firstWrongPairNode } from "./features/chirality.js";
 import { computePoseSplit } from "./features/poseSplit.js";
-import { resolveChains, computeChainOrdering } from "./features/ordering.js";
+import { resolveChains, computeChainOrdering, linearizeChains } from "./features/ordering.js";
 
 export const V3_FEATURE_NAMES = [
   "max_curvature", "curvature_std", "visibility_pattern_score",
@@ -431,7 +431,15 @@ export function chiralityScoreOne(model, pose) {
 export function computeOrderingUnit(ctx) {
   const sk = ctx.labels?.skeletons?.[0];
   const names = sk?.nodeNames ?? sk?.nodes?.map((n) => n.name) ?? [];
-  const chains = resolveChains(names, ctx.config.orderedChains ?? null, ctx.analyzer.getCurvatureChains());
+  // Only run ordering on SEQUENTIAL segments — split chains at junction nodes (degree != 2) so a
+  // hub (e.g. `nose` -> ear_left/ear_right/trunk) is never a flagged interior. (Curvature chains
+  // route paths through hubs, which would otherwise flag the hub on every instance.)
+  const degree = new Array(ctx.analyzer.nNodes).fill(0);
+  for (const [a, b] of ctx.analyzer.edges) { degree[a]++; degree[b]++; }
+  const chains = linearizeChains(
+    resolveChains(names, ctx.config.orderedChains ?? null, ctx.analyzer.getCurvatureChains()),
+    degree,
+  );
   const orderingScores = new Map();
   const orderInversion = new Map();
   const chainIntersection = new Map();

@@ -8,7 +8,7 @@ import { normalizePose } from "./features/reference.js";
 import { computeCurvature, computeConvexHull } from "./features/structural.js";
 import { VisibilityModel } from "./features/visibility.js";
 import { SkeletonAnalyzer } from "./features/skeleton.js";
-import { computeChainOrdering, resolveChains } from "./features/ordering.js";
+import { computeChainOrdering, resolveChains, linearizeChains } from "./features/ordering.js";
 import { ZScoreDetector, fitAndScoreLabels, LabelQCDetector, buildContext } from "./detector.js";
 import { makeQCConfig } from "./config.js";
 
@@ -131,6 +131,15 @@ describe("chain ordering", () => {
     expect(r.orderInversionRate).toBeGreaterThan(0);
     expect(r.chainIntersectionCount).toBeGreaterThanOrEqual(1);
     expect(r.worstNode).toBeGreaterThanOrEqual(0);
+  });
+
+  it("linearizeChains: splits at junction (degree != 2) nodes so a hub is never a flagged interior", () => {
+    // node 1 is a hub (degree 3): [0,1,2,3] -> [0,1] (dropped, <3) + [1,2,3]
+    expect(linearizeChains([[0, 1, 2, 3]], [2, 3, 2, 1])).toEqual([[1, 2, 3]]);
+    // a 4-node STAR (hub 0 -> 1,2,3, like nose -> ears/trunk): every path is [leaf, 0, leaf] -> no chains
+    expect(linearizeChains([[1, 0, 2], [1, 0, 3], [2, 0, 3]], [3, 1, 1, 1])).toEqual([]);
+    // a genuinely linear chain (all interiors degree 2) is unchanged
+    expect(linearizeChains([[0, 1, 2, 3]], [1, 2, 2, 1])).toEqual([[0, 1, 2, 3]]);
   });
 
   it("resolveChains: user names win, else auto, dropping chains < 3 nodes", () => {

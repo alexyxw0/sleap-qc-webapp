@@ -56,6 +56,30 @@ export function resolveChains(nodeNames, orderedChainsByName, autoChains) {
 }
 
 /**
+ * Keep only SEQUENTIAL portions of chains for ordering: split each chain at interior **junction**
+ * nodes (skeleton degree != 2) and keep the runs with >= 3 nodes. A hub like `nose` (connected to
+ * ear_left/ear_right/trunk, degree 3) thus becomes an ENDPOINT of its segments, never a flagged
+ * interior — turning angles are only meaningful along a true sequence, not at a branch point.
+ *
+ * @param chains list of node-index sequences.
+ * @param degree per-node skeleton degree (degree[i] = number of incident edges).
+ */
+export function linearizeChains(chains, degree) {
+  const out = [];
+  for (const chain of chains ?? []) {
+    let start = 0;
+    for (let i = 1; i < chain.length - 1; i++) {
+      if (degree[chain[i]] !== 2) {
+        if (i - start + 1 >= 3) out.push(chain.slice(start, i + 1));
+        start = i; // the junction is the endpoint of this run and the start of the next
+      }
+    }
+    if (chain.length - start >= 3) out.push(chain.slice(start));
+  }
+  return out;
+}
+
+/**
  * Detect wrong keypoint order along ordered chains. Returns:
  *  - orderInversionRate: max over chains of the fraction of interior nodes whose turning angle
  *    exceeds `maxTurnAngle`.
