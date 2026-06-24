@@ -75,17 +75,25 @@ class QCStore {
   // structural checks (count, sparse, confidence, negative) default OFF — enable them as needed.
   checks = $state({ anomaly: true, gmm: true, chirality: true, ordering: false, poseSplit: true, count: false, sparse: false, confidence: false, instConfidence: false, negative: false, duplicates: true });
 
+  // User-built per-feature checks: drag a feature out of the GMM/anomaly vector to flag instances
+  // where THAT single feature is an outlier (|z| >= its threshold). Each: { id, feature, threshold, on }.
+  // They reuse the Anomaly unit's ZScore fit (means/stds) + per-instance contributions.
+  featureChecks = $state([]);
+
   #ctx = null; // shared frame/pose/feature context for the current labels
   #ctxLabels = null; // identity of the labels #ctx was built for
   #ctxRev = -1; // store.rev the #ctx was built at — bumps when instances are edited in place
   #ctxBaselineSource = "all"; // baselineSource the #ctx was fit with (rebuild on change)
   #computed = {}; // unit -> result maps (the memoization cache)
+  #featureSeq = 0; // id counter for user feature-checks
 
   // Derived per-frame maps (rebuilt from #computed after each run).
   #instanceScores = new Map(); // "v:f:i" -> anomaly score
   #contributions = new Map();
   #gmmScores = new Map(); // "v:f:i" -> GMM anomaly
   #frameResults = new Map(); // "v:f" -> FrameQC
+  #instFeatureZ = new Map(); // "v:f:i" -> { feature: |z| } for active feature-checks
+  #frameFeatureZ = new Map(); // "v:f" -> { feature: max|z| over instances } for active feature-checks
   #frameAnom = new Map(); // "v:f" -> max anomaly score
   #frameGmm = new Map(); // "v:f" -> max GMM score
   #gmmWorst = new Map(); // "v:f:i" -> GMM leave-one-out worst node (computed lazily)
@@ -147,7 +155,8 @@ class QCStore {
   /** Number of enabled checks still needing computation. */
   get pendingCount() {
     this.rev;
-    return Object.keys(this.checks).filter((n) => this.checkPending(n)).length;
+    return Object.keys(this.checks).filter((n) => this.checkPending(n)).length
+      + (this.featureCheckActive && !this.checkReady("anomaly") ? 1 : 0);
   }
   toggleCheck(name) {
     if (name in this.checks) {
@@ -162,6 +171,81 @@ class QCStore {
     this.rev++;
   }
 
+  // --- per-feature checks (drag a feature out of the GMM/anomaly vector as its own check) ---
+  /** true if any user feature-check is enabled — then the Anomaly unit must be computed for its z's. */
+  get featureCheckActive() {
+    this.rev;
+    return this.featureChecks.some((f) => f.on);
+  }
+  addFeatureCheck(feature) {
+    if (!feature || this.featureChecks.some((f) => f.feature === feature)) return; // one check per feature
+    this.featureChecks.push({ id: ++this.#featureSeq, feature, threshold: 3.0, on: true });
+    this.#refreshFeatureChecks();
+  }
+  removeFeatureCheck(id) {
+    this.featureChecks = this.featureChecks.filter((f) => f.id !== id);
+    this.#refreshFeatureChecks();
+  }
+  toggleFeatureCheck(id) {
+    const f = this.featureChecks.find((x) => x.id === id);
+    if (f) { f.on = !f.on; this.#refreshFeatureChecks(); }
+  }
+  setFeatureThreshold(id, v) {
+    const f = this.featureChecks.find((x) => x.id === id);
+    if (f) { f.threshold = v; this.rev++; } // a threshold change doesn't move |z| -> no re-derive
+  }
+  #refreshFeatureChecks() {
+    this.rev++;
+    if (this.checkReady("anomaly")) { this.#deriveFeatureChecks(); this.rev++; }
+    else if (this.status === "done") this.run(); // anomaly unit absent -> run() will add + compute it
+  }
+  /** |z| of one feature for one instance (from the precomputed map), or null. */
+  featureZ(item, instIdx, feature) {
+    this.rev;
+    return this.#instFeatureZ.get(`${this.#fkey(item)}:${instIdx}`)?.[feature] ?? null;
+  }
+  /** Active feature-checks that flag an instance (|z| >= threshold), each with its z. */
+  instanceFeatureFlags(item, instIdx) {
+    this.rev;
+    const zs = this.#instFeatureZ.get(`${this.#fkey(item)}:${instIdx}`);
+    if (!zs) return [];
+    return this.featureChecks.filter((f) => f.on && (zs[f.feature] ?? -1) >= f.threshold).map((f) => ({ ...f, z: zs[f.feature] }));
+  }
+  /** Frames flagged by a single feature-check, for its UI count. */
+  featureCheckCount(id) {
+    this.rev;
+    const f = this.featureChecks.find((x) => x.id === id);
+    if (!f || !f.on) return 0;
+    let n = 0;
+    for (const fm of this.#frameFeatureZ.values()) if ((fm[f.feature] ?? -1) >= f.threshold) n++;
+    return n;
+  }
+  /** Recompute the per-instance / per-frame |z| maps for the ACTIVE feature-checks (reuses the
+   *  Anomaly det's means/stds + raw contributions). Re-run on add/remove/toggle, NOT on threshold. */
+  #deriveFeatureChecks() {
+    this.#instFeatureZ = new Map();
+    this.#frameFeatureZ = new Map();
+    const a = this.#computed.anomaly;
+    const feats = [...new Set(this.featureChecks.filter((f) => f.on).map((f) => f.feature))];
+    if (!a?.det || !a.featureNames || !feats.length) return;
+    const fIdx = new Map(feats.map((f) => [f, a.featureNames.indexOf(f)]));
+    for (const [key, c] of this.#contributions) {
+      const fk = key.slice(0, key.lastIndexOf(":"));
+      const zs = {};
+      for (const feature of feats) {
+        const j = fIdx.get(feature);
+        if (j < 0) continue;
+        const raw = c[feature];
+        if (raw == null || !Number.isFinite(raw)) continue;
+        const z = Math.abs((raw - a.det.means[j]) / (a.det.stds[j] || 1e-6));
+        zs[feature] = z;
+        const fm = this.#frameFeatureZ.get(fk) ?? {};
+        if (z > (fm[feature] ?? -1)) { fm[feature] = z; this.#frameFeatureZ.set(fk, fm); }
+      }
+      this.#instFeatureZ.set(key, zs);
+    }
+  }
+
   /** Number of frames flagged by the UNION of the currently-enabled (and computed) checks. */
   get flaggedFrameCount() {
     this.rev;
@@ -172,6 +256,7 @@ class QCStore {
     if (c.chirality) for (const [fk, s] of this.#frameChir) if (s >= this.chiralityThreshold) u.add(fk);
     if (c.ordering) for (const [fk, s] of this.#frameOrdering) if (s >= this.orderingThreshold) u.add(fk);
     if (c.poseSplit) for (const [fk, s] of this.#framePoseSplit) if (s >= this.poseSplitThreshold) u.add(fk);
+    for (const f of this.featureChecks) if (f.on) for (const [fk, fm] of this.#frameFeatureZ) if ((fm[f.feature] ?? -1) >= f.threshold) u.add(fk);
     for (const [fk, fq] of this.#frameResults) {
       if (
         (c.count && fq.isWrongCount) ||
@@ -302,6 +387,8 @@ class QCStore {
       const s = this.#framePoseSplit.get(fk);
       if (s != null && s >= this.poseSplitThreshold) return true;
     }
+    const fm = this.#frameFeatureZ.get(fk);
+    if (fm) for (const f of this.featureChecks) if (f.on && (fm[f.feature] ?? -1) >= f.threshold) return true;
     return hasFrameIssue(this.frameQC(item));
   }
 
@@ -326,6 +413,11 @@ class QCStore {
     score(c.poseSplit, this.#framePoseSplit, this.poseSplitThreshold, "poseSplit", "Split pose");
     score(c.anomaly, this.#frameAnom, this.threshold, "anomaly", "Anomaly");
     score(c.gmm, this.#frameGmm, this.gmmThreshold, "gmm", "GMM");
+    for (const f of this.featureChecks) {
+      if (!f.on) continue;
+      const z = this.#frameFeatureZ.get(fk)?.[f.feature];
+      if (z != null && z >= f.threshold) out.push({ key: `feat:${f.id}`, label: f.feature.replace(/_zscore$/, ""), score: z });
+    }
     const fq = this.#frameResults.get(fk);
     if (fq) {
       if (c.count && fq.isWrongCount) out.push({ key: "count", label: fq.isEmpty ? "Empty frame" : fq.isOvercount ? "Extra instance" : "Missing instance", score: null });
@@ -374,6 +466,8 @@ class QCStore {
       const s = this.#poseSplitScores.get(key);
       if (s != null && s >= this.poseSplitThreshold) return true;
     }
+    const zs = this.#instFeatureZ.get(key);
+    if (zs) for (const f of this.featureChecks) if (f.on && (zs[f.feature] ?? -1) >= f.threshold) return true;
     return false;
   }
 
@@ -581,6 +675,11 @@ class QCStore {
     if (c.chirality) { const s = this.#frameChir.get(fk); if (s != null && s >= this.chiralityThreshold) bump(s); }
     if (c.ordering) { const s = this.#frameOrdering.get(fk); if (s != null && s >= this.orderingThreshold) bump(s); }
     if (c.poseSplit) { const s = this.#framePoseSplit.get(fk); if (s != null && s >= this.poseSplitThreshold) bump(s); }
+    for (const f of this.featureChecks) {
+      if (!f.on) continue;
+      const z = this.#frameFeatureZ.get(fk)?.[f.feature];
+      if (z != null && z >= f.threshold) bump(1 / (1 + Math.exp(-(z - f.threshold)))); // sigmoid -> [0,1] for ranking
+    }
     const fq = this.#frameResults.get(fk);
     if (fq) {
       // binary frame checks contribute a fixed SEVERITY (not a flat 1) so review mode orders them
@@ -835,6 +934,7 @@ class QCStore {
     this.#gmmWorst = new Map(); // lazy leave-one-out cache — invalidated whenever results change
     this.#gmmWorstFeat = new Map(); // lazy GMM worst-feature cache — same invalidation
     this.#anomalyAttr = new Map(); // lazy anomaly-attribution cache — same invalidation
+    this.#deriveFeatureChecks(); // per-feature |z| maps for the user feature-checks
   }
 
   /** Run the enabled checks that aren't already computed (incremental + memoized). */
@@ -859,6 +959,7 @@ class QCStore {
       // compute the units the enabled checks need, skipping anything already cached
       const need = new Set();
       for (const [name, on] of Object.entries(this.checks)) if (on) need.add(UNIT_OF[name]);
+      if (this.featureCheckActive) need.add("anomaly"); // feature-checks reuse the anomaly ZScore fit
       for (const unit of need) {
         if (!this.#computed[unit]) this.#computed[unit] = this.#computeUnit(unit);
       }

@@ -94,6 +94,8 @@
   let groupOpen = $state({ geometric: false, statistical: false, frame: false }); // per-group collapse (compact by default; each header shows "N on")
   let infoOpen = $state({}); // per-check key -> show the long-form description
   let featOpen = $state(false); // read-only "feature vector" panel under the GMM check
+  let dragFeature = $state(null); // feature name currently being dragged out to the custom drop zone
+  let dropHot = $state(false); // the custom drop zone is hovered during a drag
 
   // a check is hidden when it can't apply (confidence needs predicted instances)
   const visibleInGroup = (g) =>
@@ -184,9 +186,19 @@
             {#if featOpen}
               <ul class="featlist">
                 {#each qc.vectorFeatures as fname (fname)}
-                  <li class:psf={fname === "pose_split_score"}>
+                  {@const added = qc.featureChecks.some((f) => f.feature === fname)}
+                  <li
+                    class="featrow"
+                    class:added
+                    draggable={!added}
+                    ondragstart={(e) => { e.dataTransfer.setData("text/plain", fname); e.dataTransfer.effectAllowed = "copy"; dragFeature = fname; }}
+                    ondragend={() => (dragFeature = null)}
+                    title={added ? "Already pinned as a check below" : "Drag down to the drop zone (or ＋) to flag this feature on its own"}
+                  >
+                    <span class="grip" aria-hidden="true">⠿</span>
                     <span class="fn">{fname}</span>
                     {#if contrib}<span class="fv">{(contrib[fname] ?? 0).toFixed(2)}</span>{/if}
+                    <button type="button" class="pin" disabled={added} onclick={() => qc.addFeatureCheck(fname)} title="Pin as its own check" aria-label="Pin {fname} as a check">＋</button>
                   </li>
                 {/each}
               </ul>
@@ -332,6 +344,52 @@
         </div>
       {/if}
     {/each}
+
+    <!-- Custom per-feature checks: drag a feature out of the GMM/anomaly vector above (or ＋) -->
+    {#if qc.hasResults || qc.featureChecks.length}
+      {@const nOn = qc.featureChecks.filter((f) => f.on).length}
+      <div class="group custom">
+        <div class="grp-head">
+          <span class="grpchev" style="visibility:hidden">▸</span>
+          <span class="grp-lbl">Custom · per-feature</span>
+          {#if nOn}<span class="grp-sum">{nOn} on</span>{/if}
+        </div>
+        <div
+          class="dropzone"
+          class:armed={dragFeature}
+          class:hot={dropHot}
+          ondragenter={(e) => { e.preventDefault(); dropHot = true; }}
+          ondragover={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; dropHot = true; }}
+          ondragleave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) dropHot = false; }}
+          ondrop={(e) => { e.preventDefault(); dropHot = false; const f = e.dataTransfer.getData("text/plain"); if (f) qc.addFeatureCheck(f); }}
+          role="group"
+          aria-label="Custom feature-check drop zone"
+        >
+          {#if !qc.featureChecks.length}
+            <p class="dz-hint">⊹ drag a feature from the vector above to flag it on its own<br /><span class="dz-sub">(or click its ＋)</span></p>
+          {/if}
+          {#each qc.featureChecks as f (f.id)}
+            {@const ready = qc.checkReady("anomaly")}
+            <div class="fcheck" class:off={!f.on}>
+              <div class="fc-head">
+                <input type="checkbox" class="grp-check" checked={f.on} onchange={() => qc.toggleFeatureCheck(f.id)} title="Enable / disable" />
+                <span class="fc-name" title={f.feature}>{f.feature.replace(/_zscore$/, "")}</span>
+                {#if ready}<span class="cnt">{qc.featureCheckCount(f.id)}</span>{/if}
+                <button type="button" class="fc-del" onclick={() => qc.removeFeatureCheck(f.id)} title="Remove this check" aria-label="Remove {f.feature}">×</button>
+              </div>
+              <div class="thresh" title="Flag an instance when this feature's |z| is at or above this value">
+                <span class="tlbl">|z|&nbsp;≥</span>
+                <input type="range" min="1" max="6" step="0.25" value={f.threshold} oninput={(e) => qc.setFeatureThreshold(f.id, +e.currentTarget.value)} />
+                <span class="tval">{f.threshold.toFixed(2)}</span>
+              </div>
+            </div>
+          {/each}
+          {#if qc.featureChecks.length}
+            <p class="dz-foot" class:hot={dropHot}>{dropHot ? "↓ drop to add" : "drag another feature here"}</p>
+          {/if}
+        </div>
+      </div>
+    {/if}
     {#if qc.hasResults}
       <p class="union">
         <span>flagged · union</span><b>{qc.flaggedFrameCount}</b>
@@ -692,10 +750,54 @@
     padding: 0.06rem 0.2rem;
     color: var(--muted);
   }
-  .featlist li.psf .fn {
+  .featlist .featrow {
+    align-items: center;
+    cursor: grab;
+    border-radius: var(--r-xs);
+  }
+  .featlist .featrow:hover {
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text);
+  }
+  .featlist .featrow.added {
+    cursor: default;
+    opacity: 0.45;
+  }
+  .featlist .featrow .fn {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .grip {
+    flex: none;
+    color: var(--dim);
+    font-size: 0.66rem;
+    cursor: grab;
+  }
+  .pin {
+    flex: none;
+    background: none;
+    border: none;
     color: var(--accent);
+    font-size: 0.92rem;
+    line-height: 1;
+    padding: 0 0.1rem;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.12s;
+  }
+  .featrow:hover .pin {
+    opacity: 0.9;
+  }
+  .pin:disabled {
+    color: var(--dim);
+    opacity: 0.25;
+    cursor: default;
   }
   .featlist .fv {
+    flex: none;
     color: var(--text);
   }
   .featnote {
@@ -703,5 +805,81 @@
     font-size: 0.64rem;
     color: var(--dim);
     letter-spacing: 0.02em;
+  }
+  /* --- custom per-feature checks (drag-and-drop) --- */
+  .dropzone {
+    margin: 0.1rem 0 0;
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    padding: 0.35rem 0.4rem;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .dropzone.armed {
+    border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  .dropzone.hot {
+    border-color: var(--accent);
+    border-style: solid;
+    background: rgba(95, 217, 242, 0.08);
+  }
+  .dz-hint {
+    margin: 0;
+    padding: 0.45rem 0.2rem;
+    text-align: center;
+    font-size: 0.68rem;
+    color: var(--dim);
+    line-height: 1.5;
+  }
+  .dz-sub {
+    font-size: 0.62rem;
+    opacity: 0.8;
+  }
+  .dz-foot {
+    margin: 0.3rem 0 0;
+    text-align: center;
+    font-size: 0.62rem;
+    letter-spacing: 0.04em;
+    color: var(--dim);
+  }
+  .dz-foot.hot {
+    color: var(--accent);
+  }
+  .fcheck {
+    border-top: 1px solid var(--border-soft, var(--border));
+    padding-top: 0.32rem;
+  }
+  .fcheck:first-child {
+    border-top: 0;
+  }
+  .fc-head {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+  }
+  .fc-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.76rem;
+    color: var(--text);
+    letter-spacing: 0.01em;
+  }
+  .fcheck.off .fc-name {
+    color: var(--muted);
+  }
+  .fc-del {
+    flex: none;
+    background: none;
+    border: none;
+    color: var(--dim);
+    font-size: 0.95rem;
+    line-height: 1;
+    padding: 0 0.15rem;
+    cursor: pointer;
+  }
+  .fc-del:hover {
+    color: #fb7185;
   }
 </style>

@@ -9,7 +9,7 @@ import { computeCurvature, computeConvexHull } from "./features/structural.js";
 import { VisibilityModel } from "./features/visibility.js";
 import { SkeletonAnalyzer } from "./features/skeleton.js";
 import { computeChainOrdering, resolveChains, linearizeChains } from "./features/ordering.js";
-import { ZScoreDetector, fitAndScoreLabels, LabelQCDetector, buildContext, computePoseSplitUnit } from "./detector.js";
+import { ZScoreDetector, fitAndScoreLabels, LabelQCDetector, buildContext, computePoseSplitUnit, computeAnomalyUnit } from "./detector.js";
 import { makeQCConfig } from "./config.js";
 
 const NAN = [Number.NaN, Number.NaN];
@@ -217,5 +217,31 @@ describe("full pipeline on a real .slp (sleap-io.js adapter)", () => {
       expect(s).toBeGreaterThanOrEqual(0);
       expect(s).toBeLessThanOrEqual(1);
     }
+  });
+
+  it("feature-check foundation: anomaly det means/stds align with featureNames + contributions (per-feature z)", async () => {
+    const FIX = fileURLToPath(new URL("../fixtures/tracked-preds.slp", import.meta.url));
+    const labels = await loadSlp(FIX, { openVideos: false });
+    const ctx = buildContext(labels, makeQCConfig());
+    const { det, contributions, featureNames } = computeAnomalyUnit(ctx);
+    // The qcStore feature-checks index det.means/stds by featureNames.indexOf(feature) and read the
+    // raw value from contributions[feature] — so these three must stay column-aligned.
+    expect(det.means).toHaveLength(featureNames.length);
+    expect(det.stds).toHaveLength(featureNames.length);
+    expect(featureNames).toContain("max_edge_zscore");
+    expect(contributions.size).toBeGreaterThan(0);
+    const j = featureNames.indexOf("max_edge_zscore");
+    let sawFinite = false;
+    for (const [key, c] of contributions) {
+      expect(key).toMatch(/^\d+:\d+:\d+$/); // "videoIdx:frameIdx:instIdx"
+      const raw = c["max_edge_zscore"];
+      if (raw != null && Number.isFinite(raw)) {
+        const z = Math.abs((raw - det.means[j]) / det.stds[j]); // the exact per-feature z a feature-check uses
+        expect(Number.isFinite(z)).toBe(true);
+        expect(z).toBeGreaterThanOrEqual(0);
+        sawFinite = true;
+      }
+    }
+    expect(sawFinite).toBe(true);
   });
 });

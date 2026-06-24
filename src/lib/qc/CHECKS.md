@@ -16,7 +16,7 @@ All `checks/…` citations below are relative to `src/lib/qc/`; `qcStore.svelte.
 
 **Score + threshold convention.** Instance scorers (anomaly, gmm, chirality) emit a score in `[0,1]`; an instance is flagged when `score >= threshold`. Frame checks emit booleans. Per-instance scores roll up to a frame via **max** aggregation.
 
-**UNION flagging.** `flaggedFrameCount` / the flagged set is the UNION of all *enabled-and-computed* checks: anomaly (`>= threshold`), gmm (`>= gmmThreshold`), chirality (`>= chiralityThreshold`), ordering (`>= orderingThreshold`), pose-split (`>= poseSplitThreshold`), plus the frame checks `count`/`sparse`/`confidence`/`instConfidence`/`negative`/`duplicates`. `sparse`, `confidence` (min or mean keypoint score per `confidenceMode`), and `instConfidence` (`minInstScore < instConfidenceThreshold`) carry live thresholds; the others are boolean. Disabling a check removes its contribution from the union without recomputation.
+**UNION flagging.** `flaggedFrameCount` / the flagged set is the UNION of all *enabled-and-computed* checks: anomaly (`>= threshold`), gmm (`>= gmmThreshold`), chirality (`>= chiralityThreshold`), ordering (`>= orderingThreshold`), pose-split (`>= poseSplitThreshold`), plus the frame checks `count`/`sparse`/`confidence`/`instConfidence`/`negative`/`duplicates`. `sparse`, `confidence` (min or mean keypoint score per `confidenceMode`), and `instConfidence` (`minInstScore < instConfidenceThreshold`) carry live thresholds; the others are boolean. The union also includes any **user-built per-feature checks** (`|z|` of one vector feature `>=` its own threshold — see *Custom per-feature checks*). Disabling a check removes its contribution from the union without recomputation.
 
 **Default toggle state (as shipped).** `checks = { anomaly:true, gmm:true, chirality:true, ordering:false, poseSplit:true, count:false, sparse:false, confidence:false, instConfidence:false, negative:false, duplicates:true }`. **ON by default:** anomaly, chirality, gmm, poseSplit, duplicates. **OFF by default:** ordering (experimental), count, sparse, confidence, instConfidence, negative (enable as needed). Chirality self-disables without symmetric pairs; `confidence` / `instConfidence` only show/flag when the file has predicted instances.
 
@@ -152,6 +152,16 @@ Two predicted-only checks — a user-labeled instance has no scores, so both row
 **Threshold/params:** `duplicateIouThreshold=0.5`, `duplicateNodeDistanceThreshold=10.0` px, `duplicateNodeOverlapRatio=0.8` (`config.js`).
 
 **Notes:** IoU is checked first; only if IoU fails does the partial-duplicate node-overlap path run. Node-overlap requires `>= 2` commonly-visible nodes (guards against a single shared node triggering a false dupe). `computeNodeOverlap` returns `overlapRatio=0` / `Infinity` distances when there are no common nodes. The node distance threshold (10 px) is in raw pixel space, not normalized.
+
+---
+
+## Custom per-feature checks (drag-and-drop)
+
+**What:** the aggregate Anomaly check flags on the **max** `|z|` across all 18 features, which can bury a single meaningful axis. A per-feature check isolates **one** feature: drag a row out of the "feature vector" panel (under GMM) into the **Custom · per-feature** drop zone — or click its `＋` — to flag every instance whose `|z|` *for that one feature* is `>= ` the check's own threshold (a `|z|` slider, 1–6, default 3). Each is independently toggled / removed; one check per feature.
+
+**Algorithm:** they reuse the **Anomaly unit** — no new fit. `qcStore.#deriveFeatureChecks()` standardizes each active feature with the same `ZScoreDetector` the Anomaly check fits: `z = (contributions[feature] − det.means[j]) / det.stds[j]`, `j = featureNames.indexOf(feature)` (the three stay column-aligned — see the `feature-check foundation` test). It caches `#instFeatureZ` (`"v:f:i" → {feature:|z|}`) and `#frameFeatureZ` (`"v:f" → {feature: max|z|}`); a threshold change is a pure compare (no re-derive), an add/remove/toggle re-derives. Because they need the det, enabling one forces the Anomaly unit to compute even if the Anomaly *check* is off (`run()` adds `"anomaly"` to `need`; `pendingCount` reflects it).
+
+**Surfacing:** a per-feature flag joins the **union** (`flaggedFrameCount`/`frameFlagged`), marks the instance (`instanceFlagged` → the red **bbox** via `frameFlaggedInstances`), adds a `feat:<id>` tag in `frameFlaggingChecks` (label = feature name, score = `|z|`), and contributes `sigmoid(|z| − threshold)` to `flagConfidence` for review-mode ordering. It does **not** override the primary instance verdict or ring a specific node (the bbox + tag carry it). Feature-checks persist across files (like `checks`); the `|z|` maps clear on reset.
 
 ---
 
