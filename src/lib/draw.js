@@ -89,7 +89,7 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
   const edges = skeleton.edges ?? [];
   const instances = lf.instances ?? [];
   const names = skeleton.nodeNames ?? [];
-  const { editing = false, selInstance = -1, selNode = -1, scale = 1, worstNodes = null, hiddenAlpha = 0.28 } = sel;
+  const { editing = false, selInstance = -1, selNode = -1, scale = 1, worstNodes = null, flaggedInstances = null, hiddenAlpha = 0.28 } = sel;
 
   // Sizes are specified in on-screen pixels and converted to image-space via `scale`
   // (image px per screen px), so the overlay + labels look consistent at any video
@@ -130,6 +130,28 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
     const points = instance.points ?? [];
     const isSel = idx === selInstance;
 
+    // QC: a dashed red bounding box around a flagged instance, so flagged frames read at a glance.
+    if (flaggedInstances?.[idx]) {
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const p of points) {
+        if (!placed(p)) continue;
+        if (p.xy[0] < minX) minX = p.xy[0];
+        if (p.xy[1] < minY) minY = p.xy[1];
+        if (p.xy[0] > maxX) maxX = p.xy[0];
+        if (p.xy[1] > maxY) maxY = p.xy[1];
+      }
+      if (Number.isFinite(minX)) {
+        const pad = r + 5 * s;
+        ctx.save();
+        ctx.globalAlpha = 0.9;
+        ctx.strokeStyle = "#ff2d55";
+        ctx.lineWidth = 1.5 * s;
+        ctx.setLineDash([5 * s, 4 * s]);
+        ctx.strokeRect(minX - pad, minY - pad, maxX - minX + 2 * pad, maxY - minY + 2 * pad);
+        ctx.restore();
+      }
+    }
+
     // edges — between two *placed* nodes. An edge touching a hidden node is always THIN + faint
     // (and fainter still when its instance isn't selected) to signal "this node isn't visible".
     ctx.strokeStyle = color;
@@ -166,19 +188,31 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
         ctx.strokeStyle = "rgba(255,255,255,0.85)";
         ctx.stroke();
       }
-      // QC: dashed warning ring on the faulty node of a flagged instance
-      // (red = geometric outlier) and the least-confident node (amber = low model confidence).
-      const qcRing = (radius, colorRing) => {
-        ctx.globalAlpha = 0.95;
+      // QC: a flagged instance's faulty node gets an unmistakable highlight — a soft halo, a
+      // glowing bright-red ring, and a crisp white edge — so it can't be missed.
+      if (worstNodes && worstNodes[idx] === ni) {
+        ctx.save();
+        ctx.globalAlpha = 0.26;
         ctx.beginPath();
-        ctx.arc(px, py, radius, 0, Math.PI * 2);
-        ctx.lineWidth = 2 * s;
-        ctx.setLineDash([3.5 * s, 2.5 * s]);
-        ctx.strokeStyle = colorRing;
+        ctx.arc(px, py, r + 9 * s, 0, Math.PI * 2);
+        ctx.fillStyle = "#ff2d55";
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.shadowColor = "#ff2d55";
+        ctx.shadowBlur = 11 * s;
+        ctx.beginPath();
+        ctx.arc(px, py, r + 6 * s, 0, Math.PI * 2);
+        ctx.lineWidth = 3 * s;
+        ctx.strokeStyle = "#ff2d55";
         ctx.stroke();
-        ctx.setLineDash([]);
-      };
-      if (worstNodes && worstNodes[idx] === ni) qcRing(r + 4 * s, "#fb7185");
+        ctx.shadowBlur = 0;
+        ctx.beginPath();
+        ctx.arc(px, py, r + 6 * s, 0, Math.PI * 2);
+        ctx.lineWidth = 1 * s;
+        ctx.strokeStyle = "#fff0f3";
+        ctx.stroke();
+        ctx.restore();
+      }
       if (focused) {
         ctx.globalAlpha = 1;
         ctx.beginPath();

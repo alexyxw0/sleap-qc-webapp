@@ -98,6 +98,7 @@
         name: names[j] ?? j,
         x: p.xy?.[0],
         y: p.xy?.[1],
+        score: typeof p.score === "number" ? p.score : null, // per-keypoint confidence (predicted only)
         visible: p.visible,
         placed: p.xy?.[0] != null && !Number.isNaN(p.xy?.[0]),
       })),
@@ -245,6 +246,9 @@
             {#if gs != null && gs >= qc.gmmThreshold}
               <span class="qchip sm" style:background={heatColor(gs)} title="GMM probability anomaly">G {gs.toFixed(2)}</span>
             {/if}
+            {#if inst.score != null}
+              <span class="qchip sm" style:background={heatColor(1 - inst.score)} title="Instance confidence (PredictedInstance.score)">c {inst.score.toFixed(2)}</span>
+            {/if}
             <button class="del" onclick={() => edit.deleteInstance(inst.i)} title="Delete instance">×</button>
           </div>
           {#if qc.instanceFlagged(item, inst.i)}
@@ -266,11 +270,11 @@
                   class:psel={inst.i === edit.selInstance && p.j === edit.selNode}
                   onclick={() => edit.select(inst.i, p.j)}
                   ondblclick={() => edit.toggleVisible(inst.i, p.j)}
-                  title="Click to select · double-click to show/hide"
+                  title="{p.placed ? `(${p.x.toFixed(0)}, ${p.y.toFixed(0)}) · ` : ''}click to select · double-click to show/hide"
                 >
                   <span class="pname">{p.name}</span>
-                  <span class="pxy">
-                    {p.placed ? `${p.x.toFixed(1)}, ${p.y.toFixed(1)}` : "—"}
+                  <span class="pxy" title="Keypoint confidence">
+                    {p.score != null ? p.score.toFixed(2) : "—"}
                     <i class="vis" class:on={p.visible}></i>
                   </span>
                 </button>

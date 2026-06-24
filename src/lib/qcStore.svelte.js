@@ -376,6 +376,29 @@ class QCStore {
     }
     return false;
   }
+
+  /** Per-instance boolean array: is each instance flagged by ANY enabled check (instance- AND the
+   *  per-instance-attributable frame-level checks)? Used to draw a bbox around flagged instances. */
+  frameFlaggedInstances(item) {
+    this.rev;
+    const lf = item?.lf;
+    if (!lf) return [];
+    const n = lf.instances.length;
+    const out = new Array(n).fill(false);
+    for (let i = 0; i < n; i++) if (this.instanceFlagged(item, i)) out[i] = true; // anomaly/gmm/chirality/ordering/poseSplit
+    const fq = this.#frameResults.get(this.#fkey(item));
+    if (fq) {
+      const c = this.checks;
+      const mark = (i) => { if (i >= 0 && i < n) out[i] = true; };
+      if (c.sparse && fq.minVisibleNodeCount < this.sparseThreshold) mark(fq.sparsestInstance);
+      if (c.confidence && this.#kpConf(fq) < this.confidenceThreshold) mark(this.confidenceMode === "avg" ? fq.avgConfInstance : fq.lowConfInstance);
+      if (c.instConfidence && fq.minInstScore < this.instConfidenceThreshold) mark(fq.lowInstance);
+      if (c.negative && fq.isNegativeWithInstances) out.fill(true); // a negative frame: every instance is spurious
+      if (c.duplicates) for (const d of fq.duplicatePairs ?? []) { mark(d.indexA); mark(d.indexB); }
+      // count (wrong total) has no per-instance attribution -> not boxed
+    }
+    return out;
+  }
   #gmmFlagged(key) {
     if (!this.checks.gmm) return false;
     const g = this.#gmmScores.get(key);
