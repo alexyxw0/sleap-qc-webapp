@@ -323,7 +323,8 @@ export function buildContext(labels, config = makeQCConfig()) {
 
 // The shared feature matrix + extractors (built once; reused by anomaly + gmm). This is the
 // expensive part (incl. the O(n^2) NN feature), so it is computed at most once per context.
-function ensureFeatures(ctx) {
+// Exported so the store can pre-build (and time) it once, keeping the anomaly/gmm step timings clean.
+export function ensureFeatures(ctx) {
   if (!ctx._fx) {
     // baselineSource "user" fits the reference on user-annotated instances only — but fall back to
     // "all" if there are none (a pure-predictions file), so it never fits on an empty set.

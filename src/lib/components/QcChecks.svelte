@@ -36,9 +36,8 @@
     {
       key: "gmm",
       label: "GMM (probability)",
-      slow: true, // the EM fit is by far the heaviest check — flagged so users can turn it off for speed
-      hint: "Low-probability instance under a Gaussian-mixture density model. Heaviest check — turn off to speed up QC.",
-      info: "Probabilistic counterpart to the anomaly check: it fits a Gaussian-mixture density over the same 18 features and flags poses that are rare under it (threshold 0.95 ≈ the rarest 5%). Catches subtle, multi-feature weirdness the single-feature anomaly score misses. It is by far the heaviest check to compute — its EM fit dominates QC time (and it needs ≥ 50 instances) — so turn it off if a run feels slow. On by default.",
+      hint: "Low-probability instance under a Gaussian-mixture density model. Usually the heaviest check — see the run-timing breakdown.",
+      info: "Probabilistic counterpart to the anomaly check: it fits a Gaussian-mixture density over the same 18 features and flags poses that are rare under it (threshold 0.95 ≈ the rarest 5%). Catches subtle, multi-feature weirdness the single-feature anomaly score misses. Its EM fit is typically the heaviest step (and it needs ≥ 50 instances) — the run-timing breakdown shows exactly how long it took, so disable it if it dominates. On by default.",
     },
     {
       key: "count",
@@ -96,6 +95,7 @@
   let featOpen = $state(false); // read-only "feature vector" panel under the GMM check
   let dragFeature = $state(null); // feature name currently being dragged out to the custom drop zone
   let dropHot = $state(false); // the custom drop zone is hovered during a drag
+  let timingOpen = $state(false); // expand the per-step run-timing breakdown (auto-open while running)
 
   // a check is hidden when it can't apply (confidence needs predicted instances)
   const visibleInGroup = (g) =>
@@ -112,6 +112,38 @@
         <span class="sum pend">{qc.pendingCount} to run</span>
       {/if}
     </div>
+
+    <!-- Live run progress (during a run) → per-step timing breakdown (after) -->
+    {#if qc.runProgress}
+      {@const p = qc.runProgress}
+      {@const running = qc.status === "running"}
+      {@const totalMs = p.steps.reduce((s, x) => s + x.ms, 0)}
+      {@const maxMs = Math.max(1, ...p.steps.map((s) => s.ms))}
+      <div class="runtime" class:running>
+        <button type="button" class="rt-head" onclick={() => (timingOpen = !timingOpen)} aria-expanded={timingOpen || running} title="Per-step QC run timing — what each check cost">
+          <span class="rt-chev" class:open={timingOpen || running}>▸</span>
+          {#if running}
+            <span class="rt-title">Running QC · {p.done}/{p.total}</span>
+          {:else}
+            <span class="rt-title">⏱ QC ran in {totalMs.toFixed(0)} ms</span>
+          {/if}
+        </button>
+        {#if running}
+          <div class="rt-bar"><div class="rt-fill" style:width="{Math.round((p.done / p.total) * 100)}%"></div></div>
+        {/if}
+        {#if timingOpen || running}
+          <ul class="rt-steps">
+            {#each p.steps as s (s.key)}
+              <li class="rt-step" class:on={s.status === "running"} class:done={s.status === "done"}>
+                <span class="rt-name">{s.label}</span>
+                <span class="rt-track"><span class="rt-meter" style:width="{s.status === 'done' ? Math.round((s.ms / maxMs) * 100) : 0}%"></span></span>
+                <span class="rt-val">{s.status === "done" ? `${s.ms.toFixed(0)} ms` : s.status === "running" ? "…" : "·"}</span>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
+    {/if}
     {#snippet checkRow(c)}
       {@const ready = qc.checkReady(c.key)}
       {@const pending = qc.checkPending(c.key)}
@@ -127,7 +159,7 @@
               title="What this check detects"
             >ⓘ</button>
             <label title={c.hint}>
-              <span class="lbl">{c.label}{#if c.slow}<i class="slow" title="Heaviest check (the GMM EM fit) — turn off to speed up QC">slow</i>{/if}</span>
+              <span class="lbl">{c.label}</span>
               {#if pending}
                 <span class="penddot" title="Selected — needs a Run QC to compute"></span>
               {:else if ready}
@@ -402,7 +434,7 @@
     {/if}
     {#if qc.pendingCount > 0}
       <p class="hint">
-        {qc.pendingCount} selected check{qc.pendingCount === 1 ? "" : "s"} need{qc.pendingCount === 1 ? "s" : ""} a run{qc.checks.gmm && !qc.checkReady("gmm") ? " · GMM is slow" : ""}
+        {qc.pendingCount} selected check{qc.pendingCount === 1 ? "" : "s"} need{qc.pendingCount === 1 ? "s" : ""} a run
       </p>
     {/if}
   </section>
@@ -577,19 +609,102 @@
     flex: 1;
     letter-spacing: 0.01em;
   }
-  /* "slow" marker on the heaviest check (GMM) so users know what to turn off for speed */
-  .lbl .slow {
-    margin-left: 0.45rem;
-    font-style: normal;
-    font-size: 0.56rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--warn, #f59e0b);
-    border: 1px solid color-mix(in srgb, var(--warn, #f59e0b) 45%, transparent);
-    border-radius: var(--r-xs);
-    padding: 0.02rem 0.26rem;
-    vertical-align: middle;
+  /* run-timing: live progress bar during a run, per-step breakdown after */
+  .runtime {
+    margin: 0 0 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.02);
+    overflow: hidden;
+  }
+  .runtime.running {
+    border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  }
+  .rt-head {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    width: 100%;
+    background: none;
+    border: none;
+    padding: 0.4rem 0.55rem;
+    color: var(--text);
+    font-size: 0.72rem;
+    cursor: pointer;
+    text-align: left;
+  }
+  .rt-chev {
+    color: var(--dim);
+    font-size: 0.6rem;
+    transition: transform 0.15s var(--ease);
+  }
+  .rt-chev.open {
+    transform: rotate(90deg);
+  }
+  .rt-title {
+    font-variant-numeric: tabular-nums;
+  }
+  .runtime.running .rt-title {
+    color: var(--accent);
+  }
+  .rt-bar {
+    height: 3px;
+    background: var(--border);
+    overflow: hidden;
+  }
+  .rt-fill {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.2s var(--ease);
+  }
+  .rt-steps {
+    list-style: none;
+    margin: 0;
+    padding: 0.2rem 0.55rem 0.5rem;
+    font-size: 0.66rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .rt-step {
+    display: grid;
+    grid-template-columns: 1fr 3.4rem 2.9rem;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.1rem 0;
+    color: var(--muted);
+  }
+  .rt-step.on {
+    color: var(--accent);
+  }
+  .rt-step.done {
+    color: var(--text);
+  }
+  .rt-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rt-track {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .rt-meter {
+    display: block;
+    height: 100%;
+    background: color-mix(in srgb, var(--accent) 55%, transparent);
+    border-radius: 2px;
+    transition: width 0.2s var(--ease);
+  }
+  .rt-step.on .rt-meter {
+    background: var(--accent);
+  }
+  .rt-val {
+    text-align: right;
+    color: var(--dim);
+  }
+  .rt-step.done .rt-val {
+    color: var(--muted);
   }
   .cnt {
     color: var(--muted);

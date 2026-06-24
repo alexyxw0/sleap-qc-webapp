@@ -10,6 +10,7 @@
 
 import {
   buildContext,
+  ensureFeatures,
   computeAnomalyUnit,
   computeGmmUnit,
   computeFrameUnit,
@@ -39,6 +40,19 @@ const UNIT_OF = {
   instConfidence: "frame",
   negative: "frame",
   duplicates: "frame",
+};
+
+// Friendly labels for the run-timing breakdown (which compute step each unit corresponds to).
+const UNIT_LABEL = {
+  context: "Context + poses",
+  features: "Feature vector",
+  anomaly: "Anomaly",
+  gmm: "GMM (EM fit)",
+  chirality: "Chirality",
+  ordering: "Chain ordering",
+  poseSplit: "Split pose",
+  frame: "Frame checks",
+  derive: "Aggregate",
 };
 
 // Frame-level checks are binary (flag / no flag), so they carry no score of their own. To rank
@@ -86,6 +100,7 @@ class QCStore {
   #ctxBaselineSource = "all"; // baselineSource the #ctx was fit with (rebuild on change)
   #computed = {}; // unit -> result maps (the memoization cache)
   #featureSeq = 0; // id counter for user feature-checks
+  #progress = null; // { steps: [{ key, label, status, ms }], done, total } — live during run, kept after
 
   // Derived per-frame maps (rebuilt from #computed after each run).
   #instanceScores = new Map(); // "v:f:i" -> anomaly score
@@ -157,6 +172,12 @@ class QCStore {
     this.rev;
     return Object.keys(this.checks).filter((n) => this.checkPending(n)).length
       + (this.featureCheckActive && !this.checkReady("anomaly") ? 1 : 0);
+  }
+
+  /** Per-step run timing (live while running, retained after) — drives the progress bar + breakdown. */
+  get runProgress() {
+    this.rev;
+    return this.#progress;
   }
   toggleCheck(name) {
     if (name in this.checks) {
@@ -942,28 +963,47 @@ class QCStore {
     if (!store.labels || this.status === "running") return;
     this.status = "running";
     this.error = null;
+
+    // Rebuild the context (re-snapshots poses + clears the memoized units) when the labels changed —
+    // a new file (identity) OR an in-place instance edit (store.rev bumps without changing identity)
+    // OR a baseline-source switch. Otherwise reuse the memoized context + already-computed units.
+    const rebuild = store.labels !== this.#ctxLabels || store.rev !== this.#ctxRev || this.baselineSource !== this.#ctxBaselineSource;
+    const need = new Set();
+    for (const [name, on] of Object.entries(this.checks)) if (on) need.add(UNIT_OF[name]);
+    if (this.featureCheckActive) need.add("anomaly"); // feature-checks reuse the anomaly ZScore fit
+    const units = [...need].filter((u) => rebuild || !this.#computed[u]); // (rebuild clears #computed below)
+    const usesFeatures = units.includes("anomaly") || units.includes("gmm"); // shared 18-feature build
+
+    // The live step list — each step is run timed, yielding to the event loop first so the progress
+    // bar repaints before a (possibly slow) blocking compute. Retained after the run as a breakdown.
+    const steps = [];
+    if (rebuild) steps.push({ key: "context", label: UNIT_LABEL.context, status: "pending", ms: 0 });
+    if (usesFeatures) steps.push({ key: "features", label: UNIT_LABEL.features, status: "pending", ms: 0 });
+    for (const u of units) steps.push({ key: u, label: UNIT_LABEL[u] ?? u, status: "pending", ms: 0 });
+    steps.push({ key: "derive", label: UNIT_LABEL.derive, status: "pending", ms: 0 });
+    this.#progress = { steps, done: 0, total: steps.length };
     this.rev++;
-    await new Promise((r) => setTimeout(r, 0)); // let "Running…" paint before the blocking compute
+    await new Promise((r) => setTimeout(r, 0)); // let "Running…" + the bar paint before the compute
+
+    const runStep = async (key, fn) => {
+      const step = steps.find((s) => s.key === key);
+      if (step) { step.status = "running"; this.rev++; await new Promise((r) => setTimeout(r, 0)); }
+      const t = performance.now();
+      fn();
+      if (step) { step.ms = performance.now() - t; step.status = "done"; this.#progress.done++; this.rev++; }
+    };
+
     try {
-      // Rebuild the context (re-snapshots poses + clears the memoized units) when the labels
-      // changed — either a new file (identity) OR an in-place instance edit (store.rev bumps
-      // without changing identity). Without the rev check, editing a keypoint and re-running
-      // would silently reuse the stale pose snapshot and cached unit results.
-      if (store.labels !== this.#ctxLabels || store.rev !== this.#ctxRev || this.baselineSource !== this.#ctxBaselineSource) {
+      if (rebuild) await runStep("context", () => {
         this.#ctx = buildContext(store.labels, makeQCConfig({ useGmm: false, baselineSource: this.baselineSource }));
         this.#ctxLabels = store.labels;
         this.#ctxRev = store.rev;
         this.#ctxBaselineSource = this.baselineSource;
         this.#computed = {};
-      }
-      // compute the units the enabled checks need, skipping anything already cached
-      const need = new Set();
-      for (const [name, on] of Object.entries(this.checks)) if (on) need.add(UNIT_OF[name]);
-      if (this.featureCheckActive) need.add("anomaly"); // feature-checks reuse the anomaly ZScore fit
-      for (const unit of need) {
-        if (!this.#computed[unit]) this.#computed[unit] = this.#computeUnit(unit);
-      }
-      this.#derive();
+      });
+      if (usesFeatures) await runStep("features", () => ensureFeatures(this.#ctx)); // pre-build once → clean anomaly/gmm timings
+      for (const unit of units) await runStep(unit, () => { this.#computed[unit] = this.#computeUnit(unit); });
+      await runStep("derive", () => this.#derive());
       this.ranAtRev = store.rev;
       this.status = "done";
       this.rev++;
@@ -1042,6 +1082,7 @@ class QCStore {
     this.#ctxLabels = null;
     this.#ctxRev = -1;
     this.#computed = {};
+    this.#progress = null; // drop the prior run's timing breakdown
     this.#derive();
     // NOTE: this.checks (the user's enabled-technique preferences) intentionally persist.
     this.ranAtRev = -1;
