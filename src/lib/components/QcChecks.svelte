@@ -54,9 +54,15 @@
     },
     {
       key: "confidence",
-      label: "Low confidence",
-      hint: "A predicted keypoint with a low confidence score.",
-      info: "For PREDICTED labels only: flags a frame whose weakest visible keypoint scores below the threshold below (the SLEAP confidence-map peak value, 0–1). Identifies uncertain placements to review. Shown only when the file has predicted instances; user-labeled instances have no scores. Off by default.",
+      label: "Low keypoint confidence",
+      hint: "A predicted keypoint with a low confidence score (weakest or mean per instance).",
+      info: "For PREDICTED labels only: flags a frame whose per-keypoint confidence (the SLEAP confidence-map peak value, 0–1) drops below the threshold. The mode toggle picks WEAKEST (the single least-confident visible keypoint — most actionable) or AVERAGE (the mean over an instance's visible keypoints). Shown only when the file has predicted instances; user-labeled instances have no scores. Off by default.",
+    },
+    {
+      key: "instConfidence",
+      label: "Low instance confidence",
+      hint: "A predicted instance with a low instance-level confidence score.",
+      info: "For PREDICTED labels only: flags a frame containing an instance whose INSTANCE-level score (PredictedInstance.score — the model's overall confidence in that detection, distinct from the per-keypoint scores) is below the threshold. Catches whole detections the model was unsure about. Shown only when the file has predicted instances. Off by default.",
     },
     {
       key: "negative",
@@ -82,7 +88,7 @@
   const GROUPS = [
     { id: "geometric", label: "Geometric", hint: "Structural checks: L/R flip + chain ordering (scale-invariant hard rules) and split-pose / chimera.", keys: ["chirality", "ordering", "poseSplit"] },
     { id: "statistical", label: "Statistical", hint: "Outlier detectors that score each instance against the file's distribution (shared feature vector + baseline control). Only GMM is non-deterministic (EM fit); the z-score is deterministic.", keys: ["anomaly", "gmm"] },
-    { id: "frame", label: "Frame-level", hint: "Whole-frame consistency: count, sparsity, confidence, negative frames, duplicates.", keys: ["count", "sparse", "confidence", "negative", "duplicates"] },
+    { id: "frame", label: "Frame-level", hint: "Whole-frame consistency: count, sparsity, keypoint/instance confidence, negative frames, duplicates.", keys: ["count", "sparse", "confidence", "instConfidence", "negative", "duplicates"] },
   ];
 
   let groupOpen = $state({ geometric: false, statistical: false, frame: false }); // per-group collapse (compact by default; each header shows "N on")
@@ -91,7 +97,7 @@
 
   // a check is hidden when it can't apply (confidence needs predicted instances)
   const visibleInGroup = (g) =>
-    g.keys.map((k) => CHECK_BY_KEY[k]).filter((c) => c.key !== "confidence" || !qc.hasResults || qc.hasPredictions);
+    g.keys.map((k) => CHECK_BY_KEY[k]).filter((c) => (c.key !== "confidence" && c.key !== "instConfidence") || !qc.hasResults || qc.hasPredictions);
 </script>
 
 {#if store.labels}
@@ -248,8 +254,12 @@
             </div>
           {/if}
           {#if c.key === "confidence" && qc.checks.confidence}
-            <!-- Min keypoint confidence: flag predicted instances with a weaker visible keypoint. -->
-            <div class="thresh" title="Flag a predicted instance whose weakest visible keypoint scores below this">
+            <!-- Keypoint-confidence mode: the single weakest visible keypoint, or the instance mean. -->
+            <div class="seg cmode">
+              <button type="button" class:on={qc.confidenceMode === "min"} onclick={() => (qc.confidenceMode = "min")} title="Flag on the single least-confident visible keypoint">Weakest</button>
+              <button type="button" class:on={qc.confidenceMode === "avg"} onclick={() => (qc.confidenceMode = "avg")} title="Flag on the mean confidence over an instance's visible keypoints">Average</button>
+            </div>
+            <div class="thresh" title="Flag a predicted instance whose {qc.confidenceMode === 'avg' ? 'mean' : 'weakest'} keypoint confidence is below this">
               <span class="tlbl">min&nbsp;score</span>
               <input
                 type="range"
@@ -260,6 +270,21 @@
                 oninput={(e) => (qc.confidenceThreshold = +e.currentTarget.value)}
               />
               <span class="tval">&lt;&thinsp;{qc.confidenceThreshold.toFixed(2)}</span>
+            </div>
+          {/if}
+          {#if c.key === "instConfidence" && qc.checks.instConfidence}
+            <!-- Instance-level (PredictedInstance.score) confidence threshold. -->
+            <div class="thresh" title="Flag a predicted instance whose instance-level score is below this">
+              <span class="tlbl">min&nbsp;score</span>
+              <input
+                type="range"
+                min="0.05"
+                max="0.95"
+                step="0.05"
+                value={qc.instConfidenceThreshold}
+                oninput={(e) => (qc.instConfidenceThreshold = +e.currentTarget.value)}
+              />
+              <span class="tval">&lt;&thinsp;{qc.instConfidenceThreshold.toFixed(2)}</span>
             </div>
           {/if}
         </li>
@@ -346,6 +371,10 @@
     border: 1px solid var(--border);
     border-radius: var(--r-xs);
     overflow: hidden;
+  }
+  /* keypoint-confidence Weakest/Average toggle — indented under the check, not pushed right */
+  .seg.cmode {
+    margin: 0 0 0.45rem 1.35rem;
   }
   .seg button {
     background: none;

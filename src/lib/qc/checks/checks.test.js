@@ -51,12 +51,13 @@ describe("frame-level checks", () => {
     expect(det.checkFrame([oneNode], "v", true).minVisibleNodeCount).toBe(Infinity); // negative -> exempt
   });
 
-  it("checkFrame: reports the weakest predicted-keypoint confidence (Infinity without scores)", () => {
+  it("checkFrame: reports weakest + mean keypoint + instance confidence (Infinity without scores)", () => {
     const det = new LabelQCDetector(makeQCConfig());
     det.countChecker = new InstanceCountChecker(true).fit([1], ["v"]);
     const pose = [[10, 10], [20, 20]];
-    expect(det.checkFrame([pose], "v", false, [{ minScore: 0.18, minNode: 1 }]))
-      .toMatchObject({ minPointScore: 0.18, lowConfInstance: 0, lowConfNode: 1 });
+    const conf = [{ minScore: 0.18, minNode: 1, avgScore: 0.5, instScore: 0.4 }];
+    expect(det.checkFrame([pose], "v", false, conf))
+      .toMatchObject({ minPointScore: 0.18, lowConfNode: 1, avgPointScore: 0.5, minInstScore: 0.4, lowInstance: 0 });
     expect(det.checkFrame([pose], "v", false, null).minPointScore).toBe(Infinity); // user labels -> no scores
   });
 

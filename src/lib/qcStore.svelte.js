@@ -36,6 +36,7 @@ const UNIT_OF = {
   count: "frame",
   sparse: "frame",
   confidence: "frame",
+  instConfidence: "frame",
   negative: "frame",
   duplicates: "frame",
 };
@@ -48,6 +49,7 @@ const FRAME_SEVERITY = {
   count: 0.9, // missing / extra animal
   sparse: 0.85, // an instance localized by too few visible nodes
   confidence: 0.6, // a weak predicted keypoint
+  instConfidence: 0.62, // a low-confidence instance (whole-instance uncertainty)
   negative: 0.45, // a negative frame that still has instances
   duplicates: 0.4, // overlapping / duplicated instances
 };
@@ -61,7 +63,9 @@ class QCStore {
   orderingThreshold = $state(0.3); // chain-ordering flag (combined: a crossing -> 1.0, else order_inversion_rate)
   poseSplitThreshold = $state(0.5); // chimera flag: saturating split score (raw split 1.0 -> 0.5)
   sparseThreshold = $state(2); // flag an instance localized by fewer than this many visible nodes
-  confidenceThreshold = $state(0.3); // flag a predicted instance whose weakest visible keypoint scores below this
+  confidenceThreshold = $state(0.3); // flag a predicted instance whose keypoint confidence scores below this
+  confidenceMode = $state("min"); // keypoint-confidence mode: "min" (weakest visible keypoint) or "avg" (mean)
+  instConfidenceThreshold = $state(0.3); // flag a predicted instance whose instance-level score is below this
   baselineSource = $state("all"); // outlier reference: "all" labeled instances, or "user"-annotated only
   rev = $state(0); // bump when results / selection change
   ranAtRev = -1; // store.rev at the time QC last ran (for staleness)
@@ -69,7 +73,7 @@ class QCStore {
   // Which detection techniques to run / include. The flagged frames are the UNION of the
   // enabled-and-computed checks. Defaults ON: anomaly, chirality, gmm, duplicates. The frame /
   // structural checks (count, sparse, confidence, negative) default OFF — enable them as needed.
-  checks = $state({ anomaly: true, gmm: true, chirality: true, ordering: false, poseSplit: true, count: false, sparse: false, confidence: false, negative: false, duplicates: true });
+  checks = $state({ anomaly: true, gmm: true, chirality: true, ordering: false, poseSplit: true, count: false, sparse: false, confidence: false, instConfidence: false, negative: false, duplicates: true });
 
   #ctx = null; // shared frame/pose/feature context for the current labels
   #ctxLabels = null; // identity of the labels #ctx was built for
@@ -107,6 +111,10 @@ class QCStore {
   get hasPredictions() {
     this.rev;
     return this.#ctx?.hasPredictions ?? false;
+  }
+  /** The frame's keypoint-confidence value for the active mode: weakest ("min") or mean ("avg"). */
+  #kpConf(fq) {
+    return this.confidenceMode === "avg" ? fq.avgPointScore : fq.minPointScore;
   }
   /** Whether the loaded labels contain any user-annotated instances (for the baseline-source choice). */
   get hasUserInstances() {
@@ -168,7 +176,8 @@ class QCStore {
       if (
         (c.count && fq.isWrongCount) ||
         (c.sparse && fq.minVisibleNodeCount < this.sparseThreshold) ||
-        (c.confidence && fq.minPointScore < this.confidenceThreshold) ||
+        (c.confidence && this.#kpConf(fq) < this.confidenceThreshold) ||
+        (c.instConfidence && fq.minInstScore < this.instConfidenceThreshold) ||
         (c.negative && fq.isNegativeWithInstances) ||
         (c.duplicates && (fq.duplicatePairs?.length ?? 0) > 0)
       ) {
@@ -212,7 +221,8 @@ class QCStore {
       if (
         (name === "count" && fq.isWrongCount) ||
         (name === "sparse" && fq.minVisibleNodeCount < this.sparseThreshold) ||
-        (name === "confidence" && fq.minPointScore < this.confidenceThreshold) ||
+        (name === "confidence" && this.#kpConf(fq) < this.confidenceThreshold) ||
+        (name === "instConfidence" && fq.minInstScore < this.instConfidenceThreshold) ||
         (name === "negative" && fq.isNegativeWithInstances) ||
         (name === "duplicates" && (fq.duplicatePairs?.length ?? 0) > 0)
       ) {
@@ -259,7 +269,8 @@ class QCStore {
       isWrongCount: c.count ? fq.isWrongCount : false,
       isEmpty: c.count ? fq.isEmpty : false,
       isSparse: c.sparse ? fq.minVisibleNodeCount < this.sparseThreshold : false,
-      isLowConf: c.confidence ? fq.minPointScore < this.confidenceThreshold : false,
+      isLowConf: c.confidence ? this.#kpConf(fq) < this.confidenceThreshold : false,
+      isLowInstConf: c.instConfidence ? fq.minInstScore < this.instConfidenceThreshold : false,
       isNegativeWithInstances: c.negative ? fq.isNegativeWithInstances : false,
       duplicatePairs: c.duplicates ? fq.duplicatePairs : [],
       duplicateReasons: c.duplicates ? fq.duplicateReasons : [],
@@ -319,10 +330,12 @@ class QCStore {
     if (fq) {
       if (c.count && fq.isWrongCount) out.push({ key: "count", label: fq.isEmpty ? "Empty frame" : fq.isOvercount ? "Extra instance" : "Missing instance", score: null });
       if (c.sparse && fq.minVisibleNodeCount < this.sparseThreshold) out.push({ key: "sparse", label: `Sparse instance (${fq.minVisibleNodeCount} node${fq.minVisibleNodeCount === 1 ? "" : "s"})`, score: null });
-      if (c.confidence && fq.minPointScore < this.confidenceThreshold) {
-        const nm = fq.lowConfNode >= 0 ? store.skeleton?.nodeNames?.[fq.lowConfNode] ?? `node ${fq.lowConfNode}` : "";
-        out.push({ key: "confidence", label: `Low confidence${nm ? ` · ${nm}` : ""}`, score: fq.minPointScore });
+      if (c.confidence && this.#kpConf(fq) < this.confidenceThreshold) {
+        const avg = this.confidenceMode === "avg";
+        const nm = !avg && fq.lowConfNode >= 0 ? store.skeleton?.nodeNames?.[fq.lowConfNode] ?? `node ${fq.lowConfNode}` : "";
+        out.push({ key: "confidence", label: `Low ${avg ? "avg" : "keypoint"} conf${nm ? ` · ${nm}` : ""}`, score: this.#kpConf(fq) });
       }
+      if (c.instConfidence && fq.minInstScore < this.instConfidenceThreshold) out.push({ key: "instConfidence", label: "Low instance conf", score: fq.minInstScore });
       if (c.negative && fq.isNegativeWithInstances) out.push({ key: "negative", label: "Negative", score: null });
       if (c.duplicates && (fq.duplicatePairs?.length ?? 0) > 0) out.push({ key: "duplicates", label: "Duplicate", score: null });
     }
@@ -551,7 +564,8 @@ class QCStore {
       // by concern: count / sparse first, negative / duplicates last.
       if (c.count && fq.isWrongCount) bump(FRAME_SEVERITY.count);
       if (c.sparse && fq.minVisibleNodeCount < this.sparseThreshold) bump(FRAME_SEVERITY.sparse);
-      if (c.confidence && fq.minPointScore < this.confidenceThreshold) bump(FRAME_SEVERITY.confidence);
+      if (c.confidence && this.#kpConf(fq) < this.confidenceThreshold) bump(FRAME_SEVERITY.confidence);
+      if (c.instConfidence && fq.minInstScore < this.instConfidenceThreshold) bump(FRAME_SEVERITY.instConfidence);
       if (c.negative && fq.isNegativeWithInstances) bump(FRAME_SEVERITY.negative);
       if (c.duplicates && (fq.duplicatePairs?.length ?? 0) > 0) bump(FRAME_SEVERITY.duplicates);
     }
@@ -913,7 +927,7 @@ class QCStore {
 
 export function hasFrameIssue(fq) {
   if (!fq) return false;
-  return fq.isWrongCount || fq.isSparse || fq.isLowConf || fq.isNegativeWithInstances || (fq.duplicatePairs?.length ?? 0) > 0;
+  return fq.isWrongCount || fq.isSparse || fq.isLowConf || fq.isLowInstConf || fq.isNegativeWithInstances || (fq.duplicatePairs?.length ?? 0) > 0;
 }
 
 // Bounding box (image space) over an instance's placed points — the zoom fallback when a

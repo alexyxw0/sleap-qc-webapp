@@ -157,7 +157,13 @@ export class LabelQCDetector {
     // Weakest visible keypoint across the frame's predicted instances (threshold-free — the store
     // applies the live cutoff). Lets confidence scores act as QC when some labels are predicted.
     let minPointScore = Infinity, lowConfInstance = -1, lowConfNode = -1;
-    if (conf) conf.forEach((c, i) => { if (c.minScore < minPointScore) { minPointScore = c.minScore; lowConfInstance = i; lowConfNode = c.minNode; } });
+    let avgPointScore = Infinity, avgConfInstance = -1; // worst per-instance MEAN keypoint confidence
+    let minInstScore = Infinity, lowInstance = -1; // worst INSTANCE-level confidence (inst.score)
+    if (conf) conf.forEach((c, i) => {
+      if (c.minScore < minPointScore) { minPointScore = c.minScore; lowConfInstance = i; lowConfNode = c.minNode; }
+      if (c.avgScore < avgPointScore) { avgPointScore = c.avgScore; avgConfInstance = i; }
+      if (c.instScore < minInstScore) { minInstScore = c.instScore; lowInstance = i; }
+    });
     // A negative (background) frame is intentionally empty/odd-count — exempt it from the count
     // check (otherwise its 0 instances would always read as "missing"). So a NON-negative frame
     // with no instances is flagged (0 < expected), while a negative empty frame is not.
@@ -185,6 +191,10 @@ export class LabelQCDetector {
       minPointScore,
       lowConfInstance,
       lowConfNode,
+      avgPointScore,
+      avgConfInstance,
+      minInstScore,
+      lowInstance,
       isNegativeWithInstances: checkNegativeFrame(isNegative, poses.length),
       duplicatePairs: [],
       duplicateReasons: [],
@@ -271,13 +281,20 @@ export function buildContext(labels, config = makeQCConfig()) {
   // Weakest VISIBLE keypoint confidence for a predicted instance — {minScore, minNode}; Infinity
   // for a user instance (no per-point scores). Used by the prediction-confidence QC check.
   const instConf = (inst) => {
-    let minScore = Infinity, minNode = -1;
+    let minScore = Infinity, minNode = -1, sum = 0, count = 0;
     const pts = inst.points ?? [];
     for (let k = 0; k < pts.length; k++) {
       const p = pts[k];
-      if (p?.visible && typeof p.score === "number" && p.score < minScore) { minScore = p.score; minNode = k; }
+      if (p?.visible && typeof p.score === "number") {
+        if (p.score < minScore) { minScore = p.score; minNode = k; }
+        sum += p.score; count++;
+      }
     }
-    return { minScore, minNode };
+    return {
+      minScore, minNode, // weakest visible keypoint
+      avgScore: count ? sum / count : Infinity, // mean visible-keypoint confidence
+      instScore: typeof inst.score === "number" ? inst.score : Infinity, // instance-level score
+    };
   };
   const frames = [];
   const allPoses = [];

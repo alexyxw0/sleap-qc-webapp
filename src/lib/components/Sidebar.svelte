@@ -170,7 +170,8 @@
         <ul class="issues">
           {#if fq.isWrongCount}<li>{fq.isEmpty ? "empty frame — no instances" : `${fq.actualInstanceCount} / ${fq.expectedInstanceCount} expected instances (${fq.isOvercount ? "extra" : "missing"})`}</li>{/if}
           {#if fq.isSparse}<li>sparse instance — only {fq.minVisibleNodeCount} visible node{fq.minVisibleNodeCount === 1 ? "" : "s"}</li>{/if}
-          {#if fq.isLowConf}<li>low confidence — weakest keypoint {fq.minPointScore.toFixed(2)}</li>{/if}
+          {#if fq.isLowConf}<li>low keypoint confidence — {qc.confidenceMode === "avg" ? `mean ${fq.avgPointScore.toFixed(2)}` : `weakest ${fq.minPointScore.toFixed(2)}`}</li>{/if}
+          {#if fq.isLowInstConf}<li>low instance confidence — score {fq.minInstScore.toFixed(2)}</li>{/if}
           {#if fq.isNegativeWithInstances}<li>negative frame has instances</li>{/if}
           {#if fq.duplicatePairs?.length}<li>{fq.duplicatePairs.length} duplicate pair(s): {fq.duplicateReasons.join(", ")}</li>{/if}
         </ul>
