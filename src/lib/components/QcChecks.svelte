@@ -248,14 +248,27 @@
 
     {#each GROUPS as g (g.id)}
       {@const visible = visibleInGroup(g)}
-      {@const nOn = g.keys.filter((k) => qc.checks[k]).length}
+      {@const visKeys = visible.map((c) => c.key)}
+      {@const onCount = visKeys.filter((k) => qc.checks[k]).length}
+      {@const allOn = visible.length > 0 && onCount === visible.length}
       {#if visible.length}
         <div class="group">
-          <button type="button" class="grp-head" onclick={() => (groupOpen[g.id] = !groupOpen[g.id])} aria-expanded={groupOpen[g.id]} title={g.hint}>
-            <span class="grpchev" class:open={groupOpen[g.id]}>▸</span>
-            <span class="grp-lbl">{g.label}</span>
-            {#if nOn}<span class="grp-sum">{nOn} on</span>{/if}
-          </button>
+          <div class="grp-head">
+            <input
+              type="checkbox"
+              class="grp-check"
+              checked={allOn}
+              indeterminate={onCount > 0 && !allOn}
+              onchange={() => qc.setChecks(visKeys, !allOn)}
+              title="{allOn ? 'Disable' : 'Enable'} all {g.label.toLowerCase()} checks"
+              aria-label="Toggle all {g.label} checks"
+            />
+            <button type="button" class="grp-toggle" onclick={() => (groupOpen[g.id] = !groupOpen[g.id])} aria-expanded={groupOpen[g.id]} title={g.hint}>
+              <span class="grpchev" class:open={groupOpen[g.id]}>▸</span>
+              <span class="grp-lbl">{g.label}</span>
+              {#if onCount}<span class="grp-sum">{onCount} on</span>{/if}
+            </button>
+          </div>
           {#if groupOpen[g.id]}
             {#if g.id === "statistical" && (!qc.hasResults || (qc.hasPredictions && qc.hasUserInstances))}
               <div class="baseline" title="Which instances define the 'normal' reference the Anomaly / GMM outlier checks score against">
@@ -335,16 +348,31 @@
   .seg button:hover:not(.on) {
     color: var(--text);
   }
-  /* a detector group: a small secondary header + its (collapsible) list of checks */
+  /* a detector group: a category checkbox + a small secondary (collapsible) header */
   .grp-head {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
-    width: 100%;
-    background: none;
-    border: none;
+    gap: 0.45rem;
     border-top: 1px solid var(--border-soft, var(--border));
     padding: 0.5rem 0 0.32rem;
+  }
+  .grp-check {
+    flex: none;
+    accent-color: var(--accent);
+    width: 13px;
+    height: 13px;
+    margin: 0;
+    cursor: pointer;
+  }
+  .grp-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex: 1;
+    min-width: 0;
+    background: none;
+    border: none;
+    padding: 0;
     cursor: pointer;
     text-align: left;
     color: inherit;
@@ -370,8 +398,8 @@
     letter-spacing: 0.07em;
     color: var(--muted);
   }
-  .grp-head:hover .grp-lbl,
-  .grp-head:hover .grpchev {
+  .grp-toggle:hover .grp-lbl,
+  .grp-toggle:hover .grpchev {
     color: var(--text);
   }
   .grp-sum {

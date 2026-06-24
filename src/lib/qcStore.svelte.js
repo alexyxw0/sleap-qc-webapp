@@ -129,6 +129,12 @@ class QCStore {
     }
   }
 
+  /** Enable/disable a set of checks at once (a category toggle) — one rev bump => one re-run. */
+  setChecks(names, value) {
+    for (const n of names) if (n in this.checks) this.checks[n] = value;
+    this.rev++;
+  }
+
   /** Number of frames flagged by the UNION of the currently-enabled (and computed) checks. */
   get flaggedFrameCount() {
     this.rev;
