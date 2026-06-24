@@ -208,6 +208,14 @@
     if (!lf) return;
     const { x, y, scale } = toImage(e);
     const hit = hitTestNode(lf, HIT_PX * scale)(x, y);
+    // Ctrl / Cmd + click a placed node toggles its visibility, then re-scores the instance.
+    if (hit && (e.ctrlKey || e.metaKey)) {
+      edit.select(hit.instIdx, hit.nodeIdx);
+      edit.toggleVisible(hit.instIdx, hit.nodeIdx);
+      qc.rescoreInstance(store.current, hit.instIdx);
+      e.preventDefault();
+      return;
+    }
     if (hit) {
       const already = edit.selInstance === hit.instIdx && edit.selNode === hit.nodeIdx;
       edit.select(hit.instIdx, hit.nodeIdx);
@@ -319,6 +327,7 @@
           onpointerdown={onPointerDown}
           onpointermove={onPointerMove}
           onpointerup={onPointerUp}
+          oncontextmenu={(e) => { if (e.ctrlKey || e.metaKey) e.preventDefault(); }}
         ></canvas>
         {#if unplacedHint}
           <div class="placehint"><b>{unplacedHint}</b> isn't placed — click on the image to place it</div>

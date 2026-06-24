@@ -18,6 +18,7 @@
         ["click", "select point"],
         ["drag", "move selected point"],
         ["V", "show / hide point"],
+        ["⌘/Ctrl-click", "show / hide a point"],
         ["Del", "delete instance"],
         ["⌘Z / ⇧⌘Z", "undo / redo"],
       ],

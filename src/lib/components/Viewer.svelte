@@ -160,6 +160,14 @@
     const { x, y, scale } = toImage(e);
     const hit = hitTestNode(lf, HIT_PX * scale)(x, y);
 
+    // Ctrl / Cmd + click a placed node toggles its visibility (no select / drag).
+    if (hit && (e.ctrlKey || e.metaKey)) {
+      edit.select(hit.instIdx, hit.nodeIdx);
+      edit.toggleVisible(hit.instIdx, hit.nodeIdx);
+      e.preventDefault();
+      return;
+    }
+
     if (hit) {
       // A node is only draggable if it was already the selected node *before* this
       // press. A first click just selects it, so a stray click can't nudge a point.
@@ -335,6 +343,7 @@
       onpointerdown={onPointerDown}
       onpointermove={onPointerMove}
       onpointerup={onPointerUp}
+      oncontextmenu={(e) => { if (e.ctrlKey || e.metaKey) e.preventDefault(); }}
     ></canvas>
 
     <div class="vf" aria-hidden="true"></div>
