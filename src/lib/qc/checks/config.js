@@ -16,6 +16,11 @@ export function makeQCConfig(overrides = {}) {
     gmmMinSamples: 50,
     gmmPercentileThreshold: 5.0,
 
+    // Cap the fit/reference set (baseline stats, NN reference, GMM) on large files — the NN is
+    // O(ref²), so an uncapped reference makes huge datasets infeasible. All instances are still
+    // scored against this sampled reference.
+    maxReferenceSize: 4000,
+
     // Which instances define the outlier "normal" reference: "all" labeled, or "user" (user-
     // annotated only — cleaner ground truth, so predictions are measured against it).
     baselineSource: "all",

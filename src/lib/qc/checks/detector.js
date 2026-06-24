@@ -311,10 +311,29 @@ function ensureFeatures(ctx) {
     // baselineSource "user" fits the reference on user-annotated instances only — but fall back to
     // "all" if there are none (a pure-predictions file), so it never fits on an empty set.
     const useUser = ctx.config.baselineSource === "user" && ctx.userMask?.some(Boolean);
-    const fitMask = useUser ? ctx.userMask : null;
+    let fitMask = useUser ? ctx.userMask : null;
+    // Large datasets: the baseline stats / NN reference / GMM only need a representative SAMPLE, and
+    // the NN reference is O(ref²). Cap the fit set so huge files stay feasible — ALL instances are
+    // still scored against this reference, just fit on at most MAX_REF of them.
+    const max = ctx.config.maxReferenceSize ?? MAX_REF;
+    const refCount = fitMask ? fitMask.reduce((a, b) => a + (b ? 1 : 0), 0) : ctx.allPoses.length;
+    if (refCount > max) fitMask = capReference(fitMask, ctx.allPoses.length, max);
     ctx._fx = new LabelQCDetector(ctx.config).fitFeatures(ctx.allPoses, ctx.analyzer, fitMask);
   }
   return ctx._fx;
+}
+
+const MAX_REF = 4000; // default reference-set cap (see ensureFeatures); overridable via config.maxReferenceSize
+
+/** Evenly-spaced boolean mask selecting at most `max` of the eligible instances (baseMask, or all). */
+function capReference(baseMask, n, max) {
+  const eligible = [];
+  for (let i = 0; i < n; i++) if (!baseMask || baseMask[i]) eligible.push(i);
+  if (eligible.length <= max) return baseMask;
+  const out = new Array(n).fill(false);
+  const stride = eligible.length / max;
+  for (let k = 0; k < max; k++) out[eligible[Math.floor(k * stride)]] = true;
+  return out;
 }
 
 // Visit each instance once, aligned with the flat allPoses / feature-matrix row order.
