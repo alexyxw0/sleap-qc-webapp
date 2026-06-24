@@ -131,8 +131,8 @@
       class="side-section"
       title="Anomaly = geometrically unusual vs. the rest of this file. Confidence = the model's own per-keypoint certainty. Both are review hints, not certain errors."
     >
-      <h3 class="side-h">QC — this frame{qc.stale ? " · stale" : ""}</h3>
       <div class="qcrow">
+        <span class="qframe-lbl">frame{qc.stale ? " · stale" : ""}</span>
         {#if fs != null}
           <span class="qchip" style:background={heatColor(fs)}>{fs.toFixed(2)}</span>
         {/if}
@@ -445,9 +445,17 @@
   }
   .qcrow {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: 0.5rem;
     min-width: 0;
+  }
+  /* compact inline cue replacing the old "QC — this frame" header */
+  .qframe-lbl {
+    flex: none;
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--dim);
   }
   .verdict {
     flex: 1;

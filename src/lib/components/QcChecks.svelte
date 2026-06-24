@@ -79,7 +79,7 @@
   ];
 
   let collapsed = $state(false); // collapse the whole detection-checks block to de-clutter
-  let groupOpen = $state({ geometric: true, statistical: true, frame: true }); // per-group collapse
+  let groupOpen = $state({ geometric: false, statistical: false, frame: false }); // per-group collapse (compact by default; each header shows "N on")
   let infoOpen = $state({}); // per-check key -> show the long-form description
   let featOpen = $state(false); // read-only "feature vector" panel under the GMM check
 
