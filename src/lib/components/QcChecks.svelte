@@ -370,9 +370,14 @@
     gap: 0.4rem;
     flex: 1;
     min-width: 0;
+    appearance: none;
+    -webkit-appearance: none;
     background: none;
     border: none;
+    border-radius: 0;
+    box-shadow: none;
     padding: 0;
+    font: inherit;
     cursor: pointer;
     text-align: left;
     color: inherit;
