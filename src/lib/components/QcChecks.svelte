@@ -13,7 +13,7 @@
       key: "chirality",
       label: "L/R flip (chirality)",
       hint: "Whole-instance left/right mirror flip: symmetric pairs (e.g. Ear_L/Ear_R) sitting on the wrong side of the body midline.",
-      info: "Whole-instance left/right mirror flip — symmetric keypoint pairs (Ear_L/Ear_R, …) sitting on the wrong side of the body midline. A mirror flip preserves every edge length and unsigned angle, so it is invisible to the geometric checks below; this is the dedicated signed-side test, measuring which side of the body axis each left/right keypoint falls on. Coordinate-only and scale-invariant. Auto-disables when the skeleton has no symmetric (or name-inferable) pairs. On by default.",
+      info: "Whole-instance left/right mirror flip — symmetric keypoint pairs (Ear_L/Ear_R, …) sitting on the wrong side of the body midline. A mirror flip preserves every edge length and unsigned angle, so it is invisible to the feature-based Anomaly / GMM checks; this is the dedicated signed-side test, measuring which side of the body axis each left/right keypoint falls on. Coordinate-only and scale-invariant. Auto-disables when the skeleton has no symmetric (or name-inferable) pairs. On by default.",
     },
     {
       key: "ordering",
@@ -65,9 +65,26 @@
     },
   ];
 
+  const CHECK_BY_KEY = Object.fromEntries(CHECKS.map((c) => [c.key, c]));
+
+  // The detectors grouped by KIND, each its own collapsible sub-section, so the panel reads as three
+  // short lists instead of one long one. Geometric = deterministic scale-invariant hard rules;
+  // Non-deterministic = the statistical outlier detectors fit on the file's distribution (they share
+  // the feature vector + the outlier-baseline control); Frame-level = whole-frame consistency checks.
+  const GROUPS = [
+    { id: "geometric", label: "Geometric", hint: "Deterministic geometric hard rules — scale-invariant, no learned baseline.", keys: ["chirality", "ordering"] },
+    { id: "statistical", label: "Non-deterministic", hint: "Statistical outlier detectors fit on the file's distribution (shared feature vector + baseline).", keys: ["anomaly", "gmm"] },
+    { id: "frame", label: "Frame-level", hint: "Whole-frame consistency: count, sparsity, confidence, negative frames, duplicates.", keys: ["count", "sparse", "confidence", "negative", "duplicates"] },
+  ];
+
   let collapsed = $state(false); // collapse the whole detection-checks block to de-clutter
+  let groupOpen = $state({ geometric: true, statistical: true, frame: true }); // per-group collapse
   let infoOpen = $state({}); // per-check key -> show the long-form description
   let featOpen = $state(false); // read-only "feature vector" panel under the GMM check
+
+  // a check is hidden when it can't apply (confidence needs predicted instances)
+  const visibleInGroup = (g) =>
+    g.keys.map((k) => CHECK_BY_KEY[k]).filter((c) => c.key !== "confidence" || !qc.hasResults || qc.hasPredictions);
 </script>
 
 {#if store.labels}
@@ -82,19 +99,9 @@
       {/if}
     </button>
     {#if !collapsed}
-    {#if !qc.hasResults || (qc.hasPredictions && qc.hasUserInstances)}
-      <div class="baseline" title="Which instances define the 'normal' reference the Anomaly / GMM outlier checks score against">
-        <span class="bl-lbl">outlier baseline</span>
-        <div class="seg">
-          <button type="button" class:on={qc.baselineSource === "all"} onclick={() => qc.setBaselineSource("all")}>All labeled</button>
-          <button type="button" class:on={qc.baselineSource === "user"} onclick={() => qc.setBaselineSource("user")} title="Fit the reference on user-annotated instances only (cleaner ground truth)">User only</button>
-        </div>
-      </div>
-    {/if}
-    <ul class="checks">
-      {#each CHECKS.filter((c) => c.key !== "confidence" || !qc.hasResults || qc.hasPredictions) as c (c.key)}
-        {@const ready = qc.checkReady(c.key)}
-        {@const pending = qc.checkPending(c.key)}
+    {#snippet checkRow(c)}
+      {@const ready = qc.checkReady(c.key)}
+      {@const pending = qc.checkPending(c.key)}
         <li class:off={!qc.checks[c.key]}>
           <div class="row">
             <label title={c.hint}>
@@ -236,8 +243,37 @@
             </div>
           {/if}
         </li>
-      {/each}
-    </ul>
+    {/snippet}
+
+    {#each GROUPS as g (g.id)}
+      {@const visible = visibleInGroup(g)}
+      {@const nOn = g.keys.filter((k) => qc.checks[k]).length}
+      {#if visible.length}
+        <div class="group">
+          <button type="button" class="grp-head" onclick={() => (groupOpen[g.id] = !groupOpen[g.id])} aria-expanded={groupOpen[g.id]} title={g.hint}>
+            <span class="grpchev" class:open={groupOpen[g.id]}>▸</span>
+            <span class="grp-lbl">{g.label}</span>
+            {#if nOn}<span class="grp-sum">{nOn} on</span>{/if}
+          </button>
+          {#if groupOpen[g.id]}
+            {#if g.id === "statistical" && (!qc.hasResults || (qc.hasPredictions && qc.hasUserInstances))}
+              <div class="baseline" title="Which instances define the 'normal' reference the Anomaly / GMM outlier checks score against">
+                <span class="bl-lbl">outlier baseline</span>
+                <div class="seg">
+                  <button type="button" class:on={qc.baselineSource === "all"} onclick={() => qc.setBaselineSource("all")}>All labeled</button>
+                  <button type="button" class:on={qc.baselineSource === "user"} onclick={() => qc.setBaselineSource("user")} title="Fit the reference on user-annotated instances only (cleaner ground truth)">User only</button>
+                </div>
+              </div>
+            {/if}
+            <ul class="checks">
+              {#each visible as c (c.key)}
+                {@render checkRow(c)}
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      {/if}
+    {/each}
     {#if qc.hasResults}
       <p class="union">
         <span>flagged · union</span><b>{qc.flaggedFrameCount}</b>
@@ -297,6 +333,52 @@
   }
   .seg button:hover:not(.on) {
     color: var(--text);
+  }
+  /* a detector group: a small secondary header + its (collapsible) list of checks */
+  .grp-head {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    width: 100%;
+    background: none;
+    border: none;
+    border-top: 1px solid var(--border-soft, var(--border));
+    padding: 0.5rem 0 0.32rem;
+    cursor: pointer;
+    text-align: left;
+    color: inherit;
+  }
+  .group:first-of-type .grp-head {
+    border-top: 0;
+    padding-top: 0.2rem;
+  }
+  .grpchev {
+    flex: none;
+    color: var(--dim);
+    font-size: 0.56rem;
+    transition: transform 0.15s var(--ease), color 0.12s;
+  }
+  .grpchev.open {
+    transform: rotate(90deg);
+  }
+  .grp-lbl {
+    flex: 1;
+    font-size: 0.64rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--muted);
+  }
+  .grp-head:hover .grp-lbl,
+  .grp-head:hover .grpchev {
+    color: var(--text);
+  }
+  .grp-sum {
+    flex: none;
+    font-size: 0.63rem;
+    color: var(--dim);
+    letter-spacing: 0.03em;
+    font-variant-numeric: tabular-nums;
   }
   .checks {
     list-style: none;
