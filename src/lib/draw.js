@@ -96,25 +96,33 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
   // resolution.
   const s = scale > 0 ? scale : 1;
   const r = (editing ? 5.5 : 4) * s;
-  const fontPx = 11 * s;
   const labelOff = r + 3 * s;
-  const font = `${fontPx}px system-ui, -apple-system, "Segoe UI", sans-serif`;
 
-  // Node-name labels are colored by visibility (green = visible, gray = invisible) — a clearer
-  // signal than the dot's transparency. `color` overrides the fill.
-  const LABEL_VISIBLE = "#4ade80"; // green
-  const LABEL_HIDDEN = "#9ca3af"; // gray
+  // Node-name labels colored by visibility (green = visible, gray = invisible). Drawn at NATIVE
+  // device resolution (the transform is reset per label) so the text stays crisp at any zoom —
+  // bold weight + a thin soft outline instead of a heavy black border.
+  const LABEL_VISIBLE = "#39e87a"; // strong green
+  const LABEL_HIDDEN = "#b6bfca"; // legible gray
   const label = (name, px, py, alpha, color) => {
     if (!name) return;
+    const m = ctx.getTransform();
+    const k = m.a; // device px per image unit
+    const dpr = s * k; // device px per CSS px
+    const dx = Math.round(m.a * px + m.e + labelOff * k);
+    const dy = Math.round(m.d * py + m.f - labelOff * k);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0); // native device pixels -> crisp glyphs
     ctx.globalAlpha = alpha;
-    ctx.font = font;
+    ctx.font = `600 ${Math.round(11 * dpr)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
     ctx.textBaseline = "middle";
     ctx.textAlign = "left";
-    ctx.lineWidth = 3 * s;
-    ctx.strokeStyle = "rgba(0,0,0,0.82)";
-    ctx.strokeText(name, px + labelOff, py - labelOff);
+    ctx.lineJoin = "round";
+    ctx.lineWidth = 1.6 * dpr; // thin, soft outline
+    ctx.strokeStyle = "rgba(0,0,0,0.45)";
+    ctx.strokeText(name, dx, dy);
     ctx.fillStyle = color ?? "#eaf0f7";
-    ctx.fillText(name, px + labelOff, py - labelOff);
+    ctx.fillText(name, dx, dy);
+    ctx.restore();
   };
 
   instances.forEach((instance, idx) => {
@@ -185,7 +193,7 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
       // top fully opaque in a final pass below.
       // label colored by visibility (green = visible, gray = invisible), legible even when the
       // instance isn't selected so invisible nodes read at a glance
-      if (!focused) label(names[ni], px, py, p.visible ? 0.75 : 0.62, p.visible ? LABEL_VISIBLE : LABEL_HIDDEN);
+      if (!focused) label(names[ni], px, py, p.visible ? 0.95 : 0.85, p.visible ? LABEL_VISIBLE : LABEL_HIDDEN);
     });
   });
 
