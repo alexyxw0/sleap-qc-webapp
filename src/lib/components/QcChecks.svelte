@@ -254,6 +254,11 @@
       {#if visible.length}
         <div class="group">
           <div class="grp-head">
+            <button type="button" class="grp-toggle" onclick={() => (groupOpen[g.id] = !groupOpen[g.id])} aria-expanded={groupOpen[g.id]} title={g.hint}>
+              <span class="grpchev" class:open={groupOpen[g.id]}>▸</span>
+              <span class="grp-lbl">{g.label}</span>
+              {#if onCount}<span class="grp-sum">{onCount} on</span>{/if}
+            </button>
             <input
               type="checkbox"
               class="grp-check"
@@ -263,11 +268,6 @@
               title="{allOn ? 'Disable' : 'Enable'} all {g.label.toLowerCase()} checks"
               aria-label="Toggle all {g.label} checks"
             />
-            <button type="button" class="grp-toggle" onclick={() => (groupOpen[g.id] = !groupOpen[g.id])} aria-expanded={groupOpen[g.id]} title={g.hint}>
-              <span class="grpchev" class:open={groupOpen[g.id]}>▸</span>
-              <span class="grp-lbl">{g.label}</span>
-              {#if onCount}<span class="grp-sum">{onCount} on</span>{/if}
-            </button>
           </div>
           {#if groupOpen[g.id]}
             {#if g.id === "statistical" && (!qc.hasResults || (qc.hasPredictions && qc.hasUserInstances))}
