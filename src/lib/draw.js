@@ -152,15 +152,16 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
       }
     }
 
-    // edges — between two *placed* nodes. An edge touching a hidden node is always THIN + faint
-    // (and fainter still when its instance isn't selected) to signal "this node isn't visible".
+    // edges — between two *placed* nodes. An edge touching a hidden node is drawn only while this
+    // instance is selected, and then THIN + faint, to signal "this node isn't visible".
     ctx.strokeStyle = color;
     for (const edge of edges) {
       const a = points[skeleton.index(edge.source?.name ?? edge.source)];
       const b = points[skeleton.index(edge.destination?.name ?? edge.destination)];
       if (!placed(a) || !placed(b)) continue;
       const hidden = !a.visible || !b.visible;
-      ctx.globalAlpha = hidden ? (isSel ? 0.22 : 0.08) : 1;
+      if (hidden && !isSel) continue;
+      ctx.globalAlpha = hidden ? 0.22 : 1;
       ctx.lineWidth = (hidden ? 1 : isSel ? 3 : 2) * s;
       ctx.beginPath();
       ctx.moveTo(a.xy[0], a.xy[1]);
@@ -168,15 +169,14 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
       ctx.stroke();
     }
 
-    // nodes + labels — hidden nodes are kept visible but very transparent so they can
-    // still be found and dragged.
+    // nodes + labels — a hidden node renders only while its instance is selected (then faint, so it
+    // can still be found and dragged); otherwise it isn't drawn at all.
     points.forEach((p, ni) => {
       if (!placed(p)) return;
+      if (!p.visible && !isSel) return; // hidden node: shown only when its instance is selected
       const [px, py] = p.xy;
       const focused = isSel && ni === selNode;
-      // a hidden node stays slightly visible even when its instance isn't selected (a faint "ghost"
-      // dot); it brightens when the instance is selected, and most when it's the focused node.
-      const nodeAlpha = p.visible ? 1 : focused ? Math.max(0.6, hiddenAlpha) : isSel ? hiddenAlpha : 0.12;
+      const nodeAlpha = p.visible ? 1 : focused ? Math.max(0.6, hiddenAlpha) : hiddenAlpha;
 
       ctx.globalAlpha = nodeAlpha;
       ctx.beginPath();
