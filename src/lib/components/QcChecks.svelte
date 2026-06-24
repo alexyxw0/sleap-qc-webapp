@@ -105,19 +105,6 @@
       {@const pending = qc.checkPending(c.key)}
         <li class:off={!qc.checks[c.key]}>
           <div class="row">
-            <label title={c.hint}>
-              <input
-                type="checkbox"
-                checked={qc.checks[c.key]}
-                onchange={() => qc.toggleCheck(c.key)}
-              />
-              <span class="lbl">{c.label}</span>
-              {#if pending}
-                <span class="penddot" title="Selected — needs a Run QC to compute"></span>
-              {:else if ready}
-                <span class="cnt">{qc.checkCount(c.key)}</span>
-              {/if}
-            </label>
             <button
               type="button"
               class="info-btn"
@@ -127,6 +114,19 @@
               aria-label="What this check detects"
               title="What this check detects"
             >ⓘ</button>
+            <label title={c.hint}>
+              <span class="lbl">{c.label}</span>
+              {#if pending}
+                <span class="penddot" title="Selected — needs a Run QC to compute"></span>
+              {:else if ready}
+                <span class="cnt">{qc.checkCount(c.key)}</span>
+              {/if}
+              <input
+                type="checkbox"
+                checked={qc.checks[c.key]}
+                onchange={() => qc.toggleCheck(c.key)}
+              />
+            </label>
           </div>
           {#if infoOpen[c.key]}
             <p class="info">{c.info}</p>
