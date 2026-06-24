@@ -40,6 +40,18 @@ const UNIT_OF = {
   duplicates: "frame",
 };
 
+// Frame-level checks are binary (flag / no flag), so they carry no score of their own. To rank
+// them sensibly in review mode (worst-first), each gets a fixed SEVERITY in [0,1] — a wrong
+// instance count or a barely-localized instance is the most concerning; a stray duplicate or a
+// negative frame with instances is the least. Used as the flag-confidence contribution.
+const FRAME_SEVERITY = {
+  count: 0.9, // missing / extra animal
+  sparse: 0.85, // an instance localized by too few visible nodes
+  confidence: 0.6, // a weak predicted keypoint
+  negative: 0.45, // a negative frame that still has instances
+  duplicates: 0.4, // overlapping / duplicated instances
+};
+
 class QCStore {
   status = $state("idle"); // idle | running | done | error
   error = $state(null);
@@ -534,7 +546,15 @@ class QCStore {
     if (c.ordering) { const s = this.#frameOrdering.get(fk); if (s != null && s >= this.orderingThreshold) bump(s); }
     if (c.poseSplit) { const s = this.#framePoseSplit.get(fk); if (s != null && s >= this.poseSplitThreshold) bump(s); }
     const fq = this.#frameResults.get(fk);
-    if (fq && ((c.count && fq.isWrongCount) || (c.sparse && fq.minVisibleNodeCount < this.sparseThreshold) || (c.confidence && fq.minPointScore < this.confidenceThreshold) || (c.negative && fq.isNegativeWithInstances) || (c.duplicates && (fq.duplicatePairs?.length ?? 0) > 0))) bump(1);
+    if (fq) {
+      // binary frame checks contribute a fixed SEVERITY (not a flat 1) so review mode orders them
+      // by concern: count / sparse first, negative / duplicates last.
+      if (c.count && fq.isWrongCount) bump(FRAME_SEVERITY.count);
+      if (c.sparse && fq.minVisibleNodeCount < this.sparseThreshold) bump(FRAME_SEVERITY.sparse);
+      if (c.confidence && fq.minPointScore < this.confidenceThreshold) bump(FRAME_SEVERITY.confidence);
+      if (c.negative && fq.isNegativeWithInstances) bump(FRAME_SEVERITY.negative);
+      if (c.duplicates && (fq.duplicatePairs?.length ?? 0) > 0) bump(FRAME_SEVERITY.duplicates);
+    }
     return best;
   }
 
