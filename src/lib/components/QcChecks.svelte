@@ -78,7 +78,6 @@
     { id: "frame", label: "Frame-level", hint: "Whole-frame consistency: count, sparsity, confidence, negative frames, duplicates.", keys: ["count", "sparse", "confidence", "negative", "duplicates"] },
   ];
 
-  let collapsed = $state(false); // collapse the whole detection-checks block to de-clutter
   let groupOpen = $state({ geometric: false, statistical: false, frame: false }); // per-group collapse (compact by default; each header shows "N on")
   let infoOpen = $state({}); // per-check key -> show the long-form description
   let featOpen = $state(false); // read-only "feature vector" panel under the GMM check
@@ -90,16 +89,14 @@
 
 {#if store.labels}
   <section class="side-section">
-    <button type="button" class="sec-head" onclick={() => (collapsed = !collapsed)} aria-expanded={!collapsed} title="Collapse / expand detection checks">
-      <span class="schev" class:open={!collapsed}>▸</span>
+    <div class="sec-head">
       <span class="side-h">Detection checks</span>
       {#if qc.hasResults}
         <span class="sum">{qc.flaggedFrameCount} flagged</span>
       {:else if qc.pendingCount > 0}
         <span class="sum pend">{qc.pendingCount} to run</span>
       {/if}
-    </button>
-    {#if !collapsed}
+    </div>
     {#snippet checkRow(c)}
       {@const ready = qc.checkReady(c.key)}
       {@const pending = qc.checkPending(c.key)}
@@ -303,7 +300,6 @@
         {qc.pendingCount} selected check{qc.pendingCount === 1 ? "" : "s"} need{qc.pendingCount === 1 ? "s" : ""} a run{qc.checks.gmm && !qc.checkReady("gmm") ? " · GMM is slow" : ""}
       </p>
     {/if}
-    {/if}
   </section>
 {/if}
 
@@ -429,29 +425,10 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    width: 100%;
-    background: none;
-    border: none;
-    padding: 0;
-    cursor: pointer;
-    text-align: left;
-    color: inherit;
   }
   .sec-head .side-h {
     margin: 0;
     flex: 1;
-  }
-  .schev {
-    flex: none;
-    color: var(--dim);
-    font-size: 0.62rem;
-    transition: transform 0.15s var(--ease), color 0.12s;
-  }
-  .schev.open {
-    transform: rotate(90deg);
-  }
-  .sec-head:hover .schev {
-    color: var(--text);
   }
   .sum {
     font-size: 0.7rem;
