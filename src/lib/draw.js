@@ -118,16 +118,15 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
     const points = instance.points ?? [];
     const isSel = idx === selInstance;
 
-    // edges — between two *placed* nodes. An edge touching a hidden node is drawn only while
-    // this instance is selected, and then THIN + faint, to signal "this node isn't visible".
+    // edges — between two *placed* nodes. An edge touching a hidden node is always THIN + faint
+    // (and fainter still when its instance isn't selected) to signal "this node isn't visible".
     ctx.strokeStyle = color;
     for (const edge of edges) {
       const a = points[skeleton.index(edge.source?.name ?? edge.source)];
       const b = points[skeleton.index(edge.destination?.name ?? edge.destination)];
       if (!placed(a) || !placed(b)) continue;
       const hidden = !a.visible || !b.visible;
-      if (hidden && !isSel) continue;
-      ctx.globalAlpha = hidden ? 0.22 : 1;
+      ctx.globalAlpha = hidden ? (isSel ? 0.22 : 0.08) : 1;
       ctx.lineWidth = (hidden ? 1 : isSel ? 3 : 2) * s;
       ctx.beginPath();
       ctx.moveTo(a.xy[0], a.xy[1]);
@@ -139,12 +138,11 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
     // still be found and dragged.
     points.forEach((p, ni) => {
       if (!placed(p)) return;
-      // hidden (not-visible) nodes only render while their instance is selected — declutters the
-      // overlay so the transparent nodes only appear when you're actually working on that skeleton.
-      if (!p.visible && !isSel) return;
       const [px, py] = p.xy;
       const focused = isSel && ni === selNode;
-      const nodeAlpha = p.visible ? 1 : focused ? Math.max(0.6, hiddenAlpha) : hiddenAlpha;
+      // a hidden node stays slightly visible even when its instance isn't selected (a faint "ghost"
+      // dot); it brightens when the instance is selected, and most when it's the focused node.
+      const nodeAlpha = p.visible ? 1 : focused ? Math.max(0.6, hiddenAlpha) : isSel ? hiddenAlpha : 0.12;
 
       ctx.globalAlpha = nodeAlpha;
       ctx.beginPath();
@@ -181,7 +179,8 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
       // Default label opacity: half-transparent (so overlapping labels don't fight),
       // fainter still when the node is hidden. The focused node's label is drawn on
       // top fully opaque in a final pass below.
-      if (!focused) label(names[ni], px, py, p.visible ? 0.5 : 0.22, false);
+      // labels for hidden nodes only while the instance is selected — a ghosted node is just a dot
+      if (!focused && (p.visible || isSel)) label(names[ni], px, py, p.visible ? 0.5 : 0.22, false);
     });
   });
 
