@@ -389,7 +389,7 @@
   .grpchev {
     flex: none;
     color: var(--dim);
-    font-size: 0.56rem;
+    font-size: 0.64rem;
     transition: transform 0.15s var(--ease), color 0.12s;
   }
   .grpchev.open {
@@ -397,11 +397,11 @@
   }
   .grp-lbl {
     flex: 1;
-    font-size: 0.64rem;
+    font-size: 0.85rem;
     font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.07em;
-    color: var(--muted);
+    letter-spacing: 0.04em;
+    color: var(--text);
   }
   .grp-toggle:hover .grp-lbl,
   .grp-toggle:hover .grpchev {
