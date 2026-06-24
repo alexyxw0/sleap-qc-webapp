@@ -68,12 +68,13 @@
   const CHECK_BY_KEY = Object.fromEntries(CHECKS.map((c) => [c.key, c]));
 
   // The detectors grouped by KIND, each its own collapsible sub-section, so the panel reads as three
-  // short lists instead of one long one. Geometric = deterministic scale-invariant hard rules;
-  // Non-deterministic = the statistical outlier detectors fit on the file's distribution (they share
-  // the feature vector + the outlier-baseline control); Frame-level = whole-frame consistency checks.
+  // short lists instead of one long one. Geometric = scale-invariant hard rules (population-
+  // independent verdict); Statistical = outlier detectors that score each instance RELATIVE to the
+  // file's distribution (they share the feature vector + the outlier-baseline control — only GMM is
+  // non-deterministic, the z-score is deterministic); Frame-level = whole-frame consistency checks.
   const GROUPS = [
     { id: "geometric", label: "Geometric", hint: "Deterministic geometric hard rules — scale-invariant, no learned baseline.", keys: ["chirality", "ordering"] },
-    { id: "statistical", label: "Non-deterministic", hint: "Statistical outlier detectors fit on the file's distribution (shared feature vector + baseline).", keys: ["anomaly", "gmm"] },
+    { id: "statistical", label: "Statistical", hint: "Outlier detectors that score each instance against the file's distribution (shared feature vector + baseline control). Only GMM is non-deterministic (EM fit); the z-score is deterministic.", keys: ["anomaly", "gmm"] },
     { id: "frame", label: "Frame-level", hint: "Whole-frame consistency: count, sparsity, confidence, negative frames, duplicates.", keys: ["count", "sparse", "confidence", "negative", "duplicates"] },
   ];
 
