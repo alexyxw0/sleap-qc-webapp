@@ -123,12 +123,12 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="panel-grip"
-      draggable="true"
+      draggable={true}
       ondragstart={(e) => { e.dataTransfer.setData("text/plain", pid); e.dataTransfer.effectAllowed = "move"; draggingPanel = pid; }}
       ondragend={() => (draggingPanel = null)}
       title="Drag up to the tab strip to make {PANEL_TITLE[pid] ?? pid} a tab"
       aria-label="Drag {PANEL_TITLE[pid] ?? pid} to a tab"
-    >⠿</div>
+    ><span class="gdots">⠿</span><span class="ghint">drag {PANEL_TITLE[pid] ?? pid} to a tab</span></div>
   {/snippet}
 
   <!-- Tab strip: panels docked here show one at a time; drag a panel's grip up to dock it. -->
@@ -787,20 +787,31 @@
   .panel-grip {
     display: flex;
     align-items: center;
-    justify-content: center;
-    height: 11px;
+    gap: 0.4rem;
+    height: 16px;
+    padding: 0 0.5rem;
     cursor: grab;
-    color: var(--dim);
-    opacity: 0.4;
-    font-size: 0.58rem;
-    letter-spacing: 0.18em;
+    color: var(--muted);
+    font-size: 0.62rem;
+    letter-spacing: 0.16em;
+    background: rgba(255, 255, 255, 0.03);
+    border-bottom: 1px dashed var(--border);
     user-select: none;
     flex: none;
   }
+  .panel-grip .ghint {
+    font-size: 0.56rem;
+    letter-spacing: 0.02em;
+    opacity: 0;
+    transition: opacity 0.12s;
+  }
   .panel-grip:hover {
-    opacity: 1;
-    color: var(--text);
-    background: rgba(255, 255, 255, 0.03);
+    color: var(--accent);
+    background: rgba(95, 217, 242, 0.09);
+    border-bottom-style: solid;
+  }
+  .panel-grip:hover .ghint {
+    opacity: 0.85;
   }
   .panel-grip:active {
     cursor: grabbing;
