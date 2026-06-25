@@ -157,6 +157,11 @@
   <!-- Tab strip: panels docked here show one at a time; drag a panel's grip up to dock it. -->
   {#if ui.sidebarDocked.length || draggingPanel}
     <div class="sidebar-tabs" class:armed={draggingPanel}>
+      {#if ui.sidebarDocked.length}
+        <span class="stab main" class:on={ui.mainActive}>
+          <button class="stab-lbl" onclick={() => ui.activateMain()}>Main</button>
+        </span>
+      {/if}
       {#each ui.sidebarDocked as id (id)}
         <span class="stab" class:on={ui.sidebarActiveTab === id}>
           <button class="stab-lbl" onclick={() => ui.activateSidebarTab(id)}>{PANEL_TITLE[id] ?? id}</button>
@@ -172,7 +177,7 @@
   {/if}
 
   <!-- Discrete frame selector -->
-  <div class="panel" data-pid="frames" class:docked={ui.isDocked("frames")} class:active={ui.sidebarActiveTab === "frames"}>
+  <div class="panel" data-pid="frames" class:hidden={ui.panelHidden("frames")}>
     {@render grip("frames")}
     <FrameGrid />
   </div>
@@ -185,6 +190,7 @@
     {@const flagged = qc.frameFlagged(item)}
     <section
       class="side-section"
+      class:hidden={!ui.mainActive}
       title="Anomaly = geometrically unusual vs. the rest of this file. Confidence = the model's own per-keypoint certainty. Both are review hints, not certain errors."
     >
       <div class="qcrow">
@@ -236,13 +242,13 @@
   {/if}
 
   <!-- Detection checks: toggle each technique; flagged set = union of the enabled ones -->
-  <div class="panel" data-pid="checks" class:docked={ui.isDocked("checks")} class:active={ui.sidebarActiveTab === "checks"}>
+  <div class="panel" data-pid="checks" class:hidden={ui.panelHidden("checks")}>
     {@render grip("checks")}
     <QcChecks />
   </div>
 
   <!-- File panel: file stats + skeleton + this-frame instances, merged into one dockable panel -->
-  <div class="panel panel-grow" data-pid="file" class:docked={ui.isDocked("file")} class:active={ui.sidebarActiveTab === "file"}>
+  <div class="panel panel-grow" data-pid="file" class:hidden={ui.panelHidden("file")}>
     {@render grip("file")}
     <section class="side-section">
     <div class="fhead">
@@ -752,8 +758,8 @@
     display: flex;
     flex-wrap: wrap;
     align-items: flex-end; /* browser-style: tabs sit on the bottom line */
-    gap: 2px;
-    padding: 0.32rem 0.4rem 0;
+    gap: 4px;
+    padding: 0.5rem 0.45rem 0;
     border-bottom: 1px solid var(--border);
     flex: none;
   }
@@ -781,39 +787,46 @@
     align-items: center;
     border: 1px solid var(--border);
     border-bottom: none;
-    border-radius: 7px 7px 0 0; /* rounded top corners, like a browser tab */
-    background: rgba(0, 0, 0, 0.22); /* inactive tabs sit recessed */
+    border-radius: 10px 10px 0 0; /* rounder top, like a browser tab */
+    background: rgba(255, 255, 255, 0.025); /* inactive: a soft tint, not a harsh well */
     margin-bottom: -1px; /* overlap the strip's bottom border → connect the active tab to its content */
     overflow: hidden;
-    opacity: 0.7;
-    transition: opacity 0.12s, background 0.12s;
+    opacity: 0.8;
+    transition: opacity 0.16s var(--ease), background 0.16s var(--ease), box-shadow 0.16s var(--ease);
   }
   .stab:hover {
     opacity: 1;
+    background: rgba(255, 255, 255, 0.06);
   }
   .stab.on {
     background: var(--surface); /* active tab matches the content area below it */
     border-top: 2px solid var(--accent);
     opacity: 1;
+    box-shadow: 0 -3px 10px rgba(95, 217, 242, 0.1); /* faint lift */
   }
   .stab-lbl {
     background: none;
     border: none;
     color: var(--muted);
-    font-size: 0.72rem;
-    padding: 0.3rem 0.12rem 0.3rem 0.55rem;
+    font-size: 0.8rem;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    padding: 0.46rem 0.16rem 0.46rem 0.72rem;
     cursor: pointer;
   }
   .stab.on .stab-lbl {
     color: var(--text);
   }
+  .stab.main .stab-lbl {
+    padding-right: 0.72rem; /* Main has no × — keep its label balanced */
+  }
   .stab-x {
     background: none;
     border: none;
     color: var(--dim);
-    font-size: 0.82rem;
+    font-size: 0.9rem;
     line-height: 1;
-    padding: 0.2rem 0.34rem;
+    padding: 0.46rem 0.42rem 0.46rem 0.18rem;
     cursor: pointer;
   }
   .stab-x:hover {
@@ -865,11 +878,8 @@
   .panel-grip:active {
     cursor: grabbing;
   }
-  .panel.docked:not(.active) {
-    display: none;
-  }
-  .panel.docked.active {
-    order: -1; /* a docked-and-active panel sits right under the tab strip */
-    flex: none; /* content height, so the inline panels below stay visible */
+  .panel.hidden,
+  .side-section.hidden {
+    display: none; /* tabbed away — only the active tab's content renders */
   }
 </style>

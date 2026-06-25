@@ -12,27 +12,42 @@ class UIStore {
   // panel sizes (resizable, clamped)
   railW = $state(312);
 
-  // Sidebar panels the user has "docked" as tabs (in order) + which tab is active. Dragging a
-  // panel's grip onto the tab strip docks it; a tab's × restores it inline. In-session for now.
+  // Sidebar panels the user has "docked" as tabs (in order). Once any panel is docked the rail
+  // becomes a tabbed interface: a "Main" tab holds everything still inline, plus one tab per
+  // docked panel — only the active tab's content shows. In-session for now.
   sidebarDocked = $state([]);
-  sidebarActiveTab = $state(null);
+  sidebarActiveTab = $state("__main__");
 
   static RAIL_MIN = 280;
   static RAIL_MAX = 440;
+  static MAIN = "__main__";
 
   isDocked(id) {
     return this.sidebarDocked.includes(id);
   }
+  // The Main tab is showing (or there are no tabs yet, so everything is inline = Main).
+  get mainActive() {
+    return this.sidebarDocked.length === 0 || this.sidebarActiveTab === UIStore.MAIN;
+  }
+  // Hide a panel when tabs exist and it isn't the current view: docked panels show only on their
+  // own tab; inline (non-docked) panels show only on the Main tab.
+  panelHidden(id) {
+    if (this.sidebarDocked.length === 0) return false;
+    return this.isDocked(id) ? this.sidebarActiveTab !== id : !this.mainActive;
+  }
   dockPanel(id) {
     if (!this.sidebarDocked.includes(id)) this.sidebarDocked = [...this.sidebarDocked, id];
-    this.sidebarActiveTab = id;
+    this.sidebarActiveTab = UIStore.MAIN; // dragging a panel out leaves you on the Main tab (the rest)
   }
   undockPanel(id) {
     this.sidebarDocked = this.sidebarDocked.filter((x) => x !== id);
-    if (this.sidebarActiveTab === id) this.sidebarActiveTab = this.sidebarDocked.at(-1) ?? null;
+    if (this.sidebarActiveTab === id) this.sidebarActiveTab = UIStore.MAIN; // its content returns to Main
   }
   activateSidebarTab(id) {
     this.sidebarActiveTab = id;
+  }
+  activateMain() {
+    this.sidebarActiveTab = UIStore.MAIN;
   }
 
   setRailW(w) {
