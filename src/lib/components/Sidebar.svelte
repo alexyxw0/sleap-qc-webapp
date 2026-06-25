@@ -10,7 +10,28 @@
 
   // Drag-to-tab: each panel carries a grip; dragging it onto the tab strip docks it as a tab.
   const PANEL_TITLE = { frames: "Frames", checks: "Checks", file: "File", skeleton: "Skeleton", instances: "Instances" };
-  let draggingPanel = $state(null); // panel id currently being dragged toward the tab strip
+  let draggingPanel = $state(null); // the panel being dragged (drives the tab-strip highlight + ghost)
+  let ghostX = $state(0), ghostY = $state(0); // floating drag-ghost position (follows the cursor)
+  // Pointer-based drag — native HTML5 drag (draggable/dragstart) proved unreliable in this app.
+  // Press a grip, move past a small threshold to begin, release over the tab strip to dock the panel.
+  let dragId = null, dragSX = 0, dragSY = 0, dragMoved = false;
+  function gripDown(e, pid) {
+    if (e.button !== 0) return;
+    dragId = pid; dragSX = e.clientX; dragSY = e.clientY; dragMoved = false;
+    ghostX = e.clientX; ghostY = e.clientY;
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  }
+  function gripMove(e) {
+    if (dragId === null) return;
+    ghostX = e.clientX; ghostY = e.clientY;
+    if (!dragMoved && Math.hypot(e.clientX - dragSX, e.clientY - dragSY) > 5) { dragMoved = true; draggingPanel = dragId; }
+  }
+  function gripUp(e) {
+    const id = dragId, moved = dragMoved;
+    dragId = null; dragMoved = false; draggingPanel = null;
+    try { e.currentTarget.releasePointerCapture?.(e.pointerId); } catch { /* not captured */ }
+    if (id !== null && moved && document.elementFromPoint(e.clientX, e.clientY)?.closest(".sidebar-tabs")) ui.dockPanel(id);
+  }
 
   // Click a flagged problem -> select its faulty node(s) and zoom the canvas to them.
   function focusFaulty(instIdx) {
@@ -111,6 +132,9 @@
 </script>
 
 <aside class="sidebar" style:width="{ui.railW}px" style:flex="0 0 {ui.railW}px">
+  {#if draggingPanel}
+    <div class="drag-ghost" style:left="{ghostX}px" style:top="{ghostY}px">⠿ {PANEL_TITLE[draggingPanel] ?? draggingPanel}</div>
+  {/if}
   <div class="rz" onpointerdown={startResize} title="Drag to resize"></div>
   <div class="scroll">
   <header class="head">
@@ -123,23 +147,16 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="panel-grip"
-      draggable={true}
-      ondragstart={(e) => { e.dataTransfer.setData("text/plain", pid); e.dataTransfer.effectAllowed = "move"; draggingPanel = pid; }}
-      ondragend={() => (draggingPanel = null)}
+      onpointerdown={(e) => gripDown(e, pid)}
+      onpointermove={gripMove}
+      onpointerup={gripUp}
       title="Drag up to the tab strip to make {PANEL_TITLE[pid] ?? pid} a tab"
-      aria-label="Drag {PANEL_TITLE[pid] ?? pid} to a tab"
     ><span class="gdots">⠿</span><span class="ghint">drag {PANEL_TITLE[pid] ?? pid} to a tab</span></div>
   {/snippet}
 
   <!-- Tab strip: panels docked here show one at a time; drag a panel's grip up to dock it. -->
   {#if ui.sidebarDocked.length || draggingPanel}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="sidebar-tabs"
-      class:armed={draggingPanel}
-      ondragover={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
-      ondrop={(e) => { e.preventDefault(); const id = e.dataTransfer.getData("text/plain"); if (id) ui.dockPanel(id); draggingPanel = null; }}
-    >
+    <div class="sidebar-tabs" class:armed={draggingPanel}>
       {#each ui.sidebarDocked as id (id)}
         <span class="stab" class:on={ui.sidebarActiveTab === id}>
           <button class="stab-lbl" onclick={() => ui.activateSidebarTab(id)}>{PANEL_TITLE[id] ?? id}</button>
@@ -730,6 +747,10 @@
   }
   .sidebar-tabs {
     order: -2;
+    position: sticky; /* stay reachable as a drop target while the panels scroll */
+    top: 0;
+    z-index: 6;
+    background: var(--surface);
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -737,6 +758,21 @@
     padding: 0.35rem 0.45rem;
     border-bottom: 1px solid var(--border);
     flex: none;
+  }
+  .drag-ghost {
+    position: fixed;
+    z-index: 1000;
+    transform: translate(12px, 8px);
+    pointer-events: none;
+    background: var(--surface);
+    border: 1px solid var(--accent);
+    border-radius: var(--r-xs);
+    padding: 0.2rem 0.5rem;
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    color: var(--text);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+    white-space: nowrap;
   }
   .sidebar-tabs.armed {
     background: rgba(95, 217, 242, 0.08);
