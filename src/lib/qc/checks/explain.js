@@ -51,6 +51,9 @@ export function topIssue(contributions) {
   return { feature: best, issue: ISSUE_MAP[best] ?? `High ${best}` };
 }
 
+/** The readable issue label for a single feature name (used for the GMM's worst-dimension). */
+export const issueForFeature = (feature) => (feature ? ISSUE_MAP[feature] ?? `High ${feature}` : null);
+
 // Features whose dominant deviation is a *signed* z-score, so "increased" / "decreased" (vs the
 // learned mean) is meaningful. The area features are signed directly in `contributions`; the
 // max_* features are |z| there, so their sign comes from `BaselineFeatureExtractor.attribute`.

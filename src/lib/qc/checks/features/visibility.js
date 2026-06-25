@@ -68,17 +68,3 @@ export class VisibilityModel {
     return best;
   }
 }
-
-/** Invisible nodes whose every skeleton neighbor is visible. */
-export function computeIsolatedInvisible(mask, edges) {
-  const n = mask.length;
-  const neighbors = Array.from({ length: n }, () => []);
-  for (const [s, d] of edges) { neighbors[s].push(d); neighbors[d].push(s); }
-  const isolated = [];
-  for (let node = 0; node < n; node++) {
-    if (mask[node]) continue;
-    const nb = neighbors[node];
-    if (nb.length && nb.every((x) => mask[x])) isolated.push(node);
-  }
-  return { hasIsolatedInvisible: isolated.length > 0, isolatedInvisibleNodes: isolated, nIsolatedInvisible: isolated.length };
-}

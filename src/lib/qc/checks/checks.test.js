@@ -8,7 +8,9 @@ import { normalizePose } from "./features/reference.js";
 import { computeCurvature, computeConvexHull } from "./features/structural.js";
 import { VisibilityModel } from "./features/visibility.js";
 import { SkeletonAnalyzer } from "./features/skeleton.js";
-import { ZScoreDetector, fitAndScoreLabels } from "./detector.js";
+import { computeChainOrdering, resolveChains, linearizeChains } from "./features/ordering.js";
+import { ZScoreDetector, fitAndScoreLabels, LabelQCDetector, buildContext, computePoseSplitUnit, computeAnomalyUnit } from "./detector.js";
+import { makeQCConfig } from "./config.js";
 
 const NAN = [Number.NaN, Number.NaN];
 
@@ -17,6 +19,46 @@ describe("frame-level checks", () => {
     const c = new InstanceCountChecker(false).fit([2, 2, 2, 1]);
     expect(c.check(1).isIncomplete).toBe(true);
     expect(c.check(2)).toMatchObject({ isIncomplete: false, expectedCount: 2 });
+  });
+
+  it("instance count flags over-count too (an extra / spurious instance)", () => {
+    const c = new InstanceCountChecker(false).fit([2, 2, 2, 2]);
+    expect(c.check(3)).toMatchObject({ isOvercount: true, isWrongCount: true, isIncomplete: false });
+    expect(c.check(1)).toMatchObject({ isOvercount: false, isWrongCount: true, isIncomplete: true });
+    expect(c.check(2).isWrongCount).toBe(false);
+  });
+
+  it("instance count: expected ignores empty frames (so they can't drag the median to 0)", () => {
+    // 4 empty/background frames + 3 two-instance frames: median over ALL is 0 (would flag nothing);
+    // over non-empty it's 2, so 1-instance frames are correctly flagged as incomplete.
+    const c = new InstanceCountChecker(false).fit([0, 0, 0, 0, 2, 2, 2]);
+    expect(c.check(2).expectedCount).toBe(2);
+    expect(c.check(1).isIncomplete).toBe(true);
+  });
+
+  it("checkFrame: a non-negative empty frame is flagged; a negative empty frame is exempt", () => {
+    const det = new LabelQCDetector(makeQCConfig());
+    det.countChecker = new InstanceCountChecker(true).fit([2, 2, 2], ["v", "v", "v"]);
+    expect(det.checkFrame([], "v", false)).toMatchObject({ isWrongCount: true, isEmpty: true });
+    expect(det.checkFrame([], "v", true)).toMatchObject({ isWrongCount: false, isEmpty: false });
+  });
+
+  it("checkFrame: reports the sparsest instance's visible-node count (negative frame exempt)", () => {
+    const det = new LabelQCDetector(makeQCConfig());
+    det.countChecker = new InstanceCountChecker(true).fit([1], ["v"]);
+    const oneNode = [[100, 100], NAN, NAN]; // 1 visible node
+    expect(det.checkFrame([oneNode], "v", false)).toMatchObject({ minVisibleNodeCount: 1, sparsestInstance: 0 });
+    expect(det.checkFrame([oneNode], "v", true).minVisibleNodeCount).toBe(Infinity); // negative -> exempt
+  });
+
+  it("checkFrame: reports weakest + mean keypoint + instance confidence (Infinity without scores)", () => {
+    const det = new LabelQCDetector(makeQCConfig());
+    det.countChecker = new InstanceCountChecker(true).fit([1], ["v"]);
+    const pose = [[10, 10], [20, 20]];
+    const conf = [{ minScore: 0.18, minNode: 1, avgScore: 0.5, instScore: 0.4 }];
+    expect(det.checkFrame([pose], "v", false, conf))
+      .toMatchObject({ minPointScore: 0.18, lowConfNode: 1, avgPointScore: 0.5, minInstScore: 0.4, lowInstance: 0 });
+    expect(det.checkFrame([pose], "v", false, null).minPointScore).toBe(Infinity); // user labels -> no scores
   });
 
   it("negative frame with instances is inconsistent", () => {
@@ -77,6 +119,48 @@ describe("visibility model", () => {
   });
 });
 
+describe("chain ordering", () => {
+  it("a straight, correctly-ordered chain has no inversions or crossings", () => {
+    const r = computeChainOrdering([[0, 0], [1, 0], [2, 0], [3, 0]], [[0, 1, 2, 3]]);
+    expect(r.orderInversionRate).toBe(0);
+    expect(r.chainIntersectionCount).toBe(0);
+  });
+
+  it("an out-of-order chain shows sharp turning angles + a self-crossing", () => {
+    // intended order 0->1->2->3, but a non-adjacent swap makes seg 0->1 cross seg 2->3
+    const r = computeChainOrdering([[0, 0], [2, 2], [2, 0], [0, 2]], [[0, 1, 2, 3]]);
+    expect(r.orderInversionRate).toBeGreaterThan(0);
+    expect(r.chainIntersectionCount).toBeGreaterThanOrEqual(1);
+    expect(r.worstNode).toBeGreaterThanOrEqual(0);
+  });
+
+  it("linearizeChains: splits at junction (degree != 2) nodes so a hub is never a flagged interior", () => {
+    // node 1 is a hub (degree 3): [0,1,2,3] -> [0,1] (dropped, <3) + [1,2,3]
+    expect(linearizeChains([[0, 1, 2, 3]], [2, 3, 2, 1])).toEqual([[1, 2, 3]]);
+    // a 4-node STAR (hub 0 -> 1,2,3, like nose -> ears/trunk): every path is [leaf, 0, leaf] -> no chains
+    expect(linearizeChains([[1, 0, 2], [1, 0, 3], [2, 0, 3]], [3, 1, 1, 1])).toEqual([]);
+    // a genuinely linear chain (all interiors degree 2) is unchanged
+    expect(linearizeChains([[0, 1, 2, 3]], [1, 2, 2, 1])).toEqual([[0, 1, 2, 3]]);
+  });
+
+  it("adapts to ANY skeleton via node degree (no hardcoding): a nose-hub + tail keeps only the tail", () => {
+    // 0=nose(hub) 1=trunk 2=ear_right 3=ear_left 4=tti 5=t1 6=t2 — topology comes entirely from edges
+    const a = new SkeletonAnalyzer(7, [[0, 1], [0, 2], [0, 3], [1, 4], [5, 4], [6, 5]]);
+    expect(a.degree).toEqual([3, 2, 1, 1, 2, 2, 1]); // computed from the edges, for any topology
+    const chains = linearizeChains(a.getCurvatureChains(), a.degree);
+    for (const c of chains) expect(c.slice(1, -1)).not.toContain(0); // nose (deg 3) never a flagged interior
+    const tail = chains.find((c) => c.includes(4) && c.includes(5) && c.includes(6));
+    expect(tail).toBeTruthy(); // the genuine tail sequence still gets ordering-checked
+  });
+
+  it("resolveChains: user names win, else auto, dropping chains < 3 nodes", () => {
+    const names = ["a", "b", "c", "d"];
+    expect(resolveChains(names, [["a", "b", "c"]], null)).toEqual([[0, 1, 2]]);
+    expect(resolveChains(names, [["a", "b"]], [[0, 1, 2, 3]])).toEqual([[0, 1, 2, 3]]); // user too short -> auto
+    expect(resolveChains(names, null, [[0, 1]])).toEqual([]); // auto too short -> dropped
+  });
+});
+
 describe("skeleton analyzer", () => {
   it("finds the spine of a linear chain", () => {
     const a = new SkeletonAnalyzer(4, [[0, 1], [1, 2], [2, 3]]);
@@ -98,8 +182,8 @@ describe("full pipeline on a real .slp (sleap-io.js adapter)", () => {
     const FIX = fileURLToPath(new URL("../fixtures/tracked-preds.slp", import.meta.url));
     const labels = await loadSlp(FIX, { openVideos: false });
     const out = fitAndScoreLabels(labels);
-    expect(out.featureNames).toHaveLength(19); // 18 geometric + pose_split_score
-    expect(out.featureNames).toContain("pose_split_score");
+    expect(out.featureNames).toHaveLength(18); // geometric vector (pose-split is now a standalone check)
+    expect(out.featureNames).not.toContain("pose_split_score");
     expect(out.usedGmm).toBe(true); // 201 instances >= gmmMinSamples (50) -> GMM path
     expect(out.instanceScores.size).toBeGreaterThan(0);
     for (const s of out.instanceScores.values()) {
@@ -107,5 +191,57 @@ describe("full pipeline on a real .slp (sleap-io.js adapter)", () => {
       expect(s).toBeLessThanOrEqual(1);
     }
     expect(out.frameResults.size).toBeGreaterThan(0);
+  });
+
+  it("baseline source: a fit mask picks the reference subset (fitRows) but scores ALL instances", async () => {
+    const FIX = fileURLToPath(new URL("../fixtures/tracked-preds.slp", import.meta.url));
+    const labels = await loadSlp(FIX, { openVideos: false });
+    const ctx = buildContext(labels, makeQCConfig());
+    const n = ctx.allPoses.length;
+    const mask = ctx.allPoses.map((_, i) => i % 2 === 0); // reference = even-indexed instances
+    const fx = new LabelQCDetector(makeQCConfig()).fitFeatures(ctx.allPoses, ctx.analyzer, mask);
+    expect(fx.rawMatrix).toHaveLength(n); // scored over ALL
+    expect(fx.fitRows).toEqual(ctx.allPoses.map((_, i) => i).filter((i) => i % 2 === 0));
+    expect(fx.fitRawMatrix).toHaveLength(fx.fitRows.length);
+    // null mask === all (the default path, unchanged)
+    expect(new LabelQCDetector(makeQCConfig()).fitFeatures(ctx.allPoses, ctx.analyzer, null).fitRows).toHaveLength(n);
+  });
+
+  it("pose-split unit: a standalone check producing per-instance chimera scores in [0,1]", async () => {
+    const FIX = fileURLToPath(new URL("../fixtures/tracked-preds.slp", import.meta.url));
+    const labels = await loadSlp(FIX, { openVideos: false });
+    const ctx = buildContext(labels, makeQCConfig());
+    const unit = computePoseSplitUnit(ctx);
+    expect(unit.poseSplitScores.size).toBeGreaterThan(0);
+    for (const s of unit.poseSplitScores.values()) {
+      expect(s).toBeGreaterThanOrEqual(0);
+      expect(s).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("feature-check foundation: anomaly det means/stds align with featureNames + contributions (per-feature z)", async () => {
+    const FIX = fileURLToPath(new URL("../fixtures/tracked-preds.slp", import.meta.url));
+    const labels = await loadSlp(FIX, { openVideos: false });
+    const ctx = buildContext(labels, makeQCConfig());
+    const { det, contributions, featureNames } = computeAnomalyUnit(ctx);
+    // The qcStore feature-checks index det.means/stds by featureNames.indexOf(feature) and read the
+    // raw value from contributions[feature] — so these three must stay column-aligned.
+    expect(det.means).toHaveLength(featureNames.length);
+    expect(det.stds).toHaveLength(featureNames.length);
+    expect(featureNames).toContain("max_edge_zscore");
+    expect(contributions.size).toBeGreaterThan(0);
+    const j = featureNames.indexOf("max_edge_zscore");
+    let sawFinite = false;
+    for (const [key, c] of contributions) {
+      expect(key).toMatch(/^\d+:\d+:\d+$/); // "videoIdx:frameIdx:instIdx"
+      const raw = c["max_edge_zscore"];
+      if (raw != null && Number.isFinite(raw)) {
+        const z = Math.abs((raw - det.means[j]) / det.stds[j]); // the exact per-feature z a feature-check uses
+        expect(Number.isFinite(z)).toBe(true);
+        expect(z).toBeGreaterThanOrEqual(0);
+        sawFinite = true;
+      }
+    }
+    expect(sawFinite).toBe(true);
   });
 });

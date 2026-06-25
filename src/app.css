@@ -93,7 +93,7 @@ body {
    The heading is an engraved micro-label that extends a rule-line across the row:
    give the h3 flex:1 inside a flex row and the rule fills the slack. */
 .side-section {
-  padding: 0.95rem 1.1rem;
+  padding: 0.7rem 1.1rem;
   border-top: 1px solid var(--border-soft);
 }
 .side-h {

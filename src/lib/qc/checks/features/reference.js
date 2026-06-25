@@ -1,8 +1,8 @@
-// Port of sleap/qc/features/reference.py — normalize_pose, pose_distance, and the
-// nearest-neighbor reference scorer (brute-force euclidean; the Python KD-tree is just a
-// speed optimization that yields identical distances).
+// Port of sleap/qc/features/reference.py — normalize_pose and the nearest-neighbor reference
+// scorer (brute-force euclidean; the Python KD-tree is just a speed optimization that yields
+// identical distances).
 
-import { isVisible, dist, visiblePoints } from "../util.js";
+import { isVisible, visiblePoints } from "../util.js";
 
 const NAN2 = [Number.NaN, Number.NaN];
 
@@ -21,53 +21,53 @@ export function normalizePose(pose) {
   return pose.map((p) => (isVisible(p) ? [(p[0] - cx) / scale, (p[1] - cy) / scale] : [...NAN2]));
 }
 
-/** Mean euclidean distance over commonly-visible nodes (Infinity if < 2 in common). */
-export function poseDistance(a, b) {
-  const ds = [];
-  for (let i = 0; i < a.length; i++) {
-    if (isVisible(a[i]) && isVisible(b[i])) ds.push(dist(a[i], b[i]));
-  }
-  if (ds.length < 2) return Infinity;
-  return ds.reduce((s, d) => s + d, 0) / ds.length;
-}
-
 // Flatten a normalized pose to a vector with NaN imputed to 0 (mirrors np.nan_to_num),
 // matching the KD-tree feature space the Python uses.
 const flat = (pose) => pose.flatMap((p) => [Number.isNaN(p[0]) ? 0 : p[0], Number.isNaN(p[1]) ? 0 : p[1]]);
-const l2 = (u, v) => Math.hypot(...u.map((x, i) => x - v[i]));
 
 export class NearestNeighborScorer {
   constructor({ normalize = true } = {}) {
     this.normalize = normalize;
-    this._refs = null; // flattened reference vectors
+    this._refs = null; // packed Float64Array (count * dim) — cache-friendly, allocation-free distances
+    this._count = 0;
+    this._dim = 0;
   }
   fit(poses) {
-    const norm = this.normalize ? poses.map(normalizePose) : poses;
-    this._refs = norm.map(flat);
+    const flats = poses.map((p) => flat(this.normalize ? normalizePose(p) : p));
+    this._dim = flats.length ? flats[0].length : 0;
+    this._count = flats.length;
+    this._refs = new Float64Array(this._count * this._dim);
+    for (let i = 0; i < this._count; i++) this._refs.set(flats[i], i * this._dim);
     return this;
   }
-  /** Nearest-neighbor distance of a pose against the reference set. */
+  /** Nearest-neighbor distance of a pose against the reference set (O(count); squared-dist loop). */
   score(pose) {
     const q = flat(this.normalize ? normalizePose(pose) : pose);
-    let best = Infinity;
-    let idx = -1;
-    for (let i = 0; i < this._refs.length; i++) {
-      const d = l2(q, this._refs[i]);
-      if (d < best) { best = d; idx = i; }
+    const refs = this._refs, dim = this._dim;
+    let bestSq = Infinity, idx = -1;
+    for (let r = 0; r < this._count; r++) {
+      const base = r * dim;
+      let s = 0;
+      for (let k = 0; k < dim; k++) { const d = q[k] - refs[base + k]; s += d * d; }
+      if (s < bestSq) { bestSq = s; idx = r; }
     }
-    return { nnDistance: best, nnIndex: idx };
+    return { nnDistance: Number.isFinite(bestSq) ? Math.sqrt(bestSq) : Infinity, nnIndex: idx };
   }
-  /** Leave-one-out NN distance for every reference pose (training-time signal). */
+  /** Leave-one-out NN distance for every reference pose. O(count²) — keep the reference set small. */
   looDistances() {
-    const out = [];
-    for (let i = 0; i < this._refs.length; i++) {
-      let best = Infinity;
-      for (let j = 0; j < this._refs.length; j++) {
-        if (i === j) continue;
-        const d = l2(this._refs[i], this._refs[j]);
-        if (d < best) best = d;
+    const refs = this._refs, dim = this._dim, count = this._count;
+    const out = new Array(count);
+    for (let i = 0; i < count; i++) {
+      const bi = i * dim;
+      let bestSq = Infinity;
+      for (let r = 0; r < count; r++) {
+        if (r === i) continue;
+        const br = r * dim;
+        let s = 0;
+        for (let k = 0; k < dim; k++) { const d = refs[bi + k] - refs[br + k]; s += d * d; }
+        if (s < bestSq) bestSq = s;
       }
-      out.push(Number.isFinite(best) ? best : 0);
+      out[i] = Number.isFinite(bestSq) ? Math.sqrt(bestSq) : 0;
     }
     return out;
   }

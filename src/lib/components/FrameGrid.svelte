@@ -48,13 +48,7 @@
     return out;
   });
 
-  const modifiedCount = $derived.by(() => {
-    void store.rev;
-    void edit.dirtyRev;
-    let n = 0;
-    for (const f of store.frames) if (edit.isFrameModified(f?.lf)) n++;
-    return n;
-  });
+  const modifiedCount = $derived(edit.modifiedCount); // O(1) — no per-bump rescan of all frames
 
   // A filter that loses its meaning (QC reset) or empties out falls back to "all".
   $effect(() => {

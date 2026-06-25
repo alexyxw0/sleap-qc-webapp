@@ -46,7 +46,7 @@
   const item = $derived(store.current);
 
   const totals = $derived.by(() => {
-    store.rev;
+    edit.structRev; // recompute on add/remove instance + file load (store.labels) — NOT on node-drags
     const L = store.labels;
     if (!L) return null;
     let instances = 0;
@@ -98,6 +98,7 @@
         name: names[j] ?? j,
         x: p.xy?.[0],
         y: p.xy?.[1],
+        score: typeof p.score === "number" ? p.score : null, // per-keypoint confidence (predicted only)
         visible: p.visible,
         placed: p.xy?.[0] != null && !Number.isNaN(p.xy?.[0]),
       })),
@@ -131,8 +132,8 @@
       class="side-section"
       title="Anomaly = geometrically unusual vs. the rest of this file. Confidence = the model's own per-keypoint certainty. Both are review hints, not certain errors."
     >
-      <h3 class="side-h">QC — this frame{qc.stale ? " · stale" : ""}</h3>
       <div class="qcrow">
+        <span class="qframe-lbl">frame{qc.stale ? " · stale" : ""}</span>
         {#if fs != null}
           <span class="qchip" style:background={heatColor(fs)}>{fs.toFixed(2)}</span>
         {/if}
@@ -153,19 +154,13 @@
             {/if}
           </span>
         {/if}
-        {#if qc.hasConfidence}
-          {@const mc = qc.frameMinConfidence(item)}
-          {#if mc != null && mc <= 1 - qc.uncThreshold}
-            <span class="conf" title="Lowest model confidence in this frame">conf {mc.toFixed(2)}</span>
-          {/if}
-        {/if}
       </div>
       {#if flagged}
         {@const flaggers = qc.frameFlaggingChecks(item)}
         {#if flaggers.length}
           <div class="flaggers">
             {#each flaggers as f (f.key)}
-              <span class="ftag" title="Flagged by {f.label}{f.score != null ? ` · ${f.score.toFixed(2)}` : ''}">
+              <span class="ftag" class:structural={f.score == null} title="Flagged by {f.label}{f.score != null ? ` · ${f.score.toFixed(2)}` : ' · structural (no threshold)'}">
                 {f.label}{#if f.score != null}<i class="fscore">{f.score.toFixed(2)}</i>{/if}
               </span>
             {/each}
@@ -174,7 +169,10 @@
       {/if}
       {#if hasFrameIssue(fq)}
         <ul class="issues">
-          {#if fq.isIncomplete}<li>{fq.actualInstanceCount} / {fq.expectedInstanceCount} expected instances</li>{/if}
+          {#if fq.isWrongCount}<li>{fq.isEmpty ? "empty frame — no instances" : `${fq.actualInstanceCount} / ${fq.expectedInstanceCount} expected instances (${fq.isOvercount ? "extra" : "missing"})`}</li>{/if}
+          {#if fq.isSparse}<li>sparse instance — only {fq.minVisibleNodeCount} visible node{fq.minVisibleNodeCount === 1 ? "" : "s"}</li>{/if}
+          {#if fq.isLowConf}<li>low keypoint confidence — {qc.confidenceMode === "avg" ? `mean ${fq.avgPointScore.toFixed(2)}` : `weakest ${fq.minPointScore.toFixed(2)}`}</li>{/if}
+          {#if fq.isLowInstConf}<li>low instance confidence — score {fq.minInstScore.toFixed(2)}</li>{/if}
           {#if fq.isNegativeWithInstances}<li>negative frame has instances</li>{/if}
           {#if fq.duplicatePairs?.length}<li>{fq.duplicatePairs.length} duplicate pair(s): {fq.duplicateReasons.join(", ")}</li>{/if}
         </ul>
@@ -248,6 +246,9 @@
             {#if gs != null && gs >= qc.gmmThreshold}
               <span class="qchip sm" style:background={heatColor(gs)} title="GMM probability anomaly">G {gs.toFixed(2)}</span>
             {/if}
+            {#if inst.score != null}
+              <span class="qchip sm" style:background={heatColor(1 - inst.score)} title="Instance confidence (PredictedInstance.score)">c {inst.score.toFixed(2)}</span>
+            {/if}
             <button class="del" onclick={() => edit.deleteInstance(inst.i)} title="Delete instance">×</button>
           </div>
           {#if qc.instanceFlagged(item, inst.i)}
@@ -269,11 +270,11 @@
                   class:psel={inst.i === edit.selInstance && p.j === edit.selNode}
                   onclick={() => edit.select(inst.i, p.j)}
                   ondblclick={() => edit.toggleVisible(inst.i, p.j)}
-                  title="Click to select · double-click to show/hide"
+                  title="{p.placed ? `(${p.x.toFixed(0)}, ${p.y.toFixed(0)}) · ` : ''}click to select · double-click to show/hide"
                 >
                   <span class="pname">{p.name}</span>
-                  <span class="pxy">
-                    {p.placed ? `${p.x.toFixed(1)}, ${p.y.toFixed(1)}` : "—"}
+                  <span class="pxy" title="Keypoint confidence">
+                    {p.score != null ? p.score.toFixed(2) : "—"}
                     <i class="vis" class:on={p.visible}></i>
                   </span>
                 </button>
@@ -449,9 +450,17 @@
   }
   .qcrow {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: 0.5rem;
     min-width: 0;
+  }
+  /* compact inline cue replacing the old "QC — this frame" header */
+  .qframe-lbl {
+    flex: none;
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--dim);
   }
   .verdict {
     flex: 1;
@@ -463,11 +472,6 @@
   .verdict.flagged {
     color: #e7c08a;
     font-weight: 600;
-  }
-  .conf {
-    font-size: 0.72rem;
-    color: var(--warn);
-    font-variant-numeric: tabular-nums;
   }
   .qchip {
     color: #04181d;
@@ -499,12 +503,17 @@
     align-items: center;
     gap: 0.28rem;
     font-size: 0.68rem;
-    color: #e7c08a;
+    color: #e7c08a; /* score-based checks (tunable via a threshold) */
     border: 1px solid rgba(231, 192, 138, 0.4);
     border-radius: var(--r-xs);
     padding: 0.04rem 0.36rem;
     letter-spacing: 0.01em;
     white-space: nowrap;
+  }
+  /* threshold-less structural checks (count / negative / duplicates) — distinct cool hue. */
+  .ftag.structural {
+    color: #a5b4fc;
+    border-color: rgba(165, 180, 252, 0.4);
   }
   .ftag .fscore {
     color: var(--dim);

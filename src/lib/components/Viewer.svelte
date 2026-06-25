@@ -83,13 +83,13 @@
     // least-confident node of low-confidence instances. Both only when concerning, so normal
     // poses stay clean. *Nodes[instIdx] = nodeIdx to ring, or -1.
     let worstNodes = null;
-    let uncertainNodes = null;
+    let flaggedInstances = null;
     if (qc.hasResults && item) {
       const insts = item.lf?.instances ?? [];
       // red ring on the faulty node of any flagged instance — chirality's wrong-pair node,
       // the pose-split bridge node, or the GMM's leave-one-out node. Reacts live to the sliders.
       worstNodes = insts.map((_, i) => (qc.instanceFlagged(item, i) ? qc.faultyNodeFor(item, i) : -1));
-      uncertainNodes = insts.map((_, i) => qc.uncertainNodeFor(item, i));
+      flaggedInstances = qc.frameFlaggedInstances(item); // bbox around each flagged instance
     }
 
     const cw = Math.round(W * dpr);
@@ -113,7 +113,7 @@
       selInstance: selI,
       selNode: selN,
       worstNodes,
-      uncertainNodes,
+      flaggedInstances,
     });
   });
 
@@ -136,9 +136,11 @@
     view.clearFocus();
   });
 
-  // Clear selection when navigating to another frame.
+  // Clear selection when navigating to another frame. (Yields while the QC-review popup is
+  // open — it drives navigation and keeps the faulty node selected for correction.)
   $effect(() => {
     void store.index;
+    if (ui.reviewOpen) return;
     edit.clearSelection();
   });
 
@@ -160,6 +162,14 @@
     if (!lf) return;
     const { x, y, scale } = toImage(e);
     const hit = hitTestNode(lf, HIT_PX * scale)(x, y);
+
+    // Ctrl / Cmd + click a placed node toggles its visibility (no select / drag).
+    if (hit && (e.ctrlKey || e.metaKey)) {
+      edit.select(hit.instIdx, hit.nodeIdx);
+      edit.toggleVisible(hit.instIdx, hit.nodeIdx);
+      e.preventDefault();
+      return;
+    }
 
     if (hit) {
       // A node is only draggable if it was already the selected node *before* this
@@ -336,6 +346,7 @@
       onpointerdown={onPointerDown}
       onpointermove={onPointerMove}
       onpointerup={onPointerUp}
+      oncontextmenu={(e) => { if (e.ctrlKey || e.metaKey) e.preventDefault(); }}
     ></canvas>
 
     <div class="vf" aria-hidden="true"></div>

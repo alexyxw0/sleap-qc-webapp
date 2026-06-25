@@ -34,6 +34,16 @@ function forwardSolve(L, b, n) {
   }
   return y;
 }
+// Solve Lᵀ v = b (upper-triangular back substitution; (Lᵀ)_{ij} = L_{ji}).
+function backSolveT(L, b, n) {
+  const v = new Float64Array(n);
+  for (let i = n - 1; i >= 0; i--) {
+    let s = b[i];
+    for (let j = i + 1; j < n; j++) s -= L[j][i] * v[j];
+    v[i] = s / L[i][i];
+  }
+  return v;
+}
 const logsumexp = (arr) => {
   const m = Math.max(...arr);
   if (!Number.isFinite(m)) return m;
@@ -71,7 +81,7 @@ export function standardScalerFit(X) {
 }
 export const scalerTransform = (X, { mean, scale }) =>
   X.map((row) => row.map((v, j) => (v - mean[j]) / scale[j]));
-export const scalerTransformRow = (row, { mean, scale }) => row.map((v, j) => (v - mean[j]) / scale[j]);
+const scalerTransformRow = (row, { mean, scale }) => row.map((v, j) => (v - mean[j]) / scale[j]);
 
 // ---- Gaussian Mixture (full covariance) ----
 export class GaussianMixture {
@@ -206,6 +216,39 @@ export class GMMDetector {
   logLikelihoodOne(vector) {
     if (vector.some((x) => Number.isNaN(x))) return -Infinity;
     return this.gmm.scoreSamples([scalerTransformRow(vector, this.scaler)])[0];
+  }
+  /**
+   * Which feature DIMENSION makes this vector improbable. Under the most-responsible mixture
+   * component, the (squared) Mahalanobis distance decomposes exactly per feature:
+   *   dᵀ Σ⁻¹ d = Σ_j d_j · (Σ⁻¹ d)_j     (d = scaled vector − component mean)
+   * so the largest term is the dimension the GMM finds most off (it accounts for the learned
+   * feature correlations, unlike a plain per-feature z). Returns `{ index, contributions,
+   * component }` in feature order; `index = -1` if unfitted or the input has NaNs.
+   */
+  worstFeature(vector) {
+    if (!this.gmm) return { index: -1, contributions: [], component: -1 };
+    const xs = scalerTransformRow(vector, this.scaler);
+    if (xs.some((v) => Number.isNaN(v))) return { index: -1, contributions: [], component: -1 };
+    const g = this.gmm;
+    const n = g.d;
+    let kBest = 0, lpBest = -Infinity;
+    for (let k = 0; k < g.K; k++) {
+      const lp = g._logW[k] + logGaussian(xs, g.means[k], g._chol[k], g._logDet[k], n);
+      if (lp > lpBest) { lpBest = lp; kBest = k; }
+    }
+    const mean = g.means[kBest], L = g._chol[kBest];
+    const d = new Float64Array(n);
+    for (let j = 0; j < n; j++) d[j] = xs[j] - mean[j];
+    const u = forwardSolve(L, d, n);  // u = L⁻¹ d
+    const prec = backSolveT(L, u, n); // Σ⁻¹ d = L⁻ᵀ u
+    const contributions = new Array(n);
+    let index = -1, best = -Infinity;
+    for (let j = 0; j < n; j++) {
+      const c = d[j] * prec[j];
+      contributions[j] = c;
+      if (c > best) { best = c; index = j; }
+    }
+    return { index, contributions, component: kBest };
   }
 }
 

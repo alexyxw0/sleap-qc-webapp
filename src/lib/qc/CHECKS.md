@@ -10,17 +10,19 @@ All `checks/…` citations below are relative to `src/lib/qc/`; `qcStore.svelte.
 
 ## Architecture
 
-**Unit model.** Each detection technique is a pure `computeXUnit(ctx)` function in `checks/detector.js` (`computeAnomalyUnit`, `computeGmmUnit`, `computeFrameUnit`, `computeChiralityUnit`). Pose-split is **not** a unit — `pose_split_score` is a feature in the anomaly/GMM vector (see "The feature vector"), matching the desktop GUI. A unit takes the shared `ctx` (built once by `buildContext`, carrying `frames`, `allPoses`, `analyzer`, `frameCounts`, `videoIds`, `config`, `labels`, fitted features) and returns `Map`s keyed by `` `${videoIdx}:${frameIdx}:${instIdx}` `` for instance-level results, or `` `${videoIdx}:${frameIdx}` `` for frame-level results.
+**Unit model.** Each detection technique is a pure `computeXUnit(ctx)` function in `checks/detector.js` (`computeAnomalyUnit`, `computeGmmUnit`, `computeFrameUnit`, `computeChiralityUnit`, `computeOrderingUnit`, `computePoseSplitUnit`). A unit takes the shared `ctx` (built once by `buildContext`, carrying `frames`, `allPoses`, `analyzer`, `frameCounts`, `videoIds`, `config`, `labels`, fitted features) and returns `Map`s keyed by `` `${videoIdx}:${frameIdx}:${instIdx}` `` for instance-level results, or `` `${videoIdx}:${frameIdx}` `` for frame-level results.
 
 **Memoization.** `qcStore.svelte.js` maps each user-facing check to a unit via `UNIT_OF` (`count`/`negative`/`duplicates` all share the `frame` unit). Results live in `#computed[unit]`; re-selecting a previously-computed technique never recomputes. `#ctx` is rebuilt only when the underlying labels change (`#ctxLabels` identity check), via `buildContext(store.labels, makeQCConfig({ useGmm: false }))` (see GMM Notes for why the `useGmm:false` override is inert for the unit path). After the first run, toggling a new check auto-reruns (an `$effect` in `App.svelte` gated on `status === "done"`), computing only the newly-needed unit.
 
 **Score + threshold convention.** Instance scorers (anomaly, gmm, chirality) emit a score in `[0,1]`; an instance is flagged when `score >= threshold`. Frame checks emit booleans. Per-instance scores roll up to a frame via **max** aggregation.
 
-**UNION flagging.** `flaggedFrameCount` / the flagged set is the UNION of all *enabled-and-computed* checks: anomaly (`>= threshold`), gmm (`>= gmmThreshold`), chirality (`>= chiralityThreshold`), plus boolean frame checks `count`/`negative`/`duplicates`. Pose-split has no row of its own — it raises the anomaly/GMM score via its feature. Disabling a check removes its contribution from the union without recomputation.
+**UNION flagging.** `flaggedFrameCount` / the flagged set is the UNION of all *enabled-and-computed* checks: anomaly (`>= threshold`), gmm (`>= gmmThreshold`), chirality (`>= chiralityThreshold`), ordering (`>= orderingThreshold`), pose-split (`>= poseSplitThreshold`), plus the frame checks `count`/`sparse`/`confidence`/`instConfidence`/`negative`/`duplicates`. `sparse`, `confidence` (min or mean keypoint score per `confidenceMode`), and `instConfidence` (`minInstScore < instConfidenceThreshold`) carry live thresholds; the others are boolean. The union also includes any **user-built per-feature checks** (`|z|` of one vector feature `>=` its own threshold — see *Custom per-feature checks*). Disabling a check removes its contribution from the union without recomputation.
 
-**Default toggle state (as shipped).** `checks = { anomaly:true, gmm:false, chirality:true, count:true, negative:true, duplicates:true }`. GMM defaults **OFF** (opt-in/heaviest); chirality defaults ON but self-disables without symmetric pairs; the others default ON.
+**Default toggle state (as shipped).** `checks = { anomaly:true, gmm:true, chirality:true, ordering:false, poseSplit:true, count:false, sparse:false, confidence:false, instConfidence:false, negative:false, duplicates:true }`. **ON by default:** anomaly, chirality, gmm, poseSplit, duplicates. **OFF by default:** ordering (experimental), count, sparse, confidence, instConfidence, negative (enable as needed). Chirality self-disables without symmetric pairs; `confidence` / `instConfidence` only show/flag when the file has predicted instances.
 
-**Two population-stat implementations.** Z-scores and GMM scaling are both *population* (`/N`, ddof=0) but live in **two independent code paths**: `util.js` (`mean`/`safeStd`, floor `1e-6`) for ZScore and the 19-feature stats; `gmm.js` `standardScalerFit` (zero-variance scale→1). Do not assume a single shared helper.
+**Two population-stat implementations.** Z-scores and GMM scaling are both *population* (`/N`, ddof=0) but live in **two independent code paths**: `util.js` (`mean`/`safeStd`, floor `1e-6`) for ZScore and the 18-feature stats; `gmm.js` `standardScalerFit` (zero-variance scale→1). Do not assume a single shared helper.
+
+**Outlier baseline source (`config.baselineSource`, `qc.baselineSource`).** The "normal" reference for the **Anomaly + GMM** outlier checks is either `"all"` labeled instances (default) or `"user"`-annotated only. `fitFeatures(instances, analyzer, fitMask)` decouples *fit* from *score*: the baseline stats / NN reference / hull stats and the ZScore/GMM detectors are fit on `fitMask`'s subset (a fit row reuses its leave-one-out NN; a non-fit row gets the full NN to the fit set), but `rawMatrix`/`cleanMatrix` are built over **all** instances and `fitRows` records the reference subset. `"user"` falls back to `"all"` when the file has no user instances. Fitting on clean ground truth means predictions are measured against it — useful because the anomaly check is baseline-relative (occlusion-heavy predictions otherwise inflate the std and dilute the z-scores). Changing it rebuilds the context (`#ctxBaselineSource`) and re-runs.
 
 ---
 
@@ -68,9 +70,25 @@ All `checks/…` citations below are relative to `src/lib/qc/`; `qcStore.svelte.
 
 ---
 
-## Split pose (chimera) — a feature, not a standalone check
+## Chain ordering (experimental)
 
-**What it catches:** one labeled instance that actually spans **two animals** (head of A + abdomen of B), joined by a single over-stretched bridging edge. Unlike chirality, it has **no standalone check / threshold** — `pose_split_score` is feature #19 of the anomaly/GMM vector (mirroring the desktop GUI, where pose-split is a GMM feature with no hard rule). A chimera is flagged only when it lifts the combined anomaly/GMM score past that detector's threshold, and surfaces as the verdict **"Split pose / chimera"** via `topIssue` when `pose_split_score` is the dominant contribution. No dedicated node attribution (whole-instance).
+**Flags:** keypoints labeled **out of order** along an ordered chain (tail / spine / limb) — e.g. `Tail_1` swapped with `Tail_3`. Deterministic and translation/rotation/uniform-scale-invariant (a hard rule, no learned stats — like chirality). **Default OFF** (experimental). Port of `sleap/qc/features/ordering.py`.
+
+**Algorithm:** `computeChainOrdering` (`checks/features/ordering.js`). For each ordered chain (≥ 3 nodes): the **turning angle** `π − interior_angle` between consecutive segments at every interior node — `order_inversion_rate` = fraction whose turn exceeds 60° (a sharp reversal); and the **non-adjacent segment crossing** count (`chain_intersection_count`) via an orientation/straddle test (a strong, unambiguous signal of a non-local swap that the angle z-score can't see). Chains come from `resolveChains(node_names, config.orderedChains, analyzer.getCurvatureChains())` — user-declared orderings win, else the auto curvature chains.
+
+**Combined score + threshold.** The store flags on a single per-instance score: **a crossing forces `1.0`**, else `order_inversion_rate`; flag at `orderingThreshold = 0.3` (= the desktop's `order_inversion_threshold`). Verdict **"Out-of-order keypoints"** ("…(chain crosses)" when `chain_intersection_count ≥ 1`), ringing the worst (sharpest-turn) interior node; sits just under chirality in `instanceIssue`/`faultyNodeFor`. The raw `order_inversion_rate` + `chain_intersection_count` are also written as the **last two CSV columns** (matching the desktop's V3 feature order).
+
+**Relation to the angle z-score** (deliberately NOT folded into the anomaly vector): the *turning-angle* half overlaps `max_angle_zscore` (same triplets, hard-rule vs. learned-z); the *crossing* half + the dataset-invariant hard rule are the novel signal — see the redundancy analysis. Kept standalone (like chirality), so on naturally-curled chains a genuine swap still fires even when the z-score's large std would dilute it.
+
+---
+
+## Split pose (chimera)
+
+**Flags:** one labeled instance that actually spans **two animals** (head of A + abdomen of B), joined by a single over-stretched bridging edge. A **standalone structural check** in the Geometric group (its own toggle + threshold + bridge-node ring). Previously folded into the anomaly/GMM vector as the `pose_split_score` feature, where — per the desktop GUI — it was *less* sensitive (it only fired when it moved the combined score); promoted to its own check for a dedicated threshold + verdict. **Default ON.**
+
+**Algorithm:** `computePoseSplit` (`checks/features/poseSplit.js`), per instance: on the visible subgraph find the edge with the largest length z-score (the bridge), cut it, require a clean split into exactly **two** components, then `split_score = gated product of bridge-z × balance(split_ratio) × gap_term(gap_ratio)` — all three must be high (suppresses normal poses, single-node strays, >2-component occlusion, and genuinely-merged-but-close animals). Star / short / adjacency-less skeletons fall back to a deterministic 2-means bimodality test. Because it uses the fitted **edge-length statistics** (the bridge z-score) it is *not* a pure hard rule like chirality/ordering — `computePoseSplitUnit` reuses the same fitted `fx`.
+
+**Score + verdict.** The store flags on a saturating map `split_score / (split_score + 1)` (raw 1.0 → 0.5) at `poseSplitThreshold = 0.5`; verdict **"Split pose / chimera"**, ringing an endpoint of the over-stretched bridge edge. Sits just under chirality in `instanceIssue` / `faultyNodeFor`.
 
 **Algorithm:** `computePoseSplit` (`checks/features/poseSplit.js`), called from `extractFeatures`. On the *visible* subgraph: (1) find the edge with the largest length **z-score** `(len − mean) / std` from the learned baseline edge stats — the "bridge"; (2) cut it and require **exactly two** components (a clean bridge — partial occlusion yields >2, a cycle-redundant edge yields 1; both → score 0); (3) `split_score = bridge_z × balance(split_ratio) × gap_term(gap_ratio)`, a **gated product** so all three must be high. `balance` ramps 0→1 across `split_ratio ∈ [0.18, 0.30]`; `gap_term = max(gap_ratio − 1.5, 0)` with `gap_ratio = ‖centroidA − centroidB‖ / max(spreadA, spreadB)`. Star / short / adjacency-less skeletons use a **2-means bimodality fallback**. The unbounded `split_score` is **log1p-compressed** (`Math.log1p`, matching the desktop) before entering the vector; `0` for a normal pose. Uses the extractor's own `baseline.stats.edgeMeans`/`edgeStds` + precomputed `_adjacency`.
 
@@ -80,13 +98,34 @@ All `checks/…` citations below are relative to `src/lib/qc/`; `qcStore.svelte.
 
 ## Instance count
 
-**Flags:** frame with fewer instances than its expected (median) count — `isIncomplete = instanceCount < expected`.
+**Flags:** a **non-negative** frame whose instance count differs from its expected (typical) count — in **either** direction: `isIncomplete` (too few / missing) **or** `isOvercount` (too many / spurious extra); `isWrongCount = count !== round(expected)` drives the flag, and `isEmpty` marks the count==0 case ("Empty frame"). **Negative (background) frames are exempt** from the count check (`counted = !isNegative` in `checkFrame`) — their 0 instances are intentional, so they would otherwise always read as "missing". The symmetric case (a negative frame that *does* carry instances) is the separate Negative-frame check.
 
-**Algorithm:** `InstanceCountChecker` (`checks/frameLevel.js`). `fit(frameCounts, videoIds)` computes `globalExpected = median(frameCounts)` and, when `perVideo` (default true) with video IDs, a per-video median in `expectedCounts`. `check(instanceCount, videoId)` selects the per-video median when available else the global median, returning `{ isIncomplete: count < expected, expectedCount, actualCount, countDifference }`. Wired via `computeFrameUnit` → `checkFrame`; `expectedInstanceCount` is `Math.round(expected)`.
+**Algorithm:** `InstanceCountChecker` (`checks/frameLevel.js`). `fit(frameCounts, videoIds)` computes `globalExpected = median(frameCounts **excluding empties**)` and, when `perVideo` (default true) with video IDs, a per-video median of the non-empty counts in `expectedCounts`. `check(instanceCount, videoId)` selects the per-video median when available else the global, rounds it (`expected = round(expectedRaw)`), and returns `{ isIncomplete: count < expected, isOvercount: count > expected, isWrongCount: count !== expected, expectedCount: expectedRaw, actualCount, countDifference }`. Wired via `computeFrameUnit` → `checkFrame`; the sidebar/review surface "actual / expected (missing|extra)".
 
-**Threshold/params:** no numeric threshold — the boundary is the (per-video) **median** count. `perVideo=true`.
+**Threshold/params:** no numeric threshold — the boundary is the **rounded median of non-empty** (per-video) counts. `perVideo=true`.
 
-**Notes:** Strictly less-than median (a frame exactly at median is not incomplete). Per-video median requires `videoId != null` and a fitted entry, else falls back to global. Only *under*-count is flagged; over-count is not an `isIncomplete`. Median is computed over all fitted frame counts.
+**Deliberate deviations from upstream `sleap/qc`** (which only flagged `count < median(all_counts)`): (1) the expected is the median of **non-empty** frames — empty/background frames (count 0) are not evidence of the expected animal count and used to drag the median down so nothing got flagged; (2) **over-count is flagged too** — an extra/spurious instance is as wrong as a missing one. *Limitation:* when most frames are genuinely partial, the median still reflects the partial count and those frames won't flag (no statistic can recover the true animal count from the labels alone).
+
+---
+
+## Sparse instance
+
+**Flags:** a (non-negative) frame containing an instance localized by **fewer than `sparseThreshold` visible nodes** — a barely-localized / off-frame instance (e.g. a single ear way off in a corner). Default `sparseThreshold = 2` (flags 0–1-node instances). Not in upstream `sleap/qc`.
+
+**Why a dedicated check:** the Anomaly (ZScore) check *should* catch these — a 1-node pose scores ~1.0 against a clean baseline (huge `nn_distance` / `visibility_rate` z). But it is **baseline-relative**: on occlusion-heavy data the baseline tolerates degenerate instances (large per-feature std), so the z-scores get diluted below threshold and the instance reads "OK". This check is **deterministic** — a plain visible-node count — so it doesn't depend on the population.
+
+**Algorithm:** `checkFrame` (`checks/detector.js`) computes, over the frame's non-negative instances, `minVisibleNodeCount = min_i (count of nodes with non-NaN coords)` and `sparsestInstance = argmin` — both **threshold-free**. The store flags `minVisibleNodeCount < sparseThreshold` (a live integer slider, 1–8), so re-tuning re-flags without recompute. Negative frames are exempt (`Infinity`). Surfaces as the structural tag "Sparse instance (N nodes)".
+
+---
+
+## Prediction confidence (keypoint + instance)
+
+Two predicted-only checks — a user-labeled instance has no scores, so both rows hide themselves when the file has no predictions (`qc.hasPredictions`, from `inst.score != null`). Not in upstream `sleap/qc`.
+
+- **Low keypoint confidence** (`confidence`): flags a frame whose per-keypoint confidence (the SLEAP confidence-map peak value, 0–1) drops below `confidenceThreshold`. A `confidenceMode` toggle picks **`"min"`** (the single weakest visible keypoint — most actionable; rings that node) or **`"avg"`** (the mean over an instance's visible keypoints).
+- **Low instance confidence** (`instConfidence`): flags a frame containing an instance whose **instance-level** `PredictedInstance.score` is below `instConfidenceThreshold` — the model's overall confidence in the whole detection, distinct from the per-keypoint scores.
+
+**Algorithm:** `buildContext` records per instance `{ minScore, minNode, avgScore, instScore }` (min / mean over visible scored points; `inst.score`; `Infinity`/`-1` for user instances). `checkFrame` reduces these to the frame's `minPointScore`+`lowConfNode`, `avgPointScore`, and `minInstScore`+`lowInstance` (threshold-free). The store flags via `#kpConf(fq)` (min or avg per `confidenceMode`) `< confidenceThreshold`, and `minInstScore < instConfidenceThreshold` (live sliders, 0.05–0.95, default 0.3). Tags: "Low keypoint conf · &lt;node&gt;" / "Low avg conf" / "Low instance conf".
 
 ---
 
@@ -116,6 +155,16 @@ All `checks/…` citations below are relative to `src/lib/qc/`; `qcStore.svelte.
 
 ---
 
+## Custom per-feature checks (drag-and-drop)
+
+**What:** the aggregate Anomaly check flags on the **max** `|z|` across all 18 features, which can bury a single meaningful axis. A per-feature check isolates **one** feature: drag a row out of the "feature vector" panel (under GMM) into the **Custom · per-feature** drop zone — or click its `＋` — to flag every instance whose `|z|` *for that one feature* is `>= ` the check's own threshold (a `|z|` slider, 1–6, default 3). Each is independently toggled / removed; one check per feature.
+
+**Algorithm:** they reuse the **Anomaly unit** — no new fit. `qcStore.#deriveFeatureChecks()` standardizes each active feature with the same `ZScoreDetector` the Anomaly check fits: `z = (contributions[feature] − det.means[j]) / det.stds[j]`, `j = featureNames.indexOf(feature)` (the three stay column-aligned — see the `feature-check foundation` test). It caches `#instFeatureZ` (`"v:f:i" → {feature:|z|}`) and `#frameFeatureZ` (`"v:f" → {feature: max|z|}`); a threshold change is a pure compare (no re-derive), an add/remove/toggle re-derives. Because they need the det, enabling one forces the Anomaly unit to compute even if the Anomaly *check* is off (`run()` adds `"anomaly"` to `need`; `pendingCount` reflects it).
+
+**Surfacing:** a per-feature flag joins the **union** (`flaggedFrameCount`/`frameFlagged`), marks the instance (`instanceFlagged` → the red **bbox** via `frameFlaggedInstances`), adds a `feat:<id>` tag in `frameFlaggingChecks` (label = feature name, score = `|z|`), and contributes `sigmoid(|z| − threshold)` to `flagConfidence` for review-mode ordering. It does **not** override the primary instance verdict or ring a specific node (the bbox + tag carry it). Feature-checks persist across files (like `checks`); the `|z|` maps clear on reset.
+
+---
+
 ## Instance verdict / explanation pipeline
 
 The human-readable sidebar verdict is assembled by `instanceIssue` (`qcStore.svelte.js`) on top of `explain.js` (`checks/explain.js`), which is otherwise undocumented but load-bearing for the UI.
@@ -128,15 +177,15 @@ The human-readable sidebar verdict is assembled by `instanceIssue` (`qcStore.sve
 **Verdict precedence (`instanceIssue`).** The chirality verdict short-circuits first; below it returns `null` if anomaly and gmm scores are both absent. In order:
 1. **Chirality:** if the instance is flagged as a whole-instance L/R flip (`chScore >= chiralityThreshold`), the verdict is `"Whole-instance L/R flip"` — highest precedence.
 2. Else, if anomaly is absent, **or** GMM flags while anomaly does *not* (`gFlag && checks.gmm && !(checks.anomaly && aScore >= threshold)`), the verdict is the GMM density verdict `"Improbable pose"` (`feature:null`), localized to the GMM leave-one-out node.
-3. Else the **anomaly** explanation wins: `topIssue(contributions)` supplies `issue`/`feature`, `confidence(aScore)` the bucket. (A chimera surfaces here as `"Split pose / chimera"` when `pose_split_score` is the dominant feature.)
+3. Else the **anomaly** explanation wins: `topIssue(contributions)` supplies `issue`/`feature`, `confidence(aScore)` the bucket.
 
 The displayed `worstNode` always comes from `faultyNodeFor` (chirality → anomaly → GMM precedence), independent of which verdict string was chosen.
 
 ---
 
-## The 19-feature vector
+## The 18-feature vector
 
-Assembled per pose in `LabelQCDetector.extractFeatures` (`checks/detector.js`) as `[...baseline, ...v3]` — **12 baseline** (`checks/features/baseline.js`) then **7 V3** (the 6 below + `pose_split_score`, the log1p-compressed chimera signal). This vector is what **Anomaly** and **GMM** score, and what the read-only "feature vector" panel under the GMM check displays. Reference stats are fit over all pooled user instances (`fitFeatures`). `isVisible` requires *both* coords non-NaN; an invisible node is `[NaN,NaN]`. `rawMatrix` feeds the scorers; `cleanMatrix` maps `NaN→0, +Inf→10, −Inf→−10`. All z-score denominators are floored at `1e-6` (`safeStd`).
+Assembled per pose in `LabelQCDetector.extractFeatures` (`checks/detector.js`) as `[...baseline, ...v3]` — **12 baseline** (`checks/features/baseline.js`) then **6 V3** (below). This vector is what **Anomaly** and **GMM** score, and what the read-only "feature vector" panel under the GMM check displays. (Chimera / `pose_split_score` is no longer a feature — it's the standalone **Split pose** check.) Reference stats are fit over all pooled user instances (`fitFeatures`). `isVisible` requires *both* coords non-NaN; an invisible node is `[NaN,NaN]`. `rawMatrix` feeds the scorers; `cleanMatrix` maps `NaN→0, +Inf→10, −Inf→−10`. All z-score denominators are floored at `1e-6` (`safeStd`).
 
 Baseline (1–12):
 
@@ -166,12 +215,10 @@ Edge cases: edge/angle/pairwise z-scores are only computed over nodes visible *a
 
 ---
 
-## Config: dead / reserved fields
+## Config: notes on subtle fields
 
-`makeQCConfig` (`config.js`) mirrors the Python `QCConfig` and carries fields the unit pipeline does **not** consult — do not hunt for where they apply:
-- `frameThreshold=0.5` — defined but unused by the unit pipeline (frame checks are boolean).
-- `autoCalibrate=true`, `calibrationPercentile=95.0` — reserved / dead, mirror the Python dead fields.
-- `useGmm=true` (default) — overridden to `false` by the store, but inert anyway since `computeGmmUnit` ignores it.
+`makeQCConfig` (`config.js`) was trimmed to the fields the pipeline actually consults — the former dead/reserved mirrors of the Python `QCConfig` (`frameThreshold`, `autoCalibrate`, `calibrationPercentile`, `useAnatomical`) were **removed**. Two surviving fields have non-obvious behavior:
+- `useGmm=true` — consulted by `LabelQCDetector.fit` (the `fitAndScoreLabels` / CSV path); the store's interactive `computeGmmUnit` calls `GMMDetector` directly, so there the `gmm` toggle is what matters.
 - `gmmPercentileThreshold=5.0` — passed into `GMMDetector` but unused by `scoreOne` (the 0.95 cut is `gmmThreshold` in the store).
 
 ---

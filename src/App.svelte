@@ -9,6 +9,7 @@
   import EditToolbar from "./lib/components/EditToolbar.svelte";
   import CommandPalette from "./lib/components/CommandPalette.svelte";
   import ShortcutsHelp from "./lib/components/ShortcutsHelp.svelte";
+  import QcReview from "./lib/components/QcReview.svelte";
   import Toasts from "./lib/components/Toasts.svelte";
   import { ui } from "./lib/uiStore.svelte.js";
 
@@ -53,6 +54,7 @@
   </main>
   <CommandPalette />
   <ShortcutsHelp />
+  <QcReview />
 {:else}
   <FileUpload />
 {/if}

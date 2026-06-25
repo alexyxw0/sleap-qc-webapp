@@ -44,6 +44,9 @@
             { icon: "◂", label: "Previous flagged frame", kbd: "P", run: () => seek(-1) },
           ]
         : []),
+      ...(qc.flaggedFrameCount > 0
+        ? [{ icon: "✎", label: "Review flagged frames (worst-first)", kbd: "", run: () => ui.toggleReview() }]
+        : []),
       ...(qc.canExportCsv
         ? [{ icon: "⤓", label: "Export QC results (.csv)", kbd: "", run: () => qc.downloadCsv() }]
         : []),

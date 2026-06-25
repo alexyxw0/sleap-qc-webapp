@@ -7,6 +7,7 @@
 class UIStore {
   paletteOpen = $state(false);
   helpOpen = $state(false);
+  reviewOpen = $state(false); // QC-review correction popup
 
   // panel sizes (resizable, clamped)
   railW = $state(312);
@@ -19,7 +20,7 @@ class UIStore {
   }
 
   get overlayOpen() {
-    return this.paletteOpen || this.helpOpen;
+    return this.paletteOpen || this.helpOpen || this.reviewOpen;
   }
 
   togglePalette() {
@@ -30,9 +31,15 @@ class UIStore {
     this.paletteOpen = false;
     this.helpOpen = !this.helpOpen;
   }
+  toggleReview() {
+    this.paletteOpen = false;
+    this.helpOpen = false;
+    this.reviewOpen = !this.reviewOpen;
+  }
   closeAll() {
     this.paletteOpen = false;
     this.helpOpen = false;
+    this.reviewOpen = false;
   }
 }
 

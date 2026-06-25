@@ -11,7 +11,10 @@ const PALETTE = [
 
 const trackColors = new Map();
 
-function colorFor(instance, fallbackIdx) {
+// Instance/track color (shared, stable per track). Exported so overlays (e.g. the QC-review
+// popup) can tint UI to match a node's on-canvas color. The map is populated as instances are
+// drawn; by the time an overlay reads it the Viewer has long since drawn the tracks.
+export function colorFor(instance, fallbackIdx) {
   const track = instance?.track;
   const key = track?.name ?? track ?? null;
   if (key != null) {
@@ -86,28 +89,40 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
   const edges = skeleton.edges ?? [];
   const instances = lf.instances ?? [];
   const names = skeleton.nodeNames ?? [];
-  const { editing = false, selInstance = -1, selNode = -1, scale = 1, worstNodes = null, uncertainNodes = null } = sel;
+  const { editing = false, selInstance = -1, selNode = -1, scale = 1, worstNodes = null, flaggedInstances = null, hiddenAlpha = 0.28 } = sel;
 
   // Sizes are specified in on-screen pixels and converted to image-space via `scale`
   // (image px per screen px), so the overlay + labels look consistent at any video
   // resolution.
   const s = scale > 0 ? scale : 1;
   const r = (editing ? 5.5 : 4) * s;
-  const fontPx = 11 * s;
   const labelOff = r + 3 * s;
-  const font = `${fontPx}px system-ui, -apple-system, "Segoe UI", sans-serif`;
 
-  const label = (name, px, py, alpha, accent) => {
+  // Node-name labels colored by visibility (green = visible, gray = invisible). Drawn at NATIVE
+  // device resolution (the transform is reset per label) so the text stays crisp at any zoom —
+  // bold weight + a thin soft outline instead of a heavy black border.
+  const LABEL_VISIBLE = "#39e87a"; // strong green
+  const LABEL_HIDDEN = "#b6bfca"; // legible gray
+  const label = (name, px, py, alpha, color) => {
     if (!name) return;
+    const m = ctx.getTransform();
+    const k = m.a; // device px per image unit
+    const dpr = s * k; // device px per CSS px
+    const dx = Math.round(m.a * px + m.e + labelOff * k);
+    const dy = Math.round(m.d * py + m.f - labelOff * k);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0); // native device pixels -> crisp glyphs
     ctx.globalAlpha = alpha;
-    ctx.font = font;
+    ctx.font = `600 ${Math.round(11 * dpr)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
     ctx.textBaseline = "middle";
     ctx.textAlign = "left";
-    ctx.lineWidth = 3 * s;
-    ctx.strokeStyle = "rgba(0,0,0,0.82)";
-    ctx.strokeText(name, px + labelOff, py - labelOff);
-    ctx.fillStyle = accent ? "#ffffff" : "#eaf0f7";
-    ctx.fillText(name, px + labelOff, py - labelOff);
+    ctx.lineJoin = "round";
+    ctx.lineWidth = 1.6 * dpr; // thin, soft outline
+    ctx.strokeStyle = "rgba(0,0,0,0.45)";
+    ctx.strokeText(name, dx, dy);
+    ctx.fillStyle = color ?? "#eaf0f7";
+    ctx.fillText(name, dx, dy);
+    ctx.restore();
   };
 
   instances.forEach((instance, idx) => {
@@ -115,27 +130,53 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
     const points = instance.points ?? [];
     const isSel = idx === selInstance;
 
-    // edges — drawn between any two *placed* nodes; faint if either end is hidden
+    // QC: a dashed red bounding box around a flagged instance, so flagged frames read at a glance.
+    if (flaggedInstances?.[idx]) {
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const p of points) {
+        if (!placed(p)) continue;
+        if (p.xy[0] < minX) minX = p.xy[0];
+        if (p.xy[1] < minY) minY = p.xy[1];
+        if (p.xy[0] > maxX) maxX = p.xy[0];
+        if (p.xy[1] > maxY) maxY = p.xy[1];
+      }
+      if (Number.isFinite(minX)) {
+        const pad = r + 5 * s;
+        ctx.save();
+        ctx.globalAlpha = 0.9;
+        ctx.strokeStyle = "#ff2d55";
+        ctx.lineWidth = 1.5 * s;
+        ctx.setLineDash([5 * s, 4 * s]);
+        ctx.strokeRect(minX - pad, minY - pad, maxX - minX + 2 * pad, maxY - minY + 2 * pad);
+        ctx.restore();
+      }
+    }
+
+    // edges — between two *placed* nodes. An edge touching a hidden node is drawn only while this
+    // instance is selected, and then THIN + faint, to signal "this node isn't visible".
     ctx.strokeStyle = color;
     for (const edge of edges) {
       const a = points[skeleton.index(edge.source?.name ?? edge.source)];
       const b = points[skeleton.index(edge.destination?.name ?? edge.destination)];
       if (!placed(a) || !placed(b)) continue;
-      ctx.globalAlpha = a.visible && b.visible ? 1 : 0.22;
-      ctx.lineWidth = (isSel ? 3 : 2) * s;
+      const hidden = !a.visible || !b.visible;
+      if (hidden && !isSel) continue;
+      ctx.globalAlpha = hidden ? 0.22 : 1;
+      ctx.lineWidth = (hidden ? 1 : isSel ? 3 : 2) * s;
       ctx.beginPath();
       ctx.moveTo(a.xy[0], a.xy[1]);
       ctx.lineTo(b.xy[0], b.xy[1]);
       ctx.stroke();
     }
 
-    // nodes + labels — hidden nodes are kept visible but very transparent so they can
-    // still be found and dragged.
+    // nodes + labels — a hidden node renders only while its instance is selected (then faint, so it
+    // can still be found and dragged); otherwise it isn't drawn at all.
     points.forEach((p, ni) => {
       if (!placed(p)) return;
+      if (!p.visible && !isSel) return; // hidden node: shown only when its instance is selected
       const [px, py] = p.xy;
       const focused = isSel && ni === selNode;
-      const nodeAlpha = p.visible ? 1 : focused ? 0.6 : 0.28;
+      const nodeAlpha = p.visible ? 1 : focused ? Math.max(0.6, hiddenAlpha) : hiddenAlpha;
 
       ctx.globalAlpha = nodeAlpha;
       ctx.beginPath();
@@ -147,20 +188,31 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
         ctx.strokeStyle = "rgba(255,255,255,0.85)";
         ctx.stroke();
       }
-      // QC: dashed warning ring on the faulty node of a flagged instance
-      // (red = geometric outlier) and the least-confident node (amber = low model confidence).
-      const qcRing = (radius, colorRing) => {
-        ctx.globalAlpha = 0.95;
+      // QC: a flagged instance's faulty node gets an unmistakable highlight — a soft halo, a
+      // glowing bright-red ring, and a crisp white edge — so it can't be missed.
+      if (worstNodes && worstNodes[idx] === ni) {
+        ctx.save();
+        ctx.globalAlpha = 0.26;
         ctx.beginPath();
-        ctx.arc(px, py, radius, 0, Math.PI * 2);
-        ctx.lineWidth = 2 * s;
-        ctx.setLineDash([3.5 * s, 2.5 * s]);
-        ctx.strokeStyle = colorRing;
+        ctx.arc(px, py, r + 9 * s, 0, Math.PI * 2);
+        ctx.fillStyle = "#ff2d55";
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.shadowColor = "#ff2d55";
+        ctx.shadowBlur = 11 * s;
+        ctx.beginPath();
+        ctx.arc(px, py, r + 6 * s, 0, Math.PI * 2);
+        ctx.lineWidth = 3 * s;
+        ctx.strokeStyle = "#ff2d55";
         ctx.stroke();
-        ctx.setLineDash([]);
-      };
-      if (worstNodes && worstNodes[idx] === ni) qcRing(r + 4 * s, "#fb7185");
-      if (uncertainNodes && uncertainNodes[idx] === ni) qcRing(r + (worstNodes && worstNodes[idx] === ni ? 7.5 : 4) * s, "#fbbf24");
+        ctx.shadowBlur = 0;
+        ctx.beginPath();
+        ctx.arc(px, py, r + 6 * s, 0, Math.PI * 2);
+        ctx.lineWidth = 1 * s;
+        ctx.strokeStyle = "#fff0f3";
+        ctx.stroke();
+        ctx.restore();
+      }
       if (focused) {
         ctx.globalAlpha = 1;
         ctx.beginPath();
@@ -173,14 +225,16 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
       // Default label opacity: half-transparent (so overlapping labels don't fight),
       // fainter still when the node is hidden. The focused node's label is drawn on
       // top fully opaque in a final pass below.
-      if (!focused) label(names[ni], px, py, p.visible ? 0.5 : 0.22, false);
+      // label colored by visibility (green = visible, gray = invisible), legible even when the
+      // instance isn't selected so invisible nodes read at a glance
+      if (!focused) label(names[ni], px, py, p.visible ? 0.95 : 0.85, p.visible ? LABEL_VISIBLE : LABEL_HIDDEN);
     });
   });
 
   // Focused node's label, opaque and on top of everything.
   if (selInstance >= 0 && selNode >= 0) {
     const p = instances[selInstance]?.points?.[selNode];
-    if (placed(p)) label(names[selNode], p.xy[0], p.xy[1], 1, true);
+    if (placed(p)) label(names[selNode], p.xy[0], p.xy[1], 1, p.visible ? LABEL_VISIBLE : LABEL_HIDDEN);
   }
 
   ctx.globalAlpha = 1;
