@@ -9,7 +9,7 @@
   import { ui } from "../uiStore.svelte.js";
 
   // Drag-to-tab: each panel carries a grip; dragging it onto the tab strip docks it as a tab.
-  const PANEL_TITLE = { frames: "Frames", checks: "Checks", file: "File", skeleton: "Skeleton", instances: "Instances" };
+  const PANEL_TITLE = { frames: "Frames", checks: "Checks", file: "File" };
   let draggingPanel = $state(null); // the panel being dragged (drives the tab-strip highlight + ghost)
   let ghostX = $state(0), ghostY = $state(0); // floating drag-ghost position (follows the cursor)
   // Pointer-based drag — native HTML5 drag (draggable/dragstart) proved unreliable in this app.
@@ -241,9 +241,10 @@
     <QcChecks />
   </div>
 
-  <!-- File: one summary line; the full stats table is opt-in -->
-  <section class="side-section panel" data-pid="file" class:docked={ui.isDocked("file")} class:active={ui.sidebarActiveTab === "file"}>
+  <!-- File panel: file stats + skeleton + this-frame instances, merged into one dockable panel -->
+  <div class="panel panel-grow" data-pid="file" class:docked={ui.isDocked("file")} class:active={ui.sidebarActiveTab === "file"}>
     {@render grip("file")}
+    <section class="side-section">
     <div class="fhead">
       <h3 class="side-h">File</h3>
       <button class="more" onclick={() => (moreStats = !moreStats)}>{moreStats ? "less" : "more"}</button>
@@ -275,15 +276,11 @@
 
   <!-- Skeleton editor (nodes + edges) -->
   {#if skeleton}
-    <div class="panel" data-pid="skeleton" class:docked={ui.isDocked("skeleton")} class:active={ui.sidebarActiveTab === "skeleton"}>
-      {@render grip("skeleton")}
-      <SkeletonEditor />
-    </div>
+    <SkeletonEditor />
   {/if}
 
   <!-- Current-frame instances (interactive) -->
-  <section class="side-section grow panel panel-grow" data-pid="instances" class:docked={ui.isDocked("instances")} class:active={ui.sidebarActiveTab === "instances"}>
-    {@render grip("instances")}
+  <section class="side-section grow">
     <div class="ihead">
       <h3 class="side-h">This frame · {panel.length} instance{panel.length === 1 ? "" : "s"}</h3>
       <button class="addbtn" onclick={() => edit.addInstance()}>＋ Instance</button>
@@ -350,6 +347,7 @@
       <p class="muted">No instances on this frame. Use ＋ Instance to add one.</p>
     {/if}
   </section>
+  </div>
   </div>
 </aside>
 
@@ -753,9 +751,9 @@
     background: var(--surface);
     display: flex;
     flex-wrap: wrap;
-    align-items: center;
-    gap: 0.3rem;
-    padding: 0.35rem 0.45rem;
+    align-items: flex-end; /* browser-style: tabs sit on the bottom line */
+    gap: 2px;
+    padding: 0.32rem 0.4rem 0;
     border-bottom: 1px solid var(--border);
     flex: none;
   }
@@ -782,19 +780,28 @@
     display: inline-flex;
     align-items: center;
     border: 1px solid var(--border);
-    border-radius: var(--r-xs);
+    border-bottom: none;
+    border-radius: 7px 7px 0 0; /* rounded top corners, like a browser tab */
+    background: rgba(0, 0, 0, 0.22); /* inactive tabs sit recessed */
+    margin-bottom: -1px; /* overlap the strip's bottom border → connect the active tab to its content */
     overflow: hidden;
+    opacity: 0.7;
+    transition: opacity 0.12s, background 0.12s;
+  }
+  .stab:hover {
+    opacity: 1;
   }
   .stab.on {
-    border-color: var(--accent);
-    background: rgba(95, 217, 242, 0.12);
+    background: var(--surface); /* active tab matches the content area below it */
+    border-top: 2px solid var(--accent);
+    opacity: 1;
   }
   .stab-lbl {
     background: none;
     border: none;
     color: var(--muted);
     font-size: 0.72rem;
-    padding: 0.2rem 0.12rem 0.2rem 0.45rem;
+    padding: 0.3rem 0.12rem 0.3rem 0.55rem;
     cursor: pointer;
   }
   .stab.on .stab-lbl {
@@ -819,6 +826,12 @@
   }
   .panel {
     position: relative;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .panel-grow {
+    flex: 1; /* the File panel fills the rail so its instances list can scroll */
   }
   .panel-grip {
     display: flex;
