@@ -12,8 +12,28 @@ class UIStore {
   // panel sizes (resizable, clamped)
   railW = $state(312);
 
+  // Sidebar panels the user has "docked" as tabs (in order) + which tab is active. Dragging a
+  // panel's grip onto the tab strip docks it; a tab's × restores it inline. In-session for now.
+  sidebarDocked = $state([]);
+  sidebarActiveTab = $state(null);
+
   static RAIL_MIN = 280;
   static RAIL_MAX = 440;
+
+  isDocked(id) {
+    return this.sidebarDocked.includes(id);
+  }
+  dockPanel(id) {
+    if (!this.sidebarDocked.includes(id)) this.sidebarDocked = [...this.sidebarDocked, id];
+    this.sidebarActiveTab = id;
+  }
+  undockPanel(id) {
+    this.sidebarDocked = this.sidebarDocked.filter((x) => x !== id);
+    if (this.sidebarActiveTab === id) this.sidebarActiveTab = this.sidebarDocked.at(-1) ?? null;
+  }
+  activateSidebarTab(id) {
+    this.sidebarActiveTab = id;
+  }
 
   setRailW(w) {
     this.railW = Math.round(Math.max(UIStore.RAIL_MIN, Math.min(UIStore.RAIL_MAX, w)));

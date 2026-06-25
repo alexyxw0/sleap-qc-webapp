@@ -8,6 +8,10 @@
   import QcChecks from "./QcChecks.svelte";
   import { ui } from "../uiStore.svelte.js";
 
+  // Drag-to-tab: each panel carries a grip; dragging it onto the tab strip docks it as a tab.
+  const PANEL_TITLE = { frames: "Frames", checks: "Checks", file: "File", skeleton: "Skeleton", instances: "Instances" };
+  let draggingPanel = $state(null); // panel id currently being dragged toward the tab strip
+
   // Click a flagged problem -> select its faulty node(s) and zoom the canvas to them.
   function focusFaulty(instIdx) {
     const item = store.current;
@@ -115,12 +119,46 @@
     <button class="ghost" onclick={() => store.reset()} title="Close file">✕</button>
   </header>
 
+  {#snippet grip(pid)}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="panel-grip"
+      draggable="true"
+      ondragstart={(e) => { e.dataTransfer.setData("text/plain", pid); e.dataTransfer.effectAllowed = "move"; draggingPanel = pid; }}
+      ondragend={() => (draggingPanel = null)}
+      title="Drag up to the tab strip to make {PANEL_TITLE[pid] ?? pid} a tab"
+      aria-label="Drag {PANEL_TITLE[pid] ?? pid} to a tab"
+    >⠿</div>
+  {/snippet}
+
+  <!-- Tab strip: panels docked here show one at a time; drag a panel's grip up to dock it. -->
+  {#if ui.sidebarDocked.length || draggingPanel}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="sidebar-tabs"
+      class:armed={draggingPanel}
+      ondragover={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
+      ondrop={(e) => { e.preventDefault(); const id = e.dataTransfer.getData("text/plain"); if (id) ui.dockPanel(id); draggingPanel = null; }}
+    >
+      {#each ui.sidebarDocked as id (id)}
+        <span class="stab" class:on={ui.sidebarActiveTab === id}>
+          <button class="stab-lbl" onclick={() => ui.activateSidebarTab(id)}>{PANEL_TITLE[id] ?? id}</button>
+          <button class="stab-x" onclick={() => ui.undockPanel(id)} title="Restore inline">×</button>
+        </span>
+      {/each}
+      {#if draggingPanel && !ui.isDocked(draggingPanel)}<span class="th">＋ drop to tab</span>{/if}
+    </div>
+  {/if}
+
   {#if store.error}
     <p class="err side-section">{store.error}</p>
   {/if}
 
   <!-- Discrete frame selector -->
-  <FrameGrid />
+  <div class="panel" data-pid="frames" class:docked={ui.isDocked("frames")} class:active={ui.sidebarActiveTab === "frames"}>
+    {@render grip("frames")}
+    <FrameGrid />
+  </div>
 
   <!-- QC results for the current frame — one verdict line + issues only when present -->
   {#if qc.hasResults}
@@ -181,10 +219,14 @@
   {/if}
 
   <!-- Detection checks: toggle each technique; flagged set = union of the enabled ones -->
-  <QcChecks />
+  <div class="panel" data-pid="checks" class:docked={ui.isDocked("checks")} class:active={ui.sidebarActiveTab === "checks"}>
+    {@render grip("checks")}
+    <QcChecks />
+  </div>
 
   <!-- File: one summary line; the full stats table is opt-in -->
-  <section class="side-section">
+  <section class="side-section panel" data-pid="file" class:docked={ui.isDocked("file")} class:active={ui.sidebarActiveTab === "file"}>
+    {@render grip("file")}
     <div class="fhead">
       <h3 class="side-h">File</h3>
       <button class="more" onclick={() => (moreStats = !moreStats)}>{moreStats ? "less" : "more"}</button>
@@ -216,11 +258,15 @@
 
   <!-- Skeleton editor (nodes + edges) -->
   {#if skeleton}
-    <SkeletonEditor />
+    <div class="panel" data-pid="skeleton" class:docked={ui.isDocked("skeleton")} class:active={ui.sidebarActiveTab === "skeleton"}>
+      {@render grip("skeleton")}
+      <SkeletonEditor />
+    </div>
   {/if}
 
   <!-- Current-frame instances (interactive) -->
-  <section class="side-section grow">
+  <section class="side-section grow panel panel-grow" data-pid="instances" class:docked={ui.isDocked("instances")} class:active={ui.sidebarActiveTab === "instances"}>
+    {@render grip("instances")}
     <div class="ihead">
       <h3 class="side-h">This frame · {panel.length} instance{panel.length === 1 ? "" : "s"}</h3>
       <button class="addbtn" onclick={() => edit.addInstance()}>＋ Instance</button>
@@ -677,5 +723,93 @@
   .vis.on {
     background: #86efac;
     border-color: #86efac;
+  }
+  /* --- drag-to-tab: dock sidebar panels into a tab strip at the top --- */
+  .head {
+    order: -10; /* keep the file header pinned above the tab strip + any docked panel */
+  }
+  .sidebar-tabs {
+    order: -2;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.35rem 0.45rem;
+    border-bottom: 1px solid var(--border);
+    flex: none;
+  }
+  .sidebar-tabs.armed {
+    background: rgba(95, 217, 242, 0.08);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  .stab {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid var(--border);
+    border-radius: var(--r-xs);
+    overflow: hidden;
+  }
+  .stab.on {
+    border-color: var(--accent);
+    background: rgba(95, 217, 242, 0.12);
+  }
+  .stab-lbl {
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-size: 0.72rem;
+    padding: 0.2rem 0.12rem 0.2rem 0.45rem;
+    cursor: pointer;
+  }
+  .stab.on .stab-lbl {
+    color: var(--text);
+  }
+  .stab-x {
+    background: none;
+    border: none;
+    color: var(--dim);
+    font-size: 0.82rem;
+    line-height: 1;
+    padding: 0.2rem 0.34rem;
+    cursor: pointer;
+  }
+  .stab-x:hover {
+    color: #fb7185;
+  }
+  .th {
+    font-size: 0.66rem;
+    color: var(--accent);
+    letter-spacing: 0.02em;
+  }
+  .panel {
+    position: relative;
+  }
+  .panel-grip {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 11px;
+    cursor: grab;
+    color: var(--dim);
+    opacity: 0.4;
+    font-size: 0.58rem;
+    letter-spacing: 0.18em;
+    user-select: none;
+    flex: none;
+  }
+  .panel-grip:hover {
+    opacity: 1;
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.03);
+  }
+  .panel-grip:active {
+    cursor: grabbing;
+  }
+  .panel.docked:not(.active) {
+    display: none;
+  }
+  .panel.docked.active {
+    order: -1; /* a docked-and-active panel sits right under the tab strip */
+    flex: none; /* content height, so the inline panels below stay visible */
   }
 </style>
