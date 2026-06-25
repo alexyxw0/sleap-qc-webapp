@@ -828,10 +828,10 @@
     position: relative;
     display: flex;
     flex-direction: column;
-    min-height: 0;
+    /* NO min-height:0 here — that let panels shrink below their content and overlap the next one. */
   }
   .panel-grow {
-    flex: 1; /* the File panel fills the rail so its instances list can scroll */
+    flex: 1; /* the File panel fills leftover rail space */
   }
   .panel-grip {
     display: flex;

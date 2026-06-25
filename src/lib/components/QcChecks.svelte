@@ -374,15 +374,27 @@
                 {@render checkRow(c)}
               {/each}
             </ul>
-            {#if g.id === "statistical" && (qc.hasResults || qc.featureChecks.length)}
+            {#if g.id === "statistical"}
               {@const nOn = qc.featureChecks.filter((f) => f.on).length}
-              <!-- Custom per-feature checks live under GMM: drag a feature out of its vector above (or ＋) -->
+              <!-- Custom per-feature checks: pick from the dropdown, or drag a feature out of the vector above -->
               <div class="custom">
                 <div class="grp-head">
                   <span class="grpchev" style="visibility:hidden">▸</span>
                   <span class="grp-lbl">Custom · per-feature</span>
                   {#if nOn}<span class="grp-sum">{nOn} on</span>{/if}
                 </div>
+                {#if qc.vectorFeatures.length}
+                  <select
+                    class="featadd"
+                    onchange={(e) => { const v = e.currentTarget.value; if (v) { qc.addFeatureCheck(v); e.currentTarget.value = ""; } }}
+                    title="Add a per-feature |z| check"
+                  >
+                    <option value="">＋ add a feature check…</option>
+                    {#each qc.vectorFeatures.filter((vf) => !qc.featureChecks.some((c) => c.feature === vf)) as vf (vf)}
+                      <option value={vf}>{vf.replace(/_zscore$/, "")}</option>
+                    {/each}
+                  </select>
+                {/if}
                 <div
                   class="dropzone"
                   class:armed={dragFeature}
@@ -394,8 +406,10 @@
                   role="group"
                   aria-label="Custom feature-check drop zone"
                 >
-                  {#if !qc.featureChecks.length}
-                    <p class="dz-hint">⊹ drag a feature from the vector above to flag it on its own<br /><span class="dz-sub">(or click its ＋)</span></p>
+                  {#if !qc.vectorFeatures.length}
+                    <p class="dz-hint">Run QC, then add per-feature <i>|z|</i> checks here.</p>
+                  {:else if !qc.featureChecks.length}
+                    <p class="dz-hint">⊹ pick a feature above, or drag one from the vector<br /><span class="dz-sub">to flag it on its own</span></p>
                   {/if}
                   {#each qc.featureChecks as f (f.id)}
                     {@const ready = qc.checkReady("anomaly")}
@@ -936,6 +950,20 @@
     letter-spacing: 0.02em;
   }
   /* --- custom per-feature checks (drag-and-drop) --- */
+  .featadd {
+    width: 100%;
+    margin: 0.1rem 0 0.35rem;
+    padding: 0.3rem 0.4rem;
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--r-xs);
+    font-size: 0.72rem;
+    cursor: pointer;
+  }
+  .featadd:hover {
+    border-color: var(--accent);
+  }
   .dropzone {
     margin: 0.1rem 0 0;
     border: 1px dashed var(--border);
