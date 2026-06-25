@@ -53,13 +53,13 @@
     },
     {
       key: "confidence",
-      label: "Low keypoint confidence",
+      label: "Keypoint confidence",
       hint: "A predicted keypoint with a low confidence score (weakest or mean per instance).",
       info: "For PREDICTED labels only: flags a frame whose per-keypoint confidence (the SLEAP confidence-map peak value, 0–1) drops below the threshold. The mode toggle picks WEAKEST (the single least-confident visible keypoint — most actionable) or AVERAGE (the mean over an instance's visible keypoints). Shown only when the file has predicted instances; user-labeled instances have no scores. Off by default.",
     },
     {
       key: "instConfidence",
-      label: "Low instance confidence",
+      label: "Instance confidence",
       hint: "A predicted instance with a low instance-level confidence score.",
       info: "For PREDICTED labels only: flags a frame containing an instance whose INSTANCE-level score (PredictedInstance.score — the model's overall confidence in that detection, distinct from the per-keypoint scores) is below the threshold. Catches whole detections the model was unsure about. Shown only when the file has predicted instances. Off by default.",
     },
@@ -364,7 +364,7 @@
               <div class="baseline" title="Which instances define the 'normal' reference the Anomaly / GMM outlier checks score against">
                 <span class="bl-lbl">outlier baseline</span>
                 <div class="seg">
-                  <button type="button" class:on={qc.baselineSource === "all"} onclick={() => qc.setBaselineSource("all")}>All labeled</button>
+                  <button type="button" class:on={qc.baselineSource === "all"} onclick={() => qc.setBaselineSource("all")}>All frames</button>
                   <button type="button" class:on={qc.baselineSource === "user"} onclick={() => qc.setBaselineSource("user")} title="Fit the reference on user-annotated instances only (cleaner ground truth)">User only</button>
                 </div>
               </div>
@@ -374,56 +374,55 @@
                 {@render checkRow(c)}
               {/each}
             </ul>
+            {#if g.id === "statistical" && (qc.hasResults || qc.featureChecks.length)}
+              {@const nOn = qc.featureChecks.filter((f) => f.on).length}
+              <!-- Custom per-feature checks live under GMM: drag a feature out of its vector above (or ＋) -->
+              <div class="custom">
+                <div class="grp-head">
+                  <span class="grpchev" style="visibility:hidden">▸</span>
+                  <span class="grp-lbl">Custom · per-feature</span>
+                  {#if nOn}<span class="grp-sum">{nOn} on</span>{/if}
+                </div>
+                <div
+                  class="dropzone"
+                  class:armed={dragFeature}
+                  class:hot={dropHot}
+                  ondragenter={(e) => { e.preventDefault(); dropHot = true; }}
+                  ondragover={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; dropHot = true; }}
+                  ondragleave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) dropHot = false; }}
+                  ondrop={(e) => { e.preventDefault(); dropHot = false; const f = e.dataTransfer.getData("text/plain"); if (f) qc.addFeatureCheck(f); }}
+                  role="group"
+                  aria-label="Custom feature-check drop zone"
+                >
+                  {#if !qc.featureChecks.length}
+                    <p class="dz-hint">⊹ drag a feature from the vector above to flag it on its own<br /><span class="dz-sub">(or click its ＋)</span></p>
+                  {/if}
+                  {#each qc.featureChecks as f (f.id)}
+                    {@const ready = qc.checkReady("anomaly")}
+                    <div class="fcheck" class:off={!f.on}>
+                      <div class="fc-head">
+                        <input type="checkbox" class="grp-check" checked={f.on} onchange={() => qc.toggleFeatureCheck(f.id)} title="Enable / disable" />
+                        <span class="fc-name" title={f.feature}>{f.feature.replace(/_zscore$/, "")}</span>
+                        {#if ready}<span class="cnt">{qc.featureCheckCount(f.id)}</span>{/if}
+                        <button type="button" class="fc-del" onclick={() => qc.removeFeatureCheck(f.id)} title="Remove this check" aria-label="Remove {f.feature}">×</button>
+                      </div>
+                      <div class="thresh" title="Flag an instance when this feature's |z| is at or above this value">
+                        <span class="tlbl">|z|&nbsp;≥</span>
+                        <input type="range" min="1" max="6" step="0.25" value={f.threshold} oninput={(e) => qc.setFeatureThreshold(f.id, +e.currentTarget.value)} />
+                        <span class="tval">{f.threshold.toFixed(2)}</span>
+                      </div>
+                    </div>
+                  {/each}
+                  {#if qc.featureChecks.length}
+                    <p class="dz-foot" class:hot={dropHot}>{dropHot ? "↓ drop to add" : "drag another feature here"}</p>
+                  {/if}
+                </div>
+              </div>
+            {/if}
           {/if}
         </div>
       {/if}
     {/each}
-
-    <!-- Custom per-feature checks: drag a feature out of the GMM/anomaly vector above (or ＋) -->
-    {#if qc.hasResults || qc.featureChecks.length}
-      {@const nOn = qc.featureChecks.filter((f) => f.on).length}
-      <div class="group custom">
-        <div class="grp-head">
-          <span class="grpchev" style="visibility:hidden">▸</span>
-          <span class="grp-lbl">Custom · per-feature</span>
-          {#if nOn}<span class="grp-sum">{nOn} on</span>{/if}
-        </div>
-        <div
-          class="dropzone"
-          class:armed={dragFeature}
-          class:hot={dropHot}
-          ondragenter={(e) => { e.preventDefault(); dropHot = true; }}
-          ondragover={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; dropHot = true; }}
-          ondragleave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) dropHot = false; }}
-          ondrop={(e) => { e.preventDefault(); dropHot = false; const f = e.dataTransfer.getData("text/plain"); if (f) qc.addFeatureCheck(f); }}
-          role="group"
-          aria-label="Custom feature-check drop zone"
-        >
-          {#if !qc.featureChecks.length}
-            <p class="dz-hint">⊹ drag a feature from the vector above to flag it on its own<br /><span class="dz-sub">(or click its ＋)</span></p>
-          {/if}
-          {#each qc.featureChecks as f (f.id)}
-            {@const ready = qc.checkReady("anomaly")}
-            <div class="fcheck" class:off={!f.on}>
-              <div class="fc-head">
-                <input type="checkbox" class="grp-check" checked={f.on} onchange={() => qc.toggleFeatureCheck(f.id)} title="Enable / disable" />
-                <span class="fc-name" title={f.feature}>{f.feature.replace(/_zscore$/, "")}</span>
-                {#if ready}<span class="cnt">{qc.featureCheckCount(f.id)}</span>{/if}
-                <button type="button" class="fc-del" onclick={() => qc.removeFeatureCheck(f.id)} title="Remove this check" aria-label="Remove {f.feature}">×</button>
-              </div>
-              <div class="thresh" title="Flag an instance when this feature's |z| is at or above this value">
-                <span class="tlbl">|z|&nbsp;≥</span>
-                <input type="range" min="1" max="6" step="0.25" value={f.threshold} oninput={(e) => qc.setFeatureThreshold(f.id, +e.currentTarget.value)} />
-                <span class="tval">{f.threshold.toFixed(2)}</span>
-              </div>
-            </div>
-          {/each}
-          {#if qc.featureChecks.length}
-            <p class="dz-foot" class:hot={dropHot}>{dropHot ? "↓ drop to add" : "drag another feature here"}</p>
-          {/if}
-        </div>
-      </div>
-    {/if}
     {#if qc.hasResults}
       <p class="union">
         <span>flagged · union</span><b>{qc.flaggedFrameCount}</b>
