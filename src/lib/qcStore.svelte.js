@@ -187,7 +187,12 @@ class QCStore {
   /** Per-step run timing (live while running, retained after) — drives the progress bar + breakdown. */
   get runProgress() {
     this.rev;
-    return this.#progress;
+    // Return a FRESH copy (incl. fresh step objects) each call. #progress is mutated in place behind
+    // a stable reference, and Svelte 5 deriveds short-circuit on ===, so the timing panel's
+    // {@const totalMs = …reduce} (and the per-step {s.ms}) would freeze at the initial all-0 state —
+    // showing "0 ms" forever. A new object/array each rev makes the derived + each re-evaluate.
+    const p = this.#progress;
+    return p ? { done: p.done, total: p.total, steps: p.steps.map((s) => ({ ...s })) } : null;
   }
   toggleCheck(name) {
     if (name in this.checks) {
