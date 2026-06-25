@@ -188,28 +188,16 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
         ctx.strokeStyle = "rgba(255,255,255,0.85)";
         ctx.stroke();
       }
-      // QC: a flagged instance's faulty node gets an unmistakable highlight — a soft halo, a
-      // glowing bright-red ring, and a crisp white edge — so it can't be missed.
+      // QC: a flagged instance's faulty node gets a DASHED red ring — same color / dash / weight as
+      // the flagged-instance bounding box, so the node and its box read as one consistent treatment.
       if (worstNodes && worstNodes[idx] === ni) {
         ctx.save();
-        ctx.globalAlpha = 0.26;
-        ctx.beginPath();
-        ctx.arc(px, py, r + 9 * s, 0, Math.PI * 2);
-        ctx.fillStyle = "#ff2d55";
-        ctx.fill();
-        ctx.globalAlpha = 1;
-        ctx.shadowColor = "#ff2d55";
-        ctx.shadowBlur = 11 * s;
-        ctx.beginPath();
-        ctx.arc(px, py, r + 6 * s, 0, Math.PI * 2);
-        ctx.lineWidth = 3 * s;
+        ctx.globalAlpha = 0.9;
         ctx.strokeStyle = "#ff2d55";
-        ctx.stroke();
-        ctx.shadowBlur = 0;
+        ctx.lineWidth = 1.5 * s;
+        ctx.setLineDash([5 * s, 4 * s]);
         ctx.beginPath();
-        ctx.arc(px, py, r + 6 * s, 0, Math.PI * 2);
-        ctx.lineWidth = 1 * s;
-        ctx.strokeStyle = "#fff0f3";
+        ctx.arc(px, py, r + 5 * s, 0, Math.PI * 2);
         ctx.stroke();
         ctx.restore();
       }
