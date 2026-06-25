@@ -9,7 +9,7 @@
   import { ui } from "../uiStore.svelte.js";
 
   // Drag-to-tab: each panel carries a grip; dragging it onto the tab strip docks it as a tab.
-  const PANEL_TITLE = { frames: "Frames", checks: "Checks", file: "File" };
+  const PANEL_TITLE = { checks: "Checks", file: "File" };
   let draggingPanel = $state(null); // the panel being dragged (drives the tab-strip highlight + ghost)
   let ghostX = $state(0), ghostY = $state(0); // floating drag-ghost position (follows the cursor)
   // Pointer-based drag — native HTML5 drag (draggable/dragstart) proved unreliable in this app.
@@ -176,9 +176,8 @@
     <p class="err side-section">{store.error}</p>
   {/if}
 
-  <!-- Discrete frame selector -->
-  <div class="panel" data-pid="frames" class:hidden={ui.panelHidden("frames")}>
-    {@render grip("frames")}
+  <!-- Discrete frame selector — fixed to the Main view: not draggable, never its own tab -->
+  <div class="panel" class:hidden={!ui.mainActive}>
     <FrameGrid />
   </div>
 
