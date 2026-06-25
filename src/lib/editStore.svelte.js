@@ -20,6 +20,8 @@ class EditStore {
   saving = $state(false);
   histRev = $state(0); // bump on any history change so canUndo/canRedo stay reactive
   dirtyRev = $state(0); // bump when the set of modified frames changes
+  structRev = $state(0); // bump only on STRUCTURAL changes (add/remove instance) — lets file-total
+  // readouts react to those without recomputing on every node-drag (which floods store.rev)
 
   #undo = [];
   #redo = [];
@@ -46,6 +48,13 @@ class EditStore {
     return lf != null && (this.#frameEdits.get(lf) ?? 0) > 0;
   }
 
+  /** Number of modified frames — O(1). #frameEdits only ever holds frames with edits > 0 (entries
+   *  are deleted when their count hits 0), so its size IS the count — no O(allFrames) rescan. */
+  get modifiedCount() {
+    this.dirtyRev;
+    return this.#frameEdits.size;
+  }
+
   get canUndo() {
     this.histRev;
     return this.#undo.length > 0;
@@ -67,8 +76,9 @@ class EditStore {
     return store.current?.lf ?? null;
   }
 
-  #bump() {
+  #bump(structural = false) {
     store.rev++;
+    if (structural) this.structRev++; // an instance was added/removed -> file totals changed
   }
 
   // `frame` is the LabeledFrame a per-frame edit touched (null for global/skeleton
@@ -190,7 +200,7 @@ class EditStore {
       p.visible = true;
     });
     lf.instances.push(inst);
-    this.#bump();
+    this.#bump(true);
     this.select(lf.instances.indexOf(inst), 0);
     this.#commit(
       "Add instance",
@@ -198,11 +208,11 @@ class EditStore {
         const i = lf.instances.indexOf(inst);
         if (i >= 0) lf.instances.splice(i, 1);
         this.clearSelection();
-        this.#bump();
+        this.#bump(true);
       },
       () => {
         if (!lf.instances.includes(inst)) lf.instances.push(inst);
-        this.#bump();
+        this.#bump(true);
       },
       lf,
     );
@@ -214,17 +224,17 @@ class EditStore {
     if (!inst) return;
     lf.instances.splice(instIdx, 1);
     this.clearSelection();
-    this.#bump();
+    this.#bump(true);
     this.#commit(
       "Delete instance",
       () => {
         lf.instances.splice(Math.min(instIdx, lf.instances.length), 0, inst);
-        this.#bump();
+        this.#bump(true);
       },
       () => {
         const i = lf.instances.indexOf(inst);
         if (i >= 0) lf.instances.splice(i, 1);
-        this.#bump();
+        this.#bump(true);
       },
       lf,
     );

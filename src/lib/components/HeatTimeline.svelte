@@ -1,6 +1,7 @@
 <script>
   import { store } from "../labelsStore.svelte.js";
   import { qc, heatColor, hasFrameIssue } from "../qcStore.svelte.js";
+  import { edit } from "../editStore.svelte.js";
 
   // A scrubbable timeline that doubles as a QC heatmap. Every navigable frame maps to
   // a horizontal bucket; after a QC run each bucket is tinted by its worst anomaly
@@ -28,10 +29,12 @@
     return () => ro.disconnect();
   });
 
+  // The heat STRIP is O(allFrames) to build, so it must NOT rebuild on a node-drag (store.rev) or on
+  // frame navigation (store.index) — only when the data/scores/thresholds (qc.rev) or the size change.
+  // The current-frame playhead is a separate, cheap DOM overlay (see the markup) that moves on its own.
   $effect(() => {
-    void store.rev;
     void qc.rev;
-    const index = store.index;
+    void edit.structRev; // labeled-lane tracks add/remove instance (rare) — NOT node-drags
     const count = store.frameCount;
     const W = w;
     const H = h;
@@ -114,16 +117,6 @@
       }
     }
 
-    // playhead — a thin line with a notch at the top
-    const playX = Math.round(((index + 0.5) / count) * cw);
-    ctx.fillStyle = "rgba(255,255,255,0.92)";
-    ctx.fillRect(playX - dpr / 2, 0, dpr, ch);
-    ctx.beginPath();
-    ctx.moveTo(playX - 3.5 * dpr, 0);
-    ctx.lineTo(playX + 3.5 * dpr, 0);
-    ctx.lineTo(playX, 4 * dpr);
-    ctx.closePath();
-    ctx.fill();
   });
 
   function frameAt(e) {
@@ -180,6 +173,12 @@
     onpointerleave={() => (hover = null)}
   ></canvas>
 
+  <!-- Playhead as a cheap CSS-positioned overlay: moves on frame change without redrawing the
+       O(allFrames) strip. translateZ(0) keeps it on its own compositor layer (smooth scrubbing). -->
+  {#if store.frameCount > 0}
+    <div class="playhead" style:left="{((store.index + 0.5) / store.frameCount) * 100}%"></div>
+  {/if}
+
   {#if hoverInfo}
     <div class="tip" style:left="{hoverInfo.x}px">
       <span class="f">{hoverInfo.label}</span>
@@ -210,6 +209,26 @@
     cursor: ew-resize;
     touch-action: none;
     border-radius: 1px; /* the tooltip sits above the bar, so clip the canvas, not the wrap */
+  }
+  .playhead {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    margin-left: -0.5px;
+    background: rgba(255, 255, 255, 0.92);
+    pointer-events: none;
+    transform: translateZ(0); /* own compositor layer → smooth scrubbing, no strip repaint */
+  }
+  .playhead::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 4px solid rgba(255, 255, 255, 0.92);
   }
   .tip {
     position: absolute;

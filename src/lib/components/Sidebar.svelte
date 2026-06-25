@@ -46,7 +46,7 @@
   const item = $derived(store.current);
 
   const totals = $derived.by(() => {
-    store.rev;
+    edit.structRev; // recompute on add/remove instance + file load (store.labels) — NOT on node-drags
     const L = store.labels;
     if (!L) return null;
     let instances = 0;
