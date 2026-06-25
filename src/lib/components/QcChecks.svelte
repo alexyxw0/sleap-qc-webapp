@@ -136,7 +136,9 @@
             {#each p.steps as s (s.key)}
               <li class="rt-step" class:on={s.status === "running"} class:done={s.status === "done"}>
                 <span class="rt-name">{s.label}</span>
-                <span class="rt-track"><span class="rt-meter" style:width="{s.status === 'done' ? Math.round((s.ms / maxMs) * 100) : 0}%"></span></span>
+                <span class="rt-track">
+                  {#if s.status === "running"}<span class="rt-indet"></span>{:else if s.status === "done"}<span class="rt-meter" style:width="{Math.round((s.ms / maxMs) * 100)}%"></span>{/if}
+                </span>
                 <span class="rt-val">{s.status === "done" ? `${s.ms.toFixed(0)} ms` : s.status === "running" ? "…" : "·"}</span>
               </li>
             {/each}
@@ -696,8 +698,21 @@
     border-radius: 2px;
     transition: width 0.2s var(--ease);
   }
-  .rt-step.on .rt-meter {
+  /* Indeterminate bar for the running step. Animates `transform` (GPU-composited), so it keeps
+     sliding on the compositor thread even while that step's synchronous compute blocks the main
+     thread — a live "working" cue when there's no real intra-step progress to report. */
+  .rt-indet {
+    display: block;
+    height: 100%;
+    width: 35%;
     background: var(--accent);
+    border-radius: 2px;
+    will-change: transform;
+    animation: rt-indet 1.1s ease-in-out infinite;
+  }
+  @keyframes rt-indet {
+    0% { transform: translateX(-115%); }
+    100% { transform: translateX(315%); }
   }
   .rt-val {
     text-align: right;

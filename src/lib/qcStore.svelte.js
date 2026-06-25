@@ -55,6 +55,16 @@ const UNIT_LABEL = {
   derive: "Aggregate",
 };
 
+// Wait for the browser to actually PAINT before resuming. A step's compute is synchronous and seizes
+// the main thread, so its "running" state must paint first — and setTimeout(0) does NOT guarantee a
+// paint (the macrotask can run before the next render), which left the progress bar stuck on long
+// runs. Two rAFs straddle a render opportunity; fall back to setTimeout off the main thread (tests).
+const nextPaint = () =>
+  new Promise((resolve) => {
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    else setTimeout(resolve, 0);
+  });
+
 // Frame-level checks are binary (flag / no flag), so they carry no score of their own. To rank
 // them sensibly in review mode (worst-first), each gets a fixed SEVERITY in [0,1] — a wrong
 // instance count or a barely-localized instance is the most concerning; a stray duplicate or a
@@ -983,11 +993,11 @@ class QCStore {
     steps.push({ key: "derive", label: UNIT_LABEL.derive, status: "pending", ms: 0 });
     this.#progress = { steps, done: 0, total: steps.length };
     this.rev++;
-    await new Promise((r) => setTimeout(r, 0)); // let "Running…" + the bar paint before the compute
+    await nextPaint(); // let "Running…" + the bar paint before the compute
 
     const runStep = async (key, fn) => {
       const step = steps.find((s) => s.key === key);
-      if (step) { step.status = "running"; this.rev++; await new Promise((r) => setTimeout(r, 0)); }
+      if (step) { step.status = "running"; this.rev++; await nextPaint(); } // paint "running" before the blocking compute
       const t = performance.now();
       fn();
       if (step) { step.ms = performance.now() - t; step.status = "done"; this.#progress.done++; this.rev++; }
