@@ -43,6 +43,36 @@
     if (id !== null && onStrip) ui.dockPanel(id);
   }
 
+  // Tab drag-to-merge — pointer-based, like the grips. Drag a tab onto another to fold their
+  // panels into one tab, or onto "Main" to merge it back in. A tap (no move) just opens the tab.
+  let draggingTab = $state(null);
+  let tabGhostX = $state(0), tabGhostY = $state(0);
+  let tdId = null, tdSX = 0, tdSY = 0, tdMoved = false;
+  const tabLabel = (tab) => tab.panels.map((p) => PANEL_TITLE[p] ?? p).join(" + ");
+  function tabDown(e, tabId) {
+    if (e.button !== 0) return;
+    tdId = tabId; tdSX = e.clientX; tdSY = e.clientY; tdMoved = false;
+    tabGhostX = e.clientX; tabGhostY = e.clientY;
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  }
+  function tabMove(e) {
+    if (tdId === null) return;
+    tabGhostX = e.clientX; tabGhostY = e.clientY;
+    if (!tdMoved && Math.hypot(e.clientX - tdSX, e.clientY - tdSY) > 5) { tdMoved = true; draggingTab = tdId; }
+  }
+  function tabUp(e) {
+    const id = tdId, moved = tdMoved;
+    let target = null;
+    if (moved) target = document.elementFromPoint(e.clientX, e.clientY)?.closest(".stab")?.dataset.tabid ?? null;
+    tdId = null; tdMoved = false; draggingTab = null;
+    try { e.currentTarget.releasePointerCapture?.(e.pointerId); } catch { /* not captured */ }
+    if (id === null) return;
+    if (!moved) { ui.activateTab(id); return; }     // a tap → open the tab
+    if (target == null || target === String(id)) return;
+    if (target === "main") ui.undockTab(id);        // dropped on Main → fold back in
+    else ui.mergeTabs(id, Number(target));          // dropped on another tab → merge
+  }
+
   // Click a flagged problem -> select its faulty node(s) and zoom the canvas to them.
   function focusFaulty(instIdx) {
     const item = store.current;
@@ -145,6 +175,10 @@
   {#if draggingPanel}
     <div class="drag-ghost" style:left="{ghostX}px" style:top="{ghostY}px">⠿ {PANEL_TITLE[draggingPanel] ?? draggingPanel}</div>
   {/if}
+  {#if draggingTab != null}
+    {@const dt = ui.sidebarTabs.find((t) => t.id === draggingTab)}
+    {#if dt}<div class="drag-ghost" style:left="{tabGhostX}px" style:top="{tabGhostY}px">⧉ {tabLabel(dt)}</div>{/if}
+  {/if}
   <div class="rz" onpointerdown={startResize} title="Drag to resize"></div>
   <div class="scroll">
   <header class="head">
@@ -165,20 +199,32 @@
   {/snippet}
 
   <!-- Tab strip: panels docked here show one at a time; drag a panel's grip up to dock it. -->
-  {#if ui.sidebarDocked.length || draggingPanel}
+  {#if ui.sidebarTabs.length || draggingPanel}
     <div class="sidebar-tabs" class:armed={draggingPanel}>
-      {#if ui.sidebarDocked.length}
-        <span class="stab main" class:on={ui.mainActive}>
+      {#if ui.sidebarTabs.length}
+        <span class="stab main" class:on={ui.mainActive} class:tdrop={draggingTab != null} data-tabid="main">
           <button class="stab-lbl" onclick={() => ui.activateMain()}>Main</button>
         </span>
       {/if}
-      {#each ui.sidebarDocked as id (id)}
-        <span class="stab" class:on={ui.sidebarActiveTab === id}>
-          <button class="stab-lbl" onclick={() => ui.activateSidebarTab(id)}>{PANEL_TITLE[id] ?? id}</button>
-          <button class="stab-x" onclick={() => ui.undockPanel(id)} title="Restore inline">×</button>
+      {#each ui.sidebarTabs as tab (tab.id)}
+        <span
+          class="stab"
+          class:on={ui.activeTabId === tab.id}
+          class:tdrop={draggingTab != null && draggingTab !== tab.id}
+          class:dragging={draggingTab === tab.id}
+          data-tabid={tab.id}
+        >
+          <button
+            class="stab-lbl"
+            onpointerdown={(e) => tabDown(e, tab.id)}
+            onpointermove={tabMove}
+            onpointerup={tabUp}
+            title="Click to open · drag onto another tab to merge them, or onto Main to fold back"
+          >{tabLabel(tab)}</button>
+          <button class="stab-x" onclick={() => ui.undockTab(tab.id)} title="Merge back into Main">×</button>
         </span>
       {/each}
-      {#if ui.sidebarDocked.length}
+      {#if ui.sidebarTabs.length}
         <button class="merge-tabs" onclick={() => ui.undockAll()} title="Merge all tabs back into Main">↩ merge all</button>
       {/if}
       {#if draggingPanel && !ui.isDocked(draggingPanel)}<span class="th">＋ drop to tab</span>{/if}
@@ -816,6 +862,21 @@
     border-top: 2px solid var(--accent);
     opacity: 1;
     box-shadow: 0 -3px 10px rgba(95, 217, 242, 0.1); /* faint lift */
+  }
+  .stab.tdrop {
+    /* a candidate drop target while a tab is being dragged */
+    border-color: var(--accent);
+    box-shadow: inset 0 0 0 1px var(--accent), 0 0 9px rgba(95, 217, 242, 0.3);
+  }
+  .stab.dragging {
+    opacity: 0.35;
+  }
+  .stab:not(.main) .stab-lbl {
+    cursor: grab;
+    touch-action: none; /* let pointer-drag own the gesture */
+  }
+  .stab:not(.main) .stab-lbl:active {
+    cursor: grabbing;
   }
   .stab-lbl {
     background: none;
