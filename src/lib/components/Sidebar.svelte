@@ -188,14 +188,16 @@
   </header>
 
   {#snippet grip(pid)}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="panel-grip"
-      onpointerdown={(e) => gripDown(e, pid)}
-      onpointermove={gripMove}
-      onpointerup={gripUp}
-      title="Drag up to the tab strip to make {PANEL_TITLE[pid] ?? pid} a tab"
-    ><span class="gdots">⠿</span><span class="ghint">drag {PANEL_TITLE[pid] ?? pid} to a tab</span></div>
+    {#if !ui.isDocked(pid)}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="panel-grip"
+        onpointerdown={(e) => gripDown(e, pid)}
+        onpointermove={gripMove}
+        onpointerup={gripUp}
+        title="Drag up to the tab strip to make {PANEL_TITLE[pid] ?? pid} a tab"
+      ><span class="gdots">⠿</span><span class="ghint">drag {PANEL_TITLE[pid] ?? pid} to a tab</span></div>
+    {/if}
   {/snippet}
 
   <!-- Tab strip: panels docked here show one at a time; drag a panel's grip up to dock it. -->
