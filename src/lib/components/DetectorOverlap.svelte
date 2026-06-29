@@ -1,11 +1,11 @@
 <script>
-  // Rough, side-by-side prototypes of three ways to show per-detector flag-% + overlaps.
-  // Data: qc.detectorSets() → { total, sets:[{id,label,set:Set<key>}] } over instance-level checks.
+  // Per-detector flag-% + overlaps, two ways. Data: qc.detectorSets() → { total, sets } over EVERY
+  // enabled check (frame-based). Chord = proportional arcs + overlap ribbons; UpSet = bars + combos.
   import { qc } from "../qcStore.svelte.js";
 
-  let mode = $state("chord"); // chord (front-runner) | upset | euler
+  let mode = $state("chord"); // chord | upset
 
-  const PALETTE = ["#5fd9f2", "#f3c56c", "#a7f3d0", "#fda4af", "#c4b5fd", "#86efac", "#fdba74", "#93c5fd"];
+  const PALETTE = ["#5fd9f2", "#f3c56c", "#a7f3d0", "#fda4af", "#c4b5fd", "#86efac", "#fdba74", "#93c5fd", "#f9a8d4", "#fcd34d", "#67e8f9"];
 
   const data = $derived(qc.detectorSets());
   const dets = $derived.by(() =>
@@ -14,7 +14,7 @@
       pct: data.total ? s.set.size / data.total : 0, color: PALETTE[i % PALETTE.length],
     })),
   );
-  const active = $derived(dets.filter((d) => d.count > 0)); // non-empty sets, for chord/euler
+  const active = $derived(dets.filter((d) => d.count > 0));
 
   function overlap(a, b) {
     const [s, l] = a.set.size < b.set.size ? [a.set, b.set] : [b.set, a.set];
@@ -23,23 +23,66 @@
     return n;
   }
 
-  // ---- chord: pairwise overlap ribbons ----
-  const edges = $derived.by(() => {
-    const e = [];
-    for (let i = 0; i < active.length; i++)
-      for (let j = i + 1; j < active.length; j++) {
-        const o = overlap(active[i], active[j]);
-        if (o > 0) e.push({ i, j, o });
-      }
-    return e;
-  });
-  const maxEdge = $derived(Math.max(1, ...edges.map((e) => e.o)));
-  function pt(i, n, r) {
-    const a = (i / n) * 2 * Math.PI - Math.PI / 2;
-    return { x: 150 + r * Math.cos(a), y: 150 + r * Math.sin(a), a };
+  // ---- chord geometry ----
+  const CX = 150, CY = 150, R_IN = 80, R_OUT = 94, R_LBL = 102;
+  const polar = (r, a) => [CX + r * Math.cos(a), CY + r * Math.sin(a)];
+  function arcBand(a0, a1, rIn, rOut) {
+    const [x0o, y0o] = polar(rOut, a0), [x1o, y1o] = polar(rOut, a1);
+    const [x1i, y1i] = polar(rIn, a1), [x0i, y0i] = polar(rIn, a0);
+    const lg = a1 - a0 > Math.PI ? 1 : 0;
+    return `M${x0o} ${y0o}A${rOut} ${rOut} 0 ${lg} 1 ${x1o} ${y1o}L${x1i} ${y1i}A${rIn} ${rIn} 0 ${lg} 0 ${x0i} ${y0i}Z`;
+  }
+  function ribbonPath(s1, s2, r) {
+    const [ax, ay] = polar(r, s1.start), [bx, by] = polar(r, s1.end);
+    const [cx, cy] = polar(r, s2.start), [dx, dy] = polar(r, s2.end);
+    const l1 = s1.end - s1.start > Math.PI ? 1 : 0, l2 = s2.end - s2.start > Math.PI ? 1 : 0;
+    return `M${ax} ${ay}A${r} ${r} 0 ${l1} 1 ${bx} ${by}Q${CX} ${CY} ${cx} ${cy}A${r} ${r} 0 ${l2} 1 ${dx} ${dy}Q${CX} ${CY} ${ax} ${ay}Z`;
   }
 
-  // ---- upset: exact intersection combos (rows, sorted by size) ----
+  // d3-style chord layout: arc length ∝ each detector's flagged count; M[i][j] = pairwise overlap,
+  // M[i][i] = the "only this detector" remainder so arcs stay ≈ proportional to the flagged size.
+  const chord = $derived.by(() => {
+    const n = active.length;
+    if (!n) return { arcs: [], ribbons: [] };
+    const M = Array.from({ length: n }, () => new Array(n).fill(0));
+    for (let i = 0; i < n; i++)
+      for (let j = i + 1; j < n; j++) {
+        const o = overlap(active[i], active[j]);
+        M[i][j] = o;
+        M[j][i] = o;
+      }
+    for (let i = 0; i < n; i++) {
+      let s = 0;
+      for (let j = 0; j < n; j++) if (j !== i) s += M[i][j];
+      M[i][i] = Math.max(0, active[i].count - s);
+    }
+    const groupSum = M.map((row) => row.reduce((a, b) => a + b, 0));
+    const total = groupSum.reduce((a, b) => a + b, 0) || 1;
+    const pad = 0.06;
+    const avail = 2 * Math.PI - n * pad;
+    let ang = -Math.PI / 2;
+    const arcs = [], subs = [];
+    for (let i = 0; i < n; i++) {
+      const a0 = ang;
+      const arcAngle = (groupSum[i] / total) * avail;
+      let sa = a0;
+      subs[i] = [];
+      for (let j = 0; j < n; j++) {
+        const seg = (M[i][j] / total) * avail;
+        subs[i][j] = { start: sa, end: sa + seg };
+        sa += seg;
+      }
+      arcs.push({ a0, a1: a0 + arcAngle, mid: a0 + arcAngle / 2, det: active[i] });
+      ang = a0 + arcAngle + pad;
+    }
+    const ribbons = [];
+    for (let i = 0; i < n; i++)
+      for (let j = i + 1; j < n; j++)
+        if (M[i][j] > 0) ribbons.push({ key: i + "-" + j, color: active[i].color, s1: subs[i][j], s2: subs[j][i] });
+    return { arcs, ribbons };
+  });
+
+  // ---- upset: exact intersection combos ----
   const combos = $derived.by(() => {
     const union = new Set();
     for (const d of active) for (const k of d.set) union.add(k);
@@ -54,30 +97,6 @@
     return [...sig.values()].sort((a, b) => b.count - a.count).slice(0, 12);
   });
   const maxCombo = $derived(Math.max(1, ...combos.map((c) => c.count)));
-
-  // ---- euler: APPROXIMATE top-3 proportional circles ----
-  const euler = $derived.by(() => {
-    const top = [...active].sort((a, b) => b.count - a.count).slice(0, 3);
-    if (!top.length) return [];
-    const maxC = Math.max(...top.map((d) => d.count));
-    const R = top.map((d) => 24 + 58 * Math.sqrt(d.count / maxC));
-    const dist = (i, j) => {
-      const f = overlap(top[i], top[j]) / Math.max(1, Math.min(top[i].count, top[j].count));
-      return Math.max(6, (R[i] + R[j]) * (1 - 0.85 * f)); // full overlap → near-concentric
-    };
-    const pos = [{ x: 0, y: 0 }];
-    if (top[1]) pos.push({ x: dist(0, 1), y: 0 });
-    if (top[2]) {
-      const d01 = pos[1].x, d02 = dist(0, 2), d12 = dist(1, 2);
-      const x = d01 ? (d01 * d01 + d02 * d02 - d12 * d12) / (2 * d01) : 0;
-      const y2 = d02 * d02 - x * x;
-      pos.push({ x, y: y2 > 0 ? Math.sqrt(y2) : 0 });
-    }
-    const xs = pos.flatMap((p, k) => [p.x - R[k], p.x + R[k]]);
-    const ys = pos.flatMap((p, k) => [p.y - R[k], p.y + R[k]]);
-    const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
-    return top.map((d, k) => ({ d, r: R[k], x: 150 + pos[k].x - cx, y: 150 + pos[k].y - cy }));
-  });
 </script>
 
 <div class="ov">
@@ -86,7 +105,6 @@
     <div class="ov-modes">
       <button type="button" class:on={mode === "chord"} onclick={() => (mode = "chord")}>Chord</button>
       <button type="button" class:on={mode === "upset"} onclick={() => (mode = "upset")}>UpSet</button>
-      <button type="button" class:on={mode === "euler"} onclick={() => (mode = "euler")}>Euler</button>
     </div>
   </div>
 
@@ -94,33 +112,21 @@
     <p class="ov-empty">No detectors are flagging anything — run QC and enable some checks.</p>
   {:else if mode === "chord"}
     <svg viewBox="0 0 300 300" class="ov-svg">
-      {#each edges as e (e.i + "-" + e.j)}
-        {@const p = pt(e.i, active.length, 108)}
-        {@const q = pt(e.j, active.length, 108)}
-        <path d="M{p.x} {p.y} Q150 150 {q.x} {q.y}" fill="none" stroke={active[e.i].color}
-          stroke-width={1.2 + 9 * (e.o / maxEdge)} stroke-linecap="round" opacity="0.42" />
+      {#each chord.ribbons as r (r.key)}
+        <path d={ribbonPath(r.s1, r.s2, R_IN)} fill={r.color} opacity="0.33" />
       {/each}
-      {#each active as d, i (d.id)}
-        {@const p = pt(i, active.length, 108)}
-        <circle cx={p.x} cy={p.y} r={4.5 + 8 * Math.sqrt(d.pct)} fill={d.color} />
-        <text x={150 + 126 * Math.cos(p.a)} y={150 + 126 * Math.sin(p.a)} class="ov-lbl"
-          text-anchor={Math.cos(p.a) > 0.15 ? "start" : Math.cos(p.a) < -0.15 ? "end" : "middle"}>
-          {d.label} · {(d.pct * 100).toFixed(1)}%
+      {#each chord.arcs as a (a.det.id)}
+        <path d={arcBand(a.a0, a.a1, R_IN + 1, R_OUT)} fill={a.det.color} />
+      {/each}
+      {#each chord.arcs as a (a.det.id)}
+        {@const lp = polar(R_LBL, a.mid)}
+        <text x={lp[0]} y={lp[1]} class="ov-lbl" dominant-baseline="middle"
+          text-anchor={Math.cos(a.mid) > 0.15 ? "start" : Math.cos(a.mid) < -0.15 ? "end" : "middle"}>
+          {a.det.label} · {(a.det.pct * 100).toFixed(1)}%
         </text>
       {/each}
     </svg>
-    <p class="ov-note">Ribbon thickness = # frames both detectors flag (pairwise).</p>
-  {:else if mode === "euler"}
-    <svg viewBox="0 0 300 300" class="ov-svg">
-      {#each euler as c (c.d.id)}
-        <circle cx={c.x} cy={c.y} r={c.r} fill={c.d.color} fill-opacity="0.3" stroke={c.d.color} stroke-width="1.3" />
-      {/each}
-      {#each euler as c (c.d.id)}
-        <text x={c.x} y={c.y - 2} text-anchor="middle" class="ov-lbl">{c.d.label}</text>
-        <text x={c.x} y={c.y + 11} text-anchor="middle" class="ov-sub">{(c.d.pct * 100).toFixed(1)}%</text>
-      {/each}
-    </svg>
-    <p class="ov-note">Approximate · top 3 detectors only (Euler can't cleanly show 4+ sets).</p>
+    <p class="ov-note">Arc length = % of frames a detector flags · ribbon = frames two detectors share.</p>
   {:else}
     <div class="us">
       <div class="us-dets">
@@ -195,12 +201,8 @@
   }
   .ov-lbl {
     fill: var(--text);
-    font-size: 8.5px;
+    font-size: 8px;
     font-weight: 600;
-  }
-  .ov-sub {
-    fill: var(--dim);
-    font-size: 7.5px;
   }
   .ov-note {
     margin: 0.3rem 0 0;
@@ -214,7 +216,6 @@
     padding: 1.5rem 0.5rem;
     text-align: center;
   }
-  /* upset */
   .us-dets {
     display: grid;
     gap: 0.2rem;
