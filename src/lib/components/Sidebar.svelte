@@ -135,6 +135,7 @@
   // Minimal by default: the full stats table and per-instance point lists are opt-in.
   let moreStats = $state(false);
   let featDetailOpen = $state(false); // expand the statistical flag chips → top driving features
+  let allChecksOpen = $state(false); // opt-in "all checks" detail — every enabled detector's status
   let expanded = $state(new Set()); // expanded instance indices — the chevron is the source of truth
   const isOpen = (i) => expanded.has(i);
   function toggleOpen(i) {
@@ -259,6 +260,7 @@
     {@const fs = qc.frameScore(item)}
     {@const ti = qc.frameTopIssue(item)}
     {@const flagged = qc.frameFlagged(item)}
+    {@const dets = qc.frameDetectorDetails(item)}
     <section
       class="side-section"
       class:hidden={!ui.mainActive}
@@ -329,6 +331,22 @@
           {#if fq.isNegativeWithInstances}<li>negative frame has instances</li>{/if}
           {#if fq.duplicatePairs?.length}<li>{fq.duplicatePairs.length} duplicate pair(s): {fq.duplicateReasons.join(", ")}</li>{/if}
         </ul>
+      {/if}
+      {#if dets.length}
+        <button type="button" class="allchk-btn" onclick={() => (allChecksOpen = !allChecksOpen)} aria-expanded={allChecksOpen} title="Per-frame status of every enabled check">
+          <span class="achev" class:open={allChecksOpen}>▸</span> all checks · {dets.length}
+        </button>
+        {#if allChecksOpen}
+          <ul class="allchk">
+            {#each dets as d (d.key)}
+              <li class:on={d.flagged} title="{d.flagged ? 'flagged' : 'passed'}{d.score != null ? ` · ${d.score.toFixed(2)} vs ${d.lowerIsWorse ? 'min' : 'max'} ${d.threshold.toFixed(2)}` : d.detail ? ` · ${d.detail}` : ''}">
+                <span class="ac-dot" class:on={d.flagged}></span>
+                <span class="ac-name">{d.label}</span>
+                <span class="ac-val">{#if d.score != null}<b>{d.score.toFixed(2)}{d.unit ?? ""}</b><span class="ac-thr">· {d.threshold.toFixed(2)}</span>{:else}{d.detail ?? ""}{/if}</span>
+              </li>
+            {/each}
+          </ul>
+        {/if}
       {/if}
     </section>
   {/if}
@@ -733,6 +751,71 @@
     margin: 0.35rem 0 0;
     font-size: 0.68rem;
     color: var(--dim);
+  }
+  .allchk-btn {
+    background: none;
+    border: none;
+    margin: 0.5rem 0 0;
+    padding: 0;
+    color: var(--dim);
+    font-size: 0.68rem;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.28rem;
+  }
+  .allchk-btn:hover {
+    color: var(--accent);
+  }
+  .achev {
+    font-size: 0.5rem;
+    transition: transform 0.15s var(--ease);
+  }
+  .achev.open {
+    transform: rotate(90deg);
+  }
+  .allchk {
+    list-style: none;
+    margin: 0.3rem 0 0;
+    padding: 0;
+    display: grid;
+    gap: 0.16rem;
+  }
+  .allchk li {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 0.42rem;
+    font-size: 0.7rem;
+    color: var(--muted);
+  }
+  .allchk li.on {
+    color: #e7c08a;
+  }
+  .ac-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #39414f; /* passed */
+    flex: none;
+  }
+  .ac-dot.on {
+    background: #fb7185; /* flagged */
+  }
+  .ac-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ac-val {
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .ac-val .ac-thr {
+    color: var(--dim);
+    margin-left: 0.25rem;
+    font-weight: 400;
   }
   .ihead {
     display: flex;

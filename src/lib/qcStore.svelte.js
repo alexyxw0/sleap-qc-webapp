@@ -1136,6 +1136,41 @@ class QCStore {
     });
     return rows.sort((p, q) => Math.abs(q.z) - Math.abs(p.z)).slice(0, n);
   }
+  /** Every ENABLED check's status for a frame, for the opt-in "all checks" detail view. Each:
+   *  { key, label, score, threshold, flagged, lowerIsWorse?, unit?, detail? }. */
+  frameDetectorDetails(item) {
+    this.rev;
+    if (!item) return [];
+    const fk = this.#fkey(item);
+    const c = this.checks;
+    const out = [];
+    const sc = (on, map, thr, key, label) => {
+      if (!on) return;
+      const s = map.get(fk) ?? null;
+      out.push({ key, label, score: s, threshold: thr, flagged: s != null && s >= thr });
+    };
+    sc(c.anomaly, this.#frameAnom, this.threshold, "anomaly", "Anomaly");
+    sc(c.gmm, this.#frameGmm, this.gmmThreshold, "gmm", "GMM");
+    sc(c.chirality, this.#frameChir, this.chiralityThreshold, "chirality", "Chirality");
+    sc(c.ordering, this.#frameOrdering, this.orderingThreshold, "ordering", "Ordering");
+    sc(c.poseSplit, this.#framePoseSplit, this.poseSplitThreshold, "poseSplit", "Pose split");
+    const fm = this.#frameFeatureZ.get(fk);
+    for (const f of this.featureChecks) {
+      if (!f.on) continue;
+      const z = fm?.[f.feature] ?? null;
+      out.push({ key: `feat:${f.id}`, label: f.feature.replace(/_zscore$/, ""), score: z, threshold: f.threshold, flagged: z != null && z >= f.threshold, unit: "σ" });
+    }
+    const fq = this.#frameResults.get(fk);
+    if (fq) {
+      if (c.count) out.push({ key: "count", label: "Instance count", flagged: fq.isWrongCount, detail: fq.isEmpty ? "empty" : `${fq.actualInstanceCount} / ${fq.expectedInstanceCount}` });
+      if (c.sparse) out.push({ key: "sparse", label: "Sparse instance", flagged: fq.minVisibleNodeCount < this.sparseThreshold, detail: `${fq.minVisibleNodeCount} min nodes` });
+      if (c.confidence) { const kp = this.#kpConf(fq); out.push({ key: "confidence", label: "Keypoint conf", score: kp, threshold: this.confidenceThreshold, flagged: kp < this.confidenceThreshold, lowerIsWorse: true }); }
+      if (c.instConfidence) out.push({ key: "instConfidence", label: "Instance conf", score: fq.minInstScore, threshold: this.instConfidenceThreshold, flagged: fq.minInstScore < this.instConfidenceThreshold, lowerIsWorse: true });
+      if (c.negative) out.push({ key: "negative", label: "Negative frame", flagged: fq.isNegativeWithInstances, detail: fq.isNegativeWithInstances ? "has instances" : "—" });
+      if (c.duplicates) out.push({ key: "duplicates", label: "Duplicates", flagged: (fq.duplicatePairs?.length ?? 0) > 0, detail: `${fq.duplicatePairs?.length ?? 0} pair(s)` });
+    }
+    return out;
+  }
 
   reset() {
     this.status = "idle";
