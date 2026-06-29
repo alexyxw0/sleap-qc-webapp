@@ -253,7 +253,26 @@
     if (e.deltaMode === 1) dy *= 16; // lines → ~px
     else if (e.deltaMode === 2) dy *= 400; // pages → ~px
     dy = Math.max(-100, Math.min(100, dy)); // clamp so one fast event can't jump far
-    view.zoomBy(Math.exp(-dy * 0.0016)); // proportional to scroll amount → trackpad isn't hyper-sensitive
+    zoomAtCursor(e, Math.exp(-dy * 0.0022)); // proportional (trackpad-safe) + a touch more responsive
+  }
+
+  // Zoom by `factor` keeping the image point under the cursor fixed (mirrors the draw transform).
+  function zoomAtCursor(e, factor) {
+    const rect = wrap.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const dpr = window.devicePixelRatio || 1;
+    const cw = Math.round(rect.width * dpr), ch = Math.round(rect.height * dpr);
+    const dims = frameDims(store.current, store.frameImage);
+    const fitCss = Math.min(rect.width / dims.w, rect.height / dims.h);
+    const z0 = view.zoom, z1 = view.clampZoom(z0 * factor);
+    if (z1 === z0) return;
+    const s0 = fitCss * z0 * dpr, s1 = fitCss * z1 * dpr;
+    const curX = (e.clientX - rect.left) * dpr, curY = (e.clientY - rect.top) * dpr;
+    const imgX = (curX - ((cw - dims.w * s0) / 2 + view.panX * dpr)) / s0;
+    const imgY = (curY - ((ch - dims.h * s0) / 2 + view.panY * dpr)) / s0;
+    const panX = (curX - imgX * s1 - (cw - dims.w * s1) / 2) / dpr;
+    const panY = (curY - imgY * s1 - (ch - dims.h * s1) / 2) / dpr;
+    view.applyFocus(z1, panX, panY);
   }
 
   function togglePlay() {
