@@ -7,6 +7,72 @@
   import SkeletonEditor from "./SkeletonEditor.svelte";
   import QcChecks from "./QcChecks.svelte";
   import { ui } from "../uiStore.svelte.js";
+  import { untrack } from "svelte";
+
+  // Drag-to-tab: each panel carries a grip; dragging it onto the tab strip docks it as a tab.
+  const PANEL_TITLE = { checks: "Checks", file: "File" };
+  let draggingPanel = $state(null); // the panel being dragged (drives the tab-strip highlight + ghost)
+  let ghostX = $state(0), ghostY = $state(0); // floating drag-ghost position (follows the cursor)
+  // Pointer-based drag — native HTML5 drag (draggable/dragstart) proved unreliable in this app.
+  // Press a grip, move past a small threshold to begin, release over the tab strip to dock the panel.
+  let dragId = null, dragSX = 0, dragSY = 0, dragMoved = false;
+  function gripDown(e, pid) {
+    if (e.button !== 0) return;
+    dragId = pid; dragSX = e.clientX; dragSY = e.clientY; dragMoved = false;
+    ghostX = e.clientX; ghostY = e.clientY;
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  }
+  function gripMove(e) {
+    if (dragId === null) return;
+    ghostX = e.clientX; ghostY = e.clientY;
+    if (!dragMoved && Math.hypot(e.clientX - dragSX, e.clientY - dragSY) > 5) { dragMoved = true; draggingPanel = dragId; }
+  }
+  function gripUp(e) {
+    const id = dragId, moved = dragMoved;
+    // Decide the drop while the strip is still mounted (before clearing draggingPanel). Forgiving:
+    // a release anywhere in the rail at or above the strip's bottom edge counts as a drop on tabs.
+    let onStrip = false;
+    if (moved) {
+      const strip = document.querySelector(".sidebar-tabs");
+      if (strip) {
+        const r = strip.getBoundingClientRect();
+        onStrip = e.clientX >= r.left && e.clientX <= r.right && e.clientY <= r.bottom;
+      }
+    }
+    dragId = null; dragMoved = false; draggingPanel = null;
+    try { e.currentTarget.releasePointerCapture?.(e.pointerId); } catch { /* not captured */ }
+    if (id !== null && onStrip) ui.dockPanel(id);
+  }
+
+  // Tab drag-to-merge — pointer-based, like the grips. Drag a tab onto another to fold their
+  // panels into one tab, or onto "Main" to merge it back in. A tap (no move) just opens the tab.
+  let draggingTab = $state(null);
+  let tabGhostX = $state(0), tabGhostY = $state(0);
+  let tdId = null, tdSX = 0, tdSY = 0, tdMoved = false;
+  const tabLabel = (tab) => tab.panels.map((p) => PANEL_TITLE[p] ?? p).join(" + ");
+  function tabDown(e, tabId) {
+    if (e.button !== 0) return;
+    tdId = tabId; tdSX = e.clientX; tdSY = e.clientY; tdMoved = false;
+    tabGhostX = e.clientX; tabGhostY = e.clientY;
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  }
+  function tabMove(e) {
+    if (tdId === null) return;
+    tabGhostX = e.clientX; tabGhostY = e.clientY;
+    if (!tdMoved && Math.hypot(e.clientX - tdSX, e.clientY - tdSY) > 5) { tdMoved = true; draggingTab = tdId; }
+  }
+  function tabUp(e) {
+    const id = tdId, moved = tdMoved;
+    let target = null;
+    if (moved) target = document.elementFromPoint(e.clientX, e.clientY)?.closest(".stab")?.dataset.tabid ?? null;
+    tdId = null; tdMoved = false; draggingTab = null;
+    try { e.currentTarget.releasePointerCapture?.(e.pointerId); } catch { /* not captured */ }
+    if (id === null) return;
+    if (!moved) { ui.activateTab(id); return; }     // a tap → open the tab
+    if (target == null || target === String(id)) return;
+    if (target === "main") ui.undockTab(id);        // dropped on Main → fold back in
+    else ui.mergeTabs(id, Number(target));          // dropped on another tab → merge
+  }
 
   // Click a flagged problem -> select its faulty node(s) and zoom the canvas to them.
   function focusFaulty(instIdx) {
@@ -68,18 +134,26 @@
 
   // Minimal by default: the full stats table and per-instance point lists are opt-in.
   let moreStats = $state(false);
-  let expanded = $state(new Set()); // manually expanded instance indices
-  const isOpen = (i) => expanded.has(i) || edit.selInstance === i;
+  let expanded = $state(new Set()); // expanded instance indices — the chevron is the source of truth
+  const isOpen = (i) => expanded.has(i);
   function toggleOpen(i) {
     const s = new Set(expanded);
     if (s.has(i)) s.delete(i);
     else s.add(i);
     expanded = s;
   }
-  // Collapse manual expansions when navigating to another frame.
+  // Collapse expansions when navigating to another frame.
   $effect(() => {
     void store.index;
     expanded = new Set();
+  });
+  // Auto-expand the selected instance so its points show on select — but re-seed ONLY when the
+  // selection changes (untracked read of `expanded`), so the chevron can still collapse it after.
+  $effect(() => {
+    const sel = edit.selInstance;
+    untrack(() => {
+      if (sel >= 0 && !expanded.has(sel)) expanded = new Set(expanded).add(sel);
+    });
   });
 
   // Reactive snapshot of the current frame's instances/points — recomputes on every
@@ -107,6 +181,13 @@
 </script>
 
 <aside class="sidebar" style:width="{ui.railW}px" style:flex="0 0 {ui.railW}px">
+  {#if draggingPanel}
+    <div class="drag-ghost" style:left="{ghostX}px" style:top="{ghostY}px">⠿ {PANEL_TITLE[draggingPanel] ?? draggingPanel}</div>
+  {/if}
+  {#if draggingTab != null}
+    {@const dt = ui.sidebarTabs.find((t) => t.id === draggingTab)}
+    {#if dt}<div class="drag-ghost" style:left="{tabGhostX}px" style:top="{tabGhostY}px">⧉ {tabLabel(dt)}</div>{/if}
+  {/if}
   <div class="rz" onpointerdown={startResize} title="Drag to resize"></div>
   <div class="scroll">
   <header class="head">
@@ -115,12 +196,61 @@
     <button class="ghost" onclick={() => store.reset()} title="Close file">✕</button>
   </header>
 
+  {#snippet grip(pid)}
+    {#if !ui.isDocked(pid)}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="panel-grip"
+        onpointerdown={(e) => gripDown(e, pid)}
+        onpointermove={gripMove}
+        onpointerup={gripUp}
+        title="Drag up to the tab strip to make {PANEL_TITLE[pid] ?? pid} a tab"
+      ><span class="gdots">⠿</span><span class="ghint">drag {PANEL_TITLE[pid] ?? pid} to a tab</span></div>
+    {/if}
+  {/snippet}
+
+  <!-- Tab strip: panels docked here show one at a time; drag a panel's grip up to dock it. -->
+  {#if ui.sidebarTabs.length || draggingPanel}
+    <div class="sidebar-tabs" class:armed={draggingPanel}>
+      {#if ui.sidebarTabs.length}
+        <span class="stab main" class:on={ui.mainActive} class:tdrop={draggingTab != null} data-tabid="main">
+          <button class="stab-lbl" onclick={() => ui.activateMain()}>Main</button>
+        </span>
+      {/if}
+      {#each ui.sidebarTabs as tab (tab.id)}
+        <span
+          class="stab"
+          class:on={ui.activeTabId === tab.id}
+          class:tdrop={draggingTab != null && draggingTab !== tab.id}
+          class:dragging={draggingTab === tab.id}
+          data-tabid={tab.id}
+        >
+          <button
+            class="stab-lbl"
+            onpointerdown={(e) => tabDown(e, tab.id)}
+            onpointermove={tabMove}
+            onpointerup={tabUp}
+            title="Click to open · drag onto another tab to merge them, or onto Main to fold back"
+          >{tabLabel(tab)}</button>
+          <button class="stab-x" onclick={() => ui.undockTab(tab.id)} title="Merge back into Main">×</button>
+        </span>
+      {/each}
+      {#if ui.sidebarTabs.length}
+        <button class="merge-tabs" onclick={() => ui.undockAll()} title="Merge all tabs back into Main">↩ merge all</button>
+      {/if}
+      {#if draggingPanel && !ui.isDocked(draggingPanel)}<span class="th">＋ drop to tab</span>{/if}
+    </div>
+  {/if}
+
   {#if store.error}
     <p class="err side-section">{store.error}</p>
   {/if}
 
-  <!-- Discrete frame selector -->
-  <FrameGrid />
+  <!-- Discrete frame selector — part of the Main view: not draggable, never its own tab,
+       and only shown on Main (not stacked on top of every docked tab). -->
+  <div class="panel" class:hidden={!ui.mainActive}>
+    <FrameGrid />
+  </div>
 
   <!-- QC results for the current frame — one verdict line + issues only when present -->
   {#if qc.hasResults}
@@ -130,6 +260,7 @@
     {@const flagged = qc.frameFlagged(item)}
     <section
       class="side-section"
+      class:hidden={!ui.mainActive}
       title="Anomaly = geometrically unusual vs. the rest of this file. Confidence = the model's own per-keypoint certainty. Both are review hints, not certain errors."
     >
       <div class="qcrow">
@@ -181,10 +312,15 @@
   {/if}
 
   <!-- Detection checks: toggle each technique; flagged set = union of the enabled ones -->
-  <QcChecks />
+  <div class="panel" data-pid="checks" class:hidden={ui.panelHidden("checks")}>
+    {@render grip("checks")}
+    <QcChecks />
+  </div>
 
-  <!-- File: one summary line; the full stats table is opt-in -->
-  <section class="side-section">
+  <!-- File panel: file stats + skeleton + this-frame instances, merged into one dockable panel -->
+  <div class="panel panel-grow" data-pid="file" class:hidden={ui.panelHidden("file")}>
+    {@render grip("file")}
+    <section class="side-section">
     <div class="fhead">
       <h3 class="side-h">File</h3>
       <button class="more" onclick={() => (moreStats = !moreStats)}>{moreStats ? "less" : "more"}</button>
@@ -287,6 +423,7 @@
       <p class="muted">No instances on this frame. Use ＋ Instance to add one.</p>
     {/if}
   </section>
+  </div>
   </div>
 </aside>
 
@@ -405,8 +542,13 @@
   .fhead .side-h {
     margin: 0;
     flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .more {
+    flex: none;
     background: none;
     border: none;
     padding: 0;
@@ -479,6 +621,7 @@
     border-radius: var(--r-xs);
     padding: 0.06rem 0.4rem;
     font-size: 0.72rem;
+    flex: none; /* score badges keep their size; never shrink/clip the number */
   }
   .qchip.sm {
     font-size: 0.66rem;
@@ -529,6 +672,10 @@
   .ihead .side-h {
     margin: 0;
     flex: 1;
+    min-width: 0; /* shrink + ellipsize instead of shoving the +Instance button off-edge */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .addbtn {
     background: none;
@@ -539,6 +686,7 @@
     font-size: 0.7rem;
     cursor: pointer;
     white-space: nowrap;
+    flex: none; /* never shrink the button */
     transition: background 0.12s, border-color 0.12s;
   }
   .addbtn:hover {
@@ -660,12 +808,17 @@
   }
   .pname {
     color: var(--muted);
+    min-width: 0; /* a long node name ellipsizes instead of pushing the score off-row */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .pxy {
     color: #d7dee8;
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
+    flex: none;
   }
   .vis {
     width: 7px;
@@ -677,5 +830,175 @@
   .vis.on {
     background: #86efac;
     border-color: #86efac;
+  }
+  /* --- drag-to-tab: dock sidebar panels into a tab strip at the top --- */
+  .head {
+    order: -10; /* keep the file header pinned above the tab strip + any docked panel */
+  }
+  .sidebar-tabs {
+    order: -2;
+    position: sticky; /* stay reachable as a drop target while the panels scroll */
+    top: 0;
+    z-index: 6;
+    background: var(--surface);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end; /* browser-style: tabs sit on the bottom line */
+    gap: 4px;
+    padding: 0.5rem 0.45rem 0;
+    border-bottom: 1px solid var(--border);
+    flex: none;
+  }
+  .drag-ghost {
+    position: fixed;
+    z-index: 1000;
+    transform: translate(12px, 8px);
+    pointer-events: none;
+    background: var(--surface);
+    border: 1px solid var(--accent);
+    border-radius: var(--r-xs);
+    padding: 0.2rem 0.5rem;
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    color: var(--text);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+    white-space: nowrap;
+  }
+  .sidebar-tabs.armed {
+    background: rgba(95, 217, 242, 0.08);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  .stab {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid var(--border);
+    border-bottom: none;
+    border-radius: 10px 10px 0 0; /* rounder top, like a browser tab */
+    background: rgba(255, 255, 255, 0.025); /* inactive: a soft tint, not a harsh well */
+    margin-bottom: -1px; /* overlap the strip's bottom border → connect the active tab to its content */
+    overflow: hidden;
+    opacity: 0.8;
+    transition: opacity 0.16s var(--ease), background 0.16s var(--ease), box-shadow 0.16s var(--ease);
+  }
+  .stab:hover {
+    opacity: 1;
+    background: rgba(255, 255, 255, 0.06);
+  }
+  .stab.on {
+    background: var(--surface); /* active tab matches the content area below it */
+    border-top: 2px solid var(--accent);
+    opacity: 1;
+    box-shadow: 0 -3px 10px rgba(95, 217, 242, 0.1); /* faint lift */
+  }
+  .stab.tdrop {
+    /* a candidate drop target while a tab is being dragged */
+    border-color: var(--accent);
+    box-shadow: inset 0 0 0 1px var(--accent), 0 0 9px rgba(95, 217, 242, 0.3);
+  }
+  .stab.dragging {
+    opacity: 0.35;
+  }
+  .stab:not(.main) .stab-lbl {
+    cursor: grab;
+    touch-action: none; /* let pointer-drag own the gesture */
+  }
+  .stab:not(.main) .stab-lbl:active {
+    cursor: grabbing;
+  }
+  .stab-lbl {
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-size: 0.8rem;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    padding: 0.46rem 0.16rem 0.46rem 0.72rem;
+    cursor: pointer;
+  }
+  .stab.on .stab-lbl {
+    color: var(--text);
+  }
+  .stab.main .stab-lbl {
+    padding-right: 0.72rem; /* Main has no × — keep its label balanced */
+  }
+  .stab-x {
+    background: none;
+    border: none;
+    color: var(--dim);
+    font-size: 0.9rem;
+    line-height: 1;
+    padding: 0.46rem 0.42rem 0.46rem 0.18rem;
+    cursor: pointer;
+  }
+  .stab-x:hover {
+    color: #fb7185;
+  }
+  .th {
+    font-size: 0.66rem;
+    color: var(--accent);
+    letter-spacing: 0.02em;
+  }
+  .merge-tabs {
+    margin-left: auto; /* sit at the far-right end of the strip */
+    align-self: center;
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: var(--r-xs);
+    color: var(--muted);
+    font-size: 0.68rem;
+    padding: 0.22rem 0.5rem;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: color 0.12s, border-color 0.12s, background 0.12s;
+  }
+  .merge-tabs:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: rgba(95, 217, 242, 0.08);
+  }
+  .panel {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    /* NO min-height:0 here — that let panels shrink below their content and overlap the next one. */
+  }
+  .panel-grow {
+    flex: 1; /* the File panel fills leftover rail space */
+  }
+  .panel-grip {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    height: 16px;
+    padding: 0 0.5rem;
+    cursor: grab;
+    color: var(--muted);
+    font-size: 0.62rem;
+    letter-spacing: 0.16em;
+    background: rgba(255, 255, 255, 0.03);
+    border-bottom: 1px dashed var(--border);
+    user-select: none;
+    flex: none;
+  }
+  .panel-grip .ghint {
+    font-size: 0.56rem;
+    letter-spacing: 0.02em;
+    opacity: 0;
+    transition: opacity 0.12s;
+  }
+  .panel-grip:hover {
+    color: var(--accent);
+    background: rgba(95, 217, 242, 0.09);
+    border-bottom-style: solid;
+  }
+  .panel-grip:hover .ghint {
+    opacity: 0.85;
+  }
+  .panel-grip:active {
+    cursor: grabbing;
+  }
+  .panel.hidden,
+  .side-section.hidden {
+    display: none; /* tabbed away — only the active tab's content renders */
   }
 </style>

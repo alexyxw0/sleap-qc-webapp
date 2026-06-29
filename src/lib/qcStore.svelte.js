@@ -235,18 +235,6 @@ class QCStore {
     if (this.checkReady("anomaly")) { this.#deriveFeatureChecks(); this.rev++; }
     else if (this.status === "done") this.run(); // anomaly unit absent -> run() will add + compute it
   }
-  /** |z| of one feature for one instance (from the precomputed map), or null. */
-  featureZ(item, instIdx, feature) {
-    this.rev;
-    return this.#instFeatureZ.get(`${this.#fkey(item)}:${instIdx}`)?.[feature] ?? null;
-  }
-  /** Active feature-checks that flag an instance (|z| >= threshold), each with its z. */
-  instanceFeatureFlags(item, instIdx) {
-    this.rev;
-    const zs = this.#instFeatureZ.get(`${this.#fkey(item)}:${instIdx}`);
-    if (!zs) return [];
-    return this.featureChecks.filter((f) => f.on && (zs[f.feature] ?? -1) >= f.threshold).map((f) => ({ ...f, z: zs[f.feature] }));
-  }
   /** Frames flagged by a single feature-check, for its UI count. */
   featureCheckCount(id) {
     this.rev;

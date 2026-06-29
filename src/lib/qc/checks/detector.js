@@ -109,10 +109,6 @@ export class LabelQCDetector {
     this.fitRows = [...fitIdxByAll.keys()];
     return this;
   }
-  /** The clean feature rows used to fit the detectors (the baseline-source subset). */
-  get fitCleanMatrix() {
-    return this.fitRows.map((r) => this.cleanMatrix[r]);
-  }
   get fitRawMatrix() {
     return this.fitRows.map((r) => this.rawMatrix[r]);
   }

@@ -105,10 +105,6 @@ export class SkeletonAnalyzer {
     chains.sort((a, b) => b.length - a.length);
     return chains;
   }
-
-  get hasSymmetry() {
-    return this.symmetryPairs.length >= 1;
-  }
 }
 
 /** Build a SkeletonAnalyzer from a sleap-io.js Skeleton. */
