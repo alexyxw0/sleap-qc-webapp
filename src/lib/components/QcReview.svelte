@@ -285,7 +285,11 @@
   }
   function onWheel(e) {
     e.preventDefault();
-    zoomBy(e.deltaY < 0 ? 1.15 : 1 / 1.15);
+    let dy = e.deltaY;
+    if (e.deltaMode === 1) dy *= 16; // lines → ~px
+    else if (e.deltaMode === 2) dy *= 400; // pages → ~px
+    dy = Math.max(-100, Math.min(100, dy));
+    zoomBy(Math.exp(-dy * 0.0016)); // proportional to scroll → trackpad-friendly
   }
 
   function onKey(e) {

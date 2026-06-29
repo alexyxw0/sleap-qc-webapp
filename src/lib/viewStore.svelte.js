@@ -54,6 +54,9 @@ class ViewStore {
   zoomOut() {
     this.setZoom(this.zoom / STEP);
   }
+  zoomBy(factor) {
+    this.setZoom(this.zoom * factor);
+  }
   reset() {
     this.zoom = MIN;
     this.panX = 0;

@@ -248,7 +248,11 @@
 
   function onWheel(e) {
     e.preventDefault();
-    e.deltaY < 0 ? view.zoomIn() : view.zoomOut();
+    let dy = e.deltaY;
+    if (e.deltaMode === 1) dy *= 16; // lines → ~px
+    else if (e.deltaMode === 2) dy *= 400; // pages → ~px
+    dy = Math.max(-100, Math.min(100, dy)); // clamp so one fast event can't jump far
+    view.zoomBy(Math.exp(-dy * 0.0016)); // proportional to scroll amount → trackpad isn't hyper-sensitive
   }
 
   function togglePlay() {
