@@ -4,6 +4,7 @@
   import { qc } from "../qcStore.svelte.js";
 
   let mode = $state("chord"); // chord | upset
+  let popped = $state(false); // render in a larger pop-out window instead of inline
 
   const PALETTE = ["#5fd9f2", "#f3c56c", "#a7f3d0", "#fda4af", "#c4b5fd", "#86efac", "#fdba74", "#93c5fd", "#f9a8d4", "#fcd34d", "#67e8f9"];
 
@@ -99,12 +100,16 @@
   const maxCombo = $derived(Math.max(1, ...combos.map((c) => c.count)));
 </script>
 
+{#snippet body()}
 <div class="ov">
   <div class="ov-head">
     <span class="ov-title">Detector overlap<span class="ov-total"> · {data.total} frames</span></span>
-    <div class="ov-modes">
-      <button type="button" class:on={mode === "chord"} onclick={() => (mode = "chord")}>Chord</button>
-      <button type="button" class:on={mode === "upset"} onclick={() => (mode = "upset")}>UpSet</button>
+    <div class="ov-actions">
+      <div class="ov-modes">
+        <button type="button" class:on={mode === "chord"} onclick={() => (mode = "chord")}>Chord</button>
+        <button type="button" class:on={mode === "upset"} onclick={() => (mode = "upset")}>UpSet</button>
+      </div>
+      <button type="button" class="ov-pop" onclick={() => (popped = !popped)} title={popped ? "Dock back into the sidebar" : "Pop out to a larger window"}>{popped ? "⤡" : "⤢"}</button>
     </div>
   </div>
 
@@ -154,6 +159,18 @@
     </div>
   {/if}
 </div>
+{/snippet}
+
+{#if popped}
+  <p class="ov-popped">Popped out · <button type="button" class="ov-link" onclick={() => (popped = false)}>show inline</button></p>
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <div class="ov-pop-backdrop" onclick={(e) => { if (e.target === e.currentTarget) popped = false; }}>
+    <div class="ov-pop-card">{@render body()}</div>
+  </div>
+{:else}
+  {@render body()}
+{/if}
 
 <style>
   .ov {
@@ -164,12 +181,38 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.5rem;
+    gap: 0.4rem 0.5rem;
     margin-bottom: 0.6rem;
+    flex-wrap: wrap; /* modes/pop wrap below rather than clipping when the rail is narrow */
   }
   .ov-title {
     font-size: 0.82rem;
     font-weight: 600;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ov-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex: none;
+  }
+  .ov-pop {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: var(--r-xs);
+    color: var(--muted);
+    font-size: 0.78rem;
+    line-height: 1;
+    padding: 0.2rem 0.4rem;
+    cursor: pointer;
+  }
+  .ov-pop:hover {
+    color: var(--text);
+    border-color: var(--accent);
   }
   .ov-total {
     color: var(--dim);
@@ -290,5 +333,39 @@
     font-size: 0.7rem;
     font-variant-numeric: tabular-nums;
     color: var(--muted);
+  }
+  /* pop-out window */
+  .ov-popped {
+    margin: 0;
+    font-size: 0.72rem;
+    color: var(--dim);
+  }
+  .ov-link {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    color: var(--accent);
+    cursor: pointer;
+  }
+  .ov-pop-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 300;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .ov-pop-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem 1.2rem;
+    box-shadow: 0 16px 50px rgba(0, 0, 0, 0.5);
+    width: 600px;
+    max-width: 92vw;
+    max-height: 90vh;
+    overflow: auto;
   }
 </style>
