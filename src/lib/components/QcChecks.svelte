@@ -155,7 +155,7 @@
                   <li class="rt-step rt-substep done">
                     <span class="rt-name" title={sm.label}>{sm.label}</span>
                     <span class="rt-track"><span class="rt-meter sub" style:width="{Math.round((sm.ms / subMax) * 100)}%"></span></span>
-                    <span class="rt-val">{sm.ms.toFixed(1)} ms</span>
+                    <span class="rt-val">{sm.ms.toFixed(0)} ms</span>
                   </li>
                 {/each}
               {/if}
@@ -699,10 +699,10 @@
   }
   .rt-step {
     display: grid;
-    grid-template-columns: 1fr 3.4rem 2.9rem;
+    grid-template-columns: 1fr 3rem 3.5rem;
     align-items: center;
     gap: 0.45rem;
-    padding: 0.1rem 0;
+    padding: 0.12rem 0;
     color: var(--muted);
   }
   .rt-step.on {
@@ -783,6 +783,7 @@
   }
   .rt-val {
     text-align: right;
+    white-space: nowrap;
     color: var(--dim);
   }
   .rt-step.done .rt-val {
