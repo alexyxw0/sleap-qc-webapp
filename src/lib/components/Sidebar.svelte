@@ -28,9 +28,19 @@
   }
   function gripUp(e) {
     const id = dragId, moved = dragMoved;
+    // Decide the drop while the strip is still mounted (before clearing draggingPanel). Forgiving:
+    // a release anywhere in the rail at or above the strip's bottom edge counts as a drop on tabs.
+    let onStrip = false;
+    if (moved) {
+      const strip = document.querySelector(".sidebar-tabs");
+      if (strip) {
+        const r = strip.getBoundingClientRect();
+        onStrip = e.clientX >= r.left && e.clientX <= r.right && e.clientY <= r.bottom;
+      }
+    }
     dragId = null; dragMoved = false; draggingPanel = null;
     try { e.currentTarget.releasePointerCapture?.(e.pointerId); } catch { /* not captured */ }
-    if (id !== null && moved && document.elementFromPoint(e.clientX, e.clientY)?.closest(".sidebar-tabs")) ui.dockPanel(id);
+    if (id !== null && onStrip) ui.dockPanel(id);
   }
 
   // Click a flagged problem -> select its faulty node(s) and zoom the canvas to them.
