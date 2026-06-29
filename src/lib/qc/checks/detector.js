@@ -83,14 +83,20 @@ export class LabelQCDetector {
    * to fit on user-annotated instances only so predictions are measured against clean ground truth.
    */
   fitFeatures(instances, analyzer, fitMask = null) {
+    // Per-stage timing for the runtime breakdown. Each stage runs ONCE here (the per-instance
+    // extract is a single timed pass, not a timer per instance), so the overhead is negligible.
+    const T = {};
+    const _t = (k, fn) => { const s = performance.now(); const r = fn(); T[k] = (T[k] ?? 0) + (performance.now() - s); return r; };
     this.analyzer = analyzer;
     const fitPoses = fitMask ? instances.filter((_, i) => fitMask[i]) : instances;
-    this.baseline = new BaselineFeatureExtractor(analyzer.edges, analyzer.nNodes, analyzer.symmetryPairs).fit(fitPoses);
-    this.visibility = new VisibilityModel().fit(fitPoses.map(visibilityMask));
-    this.nn = new NearestNeighborScorer({ normalize: true }).fit(fitPoses);
-    const looNN = this.nn.looDistances(); // leave-one-out, aligned with fitPoses
-    const areas = fitPoses.map((p) => computeConvexHull(p).hullArea).filter((a) => a > 0);
-    this._hullStats = { mean: areas.length ? mean(areas) : 1, std: areas.length ? std(areas) : 1 };
+    this.baseline = _t("Baseline (edges, angles, symmetry)", () => new BaselineFeatureExtractor(analyzer.edges, analyzer.nNodes, analyzer.symmetryPairs).fit(fitPoses));
+    this.visibility = _t("Visibility pattern", () => new VisibilityModel().fit(fitPoses.map(visibilityMask)));
+    this.nn = _t("NN scorer (fit)", () => new NearestNeighborScorer({ normalize: true }).fit(fitPoses));
+    const looNN = _t("NN leave-one-out", () => this.nn.looDistances()); // aligned with fitPoses
+    this._hullStats = _t("Convex hull stats", () => {
+      const areas = fitPoses.map((p) => computeConvexHull(p).hullArea).filter((a) => a > 0);
+      return { mean: areas.length ? mean(areas) : 1, std: areas.length ? std(areas) : 1 };
+    });
     // node->neighbors adjacency, reused by the pose_split_score feature (chimera bridging edge).
     this._adjacency = Array.from({ length: analyzer.nNodes }, () => []);
     for (const [s, d] of analyzer.edges) { this._adjacency[s].push(d); this._adjacency[d].push(s); }
@@ -100,13 +106,14 @@ export class LabelQCDetector {
     const fitIdxByAll = new Map();
     let fi = 0;
     instances.forEach((_, i) => { if (!fitMask || fitMask[i]) fitIdxByAll.set(i, fi++); });
-    this.rawMatrix = instances.map((p, i) =>
+    this.rawMatrix = _t("Per-instance extract (all features)", () => instances.map((p, i) =>
       this.extractFeatures(p, !fitMask || fitMask[i] ? looNN[fitIdxByAll.get(i)] : null),
-    );
+    ));
     this.cleanMatrix = this.rawMatrix.map((row) =>
       row.map((f) => (Number.isNaN(f) ? 0 : f === Infinity ? 10 : f === -Infinity ? -10 : f)),
     );
     this.fitRows = [...fitIdxByAll.keys()];
+    this._timings = T;
     return this;
   }
   get fitRawMatrix() {

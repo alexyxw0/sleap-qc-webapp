@@ -96,6 +96,7 @@
   let dragFeature = $state(null); // feature name currently being dragged out to the custom drop zone
   let dropHot = $state(false); // the custom drop zone is hovered during a drag
   let timingOpen = $state(false); // expand the per-step run-timing breakdown (auto-open while running)
+  let featTimeOpen = $state(false); // expand the feature-vector step into its per-metric breakdown
 
   // a check is hidden when it can't apply (confidence needs predicted instances)
   const visibleInGroup = (g) =>
@@ -134,13 +135,30 @@
         {#if timingOpen || running}
           <ul class="rt-steps">
             {#each p.steps as s (s.key)}
+              {@const hasSub = s.key === "features" && s.sub?.length}
               <li class="rt-step" class:on={s.status === "running"} class:done={s.status === "done"}>
-                <span class="rt-name">{s.label}</span>
+                {#if hasSub}
+                  <button type="button" class="rt-name rt-expand" onclick={() => (featTimeOpen = !featTimeOpen)} aria-expanded={featTimeOpen} title="Per-metric breakdown of the feature-vector build">
+                    <span class="rt-subchev" class:open={featTimeOpen}>▸</span>{s.label}
+                  </button>
+                {:else}
+                  <span class="rt-name">{s.label}</span>
+                {/if}
                 <span class="rt-track">
                   {#if s.status === "running"}<span class="rt-indet"></span>{:else if s.status === "done"}<span class="rt-meter" style:width="{Math.round((s.ms / maxMs) * 100)}%"></span>{/if}
                 </span>
                 <span class="rt-val">{s.status === "done" ? `${s.ms.toFixed(0)} ms` : s.status === "running" ? "…" : "·"}</span>
               </li>
+              {#if hasSub && featTimeOpen}
+                {@const subMax = Math.max(1, ...s.sub.map((x) => x.ms))}
+                {#each s.sub as sm (sm.label)}
+                  <li class="rt-step rt-substep done">
+                    <span class="rt-name" title={sm.label}>{sm.label}</span>
+                    <span class="rt-track"><span class="rt-meter sub" style:width="{Math.round((sm.ms / subMax) * 100)}%"></span></span>
+                    <span class="rt-val">{sm.ms.toFixed(1)} ms</span>
+                  </li>
+                {/each}
+              {/if}
             {/each}
           </ul>
         {/if}
@@ -710,6 +728,42 @@
     background: color-mix(in srgb, var(--accent) 55%, transparent);
     border-radius: 2px;
     transition: width 0.2s var(--ease);
+  }
+  .rt-meter.sub {
+    background: color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  /* The feature-vector row expands into a per-metric breakdown. */
+  .rt-expand {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    min-width: 0;
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rt-expand:hover {
+    color: var(--accent);
+  }
+  .rt-subchev {
+    flex: none;
+    font-size: 0.55rem;
+    transition: transform 0.15s var(--ease);
+  }
+  .rt-subchev.open {
+    transform: rotate(90deg);
+  }
+  .rt-substep {
+    color: var(--dim);
+  }
+  .rt-substep .rt-name {
+    padding-left: 0.9rem; /* indent the metrics under the feature-vector row */
   }
   /* Indeterminate bar for the running step. Animates `transform` (GPU-composited), so it keeps
      sliding on the compositor thread even while that step's synchronous compute blocks the main

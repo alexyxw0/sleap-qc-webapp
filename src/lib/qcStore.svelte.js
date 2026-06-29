@@ -192,7 +192,7 @@ class QCStore {
     // {@const totalMs = …reduce} (and the per-step {s.ms}) would freeze at the initial all-0 state —
     // showing "0 ms" forever. A new object/array each rev makes the derived + each re-evaluate.
     const p = this.#progress;
-    return p ? { done: p.done, total: p.total, steps: p.steps.map((s) => ({ ...s })) } : null;
+    return p ? { done: p.done, total: p.total, steps: p.steps.map((s) => ({ ...s, sub: s.sub ? s.sub.map((x) => ({ ...x })) : undefined })) } : null;
   }
   toggleCheck(name) {
     if (name in this.checks) {
@@ -1004,7 +1004,15 @@ class QCStore {
         this.#ctxBaselineSource = this.baselineSource;
         this.#computed = {};
       });
-      if (usesFeatures) await runStep("features", () => ensureFeatures(this.#ctx)); // pre-build once → clean anomaly/gmm timings
+      if (usesFeatures) {
+        const fresh = !this.#ctx._fx; // attach the per-metric breakdown only when features are (re)built
+        await runStep("features", () => ensureFeatures(this.#ctx)); // pre-build once → clean anomaly/gmm timings
+        const fstep = steps.find((s) => s.key === "features");
+        if (fresh && fstep && this.#ctx._fx?._timings) {
+          fstep.sub = Object.entries(this.#ctx._fx._timings).map(([label, ms]) => ({ label, ms }));
+          this.rev++;
+        }
+      }
       for (const unit of units) await runStep(unit, () => { this.#computed[unit] = this.#computeUnit(unit); });
       await runStep("derive", () => this.#derive());
       this.ranAtRev = store.rev;
