@@ -114,6 +114,7 @@
       selNode: selN,
       worstNodes,
       flaggedInstances,
+      overlay: view.showOverlay,
     });
   });
 
@@ -298,6 +299,9 @@
     } else if (e.key === "0") {
       view.reset();
       e.preventDefault();
+    } else if (e.key === "h" || e.key === "H") {
+      view.toggleOverlay();
+      e.preventDefault();
     } else if (e.key === "ArrowRight" || e.key === "d") {
       store.next();
       e.preventDefault();
@@ -360,6 +364,7 @@
         <span class="frac"><b>{pad(store.index + 1)}</b><span class="dim">/{pad(store.frameCount)}</span></span>
         <span class="dim">· {item?.lf?.instances?.length ?? 0} INST</span>
       </span>
+      {#if !view.showOverlay}<span class="chip ovl-off" title="Pose overlay hidden — press H to show">pose hidden · H</span>{/if}
       {#if hud}
         <span class="chip qc" class:flagged={hud.flagged}>
           {#if hud.score != null}<i class="heat" style:background={heatColor(hud.score)}></i>{/if}
@@ -587,5 +592,9 @@
     color: var(--dim);
     font-size: 0.66rem;
     letter-spacing: 0.1em;
+  }
+  .ovl-off {
+    color: var(--accent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
   }
 </style>

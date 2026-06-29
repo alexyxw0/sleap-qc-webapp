@@ -14,6 +14,7 @@ class ViewStore {
   zoom = $state(1);
   panX = $state(0); // screen px
   panY = $state(0);
+  showOverlay = $state(true); // pose overlay (skeleton + nodes + labels) drawn over the frame; toggle with H
 
   // A pending "zoom to this image-space box" request. The Viewer (which knows the viewport +
   // fit scale) consumes it, computes the zoom/pan to frame the box, and clears it.
@@ -56,6 +57,9 @@ class ViewStore {
   }
   zoomBy(factor) {
     this.setZoom(this.zoom * factor);
+  }
+  toggleOverlay() {
+    this.showOverlay = !this.showOverlay;
   }
   reset() {
     this.zoom = MIN;
