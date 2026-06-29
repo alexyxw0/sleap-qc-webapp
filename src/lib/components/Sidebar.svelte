@@ -7,6 +7,7 @@
   import SkeletonEditor from "./SkeletonEditor.svelte";
   import QcChecks from "./QcChecks.svelte";
   import { ui } from "../uiStore.svelte.js";
+  import { untrack } from "svelte";
 
   // Drag-to-tab: each panel carries a grip; dragging it onto the tab strip docks it as a tab.
   const PANEL_TITLE = { checks: "Checks", file: "File" };
@@ -133,18 +134,26 @@
 
   // Minimal by default: the full stats table and per-instance point lists are opt-in.
   let moreStats = $state(false);
-  let expanded = $state(new Set()); // manually expanded instance indices
-  const isOpen = (i) => expanded.has(i) || edit.selInstance === i;
+  let expanded = $state(new Set()); // expanded instance indices — the chevron is the source of truth
+  const isOpen = (i) => expanded.has(i);
   function toggleOpen(i) {
     const s = new Set(expanded);
     if (s.has(i)) s.delete(i);
     else s.add(i);
     expanded = s;
   }
-  // Collapse manual expansions when navigating to another frame.
+  // Collapse expansions when navigating to another frame.
   $effect(() => {
     void store.index;
     expanded = new Set();
+  });
+  // Auto-expand the selected instance so its points show on select — but re-seed ONLY when the
+  // selection changes (untracked read of `expanded`), so the chevron can still collapse it after.
+  $effect(() => {
+    const sel = edit.selInstance;
+    untrack(() => {
+      if (sel >= 0 && !expanded.has(sel)) expanded = new Set(expanded).add(sel);
+    });
   });
 
   // Reactive snapshot of the current frame's instances/points — recomputes on every
