@@ -307,19 +307,20 @@
             </div>
           {/if}
           {#if c.key === "sparse" && qc.checks.sparse}
-            <!-- Min visible nodes: flag instances localized by fewer than this many nodes. -->
-            <div class="thresh" title="Flag an instance localized by fewer than this many visible nodes">
+            <!-- Sparse cutoff auto-adapts: a fraction of the dataset's average visible-node count. -->
+            <div class="thresh" title="Flag an instance with fewer visible nodes than (this fraction × the dataset's average visible-node count)">
               <span class="tlbl">min&nbsp;nodes</span>
               <input
                 type="range"
-                min="1"
-                max="8"
-                step="1"
-                value={qc.sparseThreshold}
-                oninput={(e) => (qc.sparseThreshold = +e.currentTarget.value)}
+                min="0.1"
+                max="1"
+                step="0.05"
+                value={qc.sparseFraction}
+                oninput={(e) => (qc.sparseFraction = +e.currentTarget.value)}
               />
               <span class="tval">&lt;&thinsp;{qc.sparseThreshold}</span>
             </div>
+            <p class="thresh-note">{Math.round(qc.sparseFraction * 100)}% of the {qc.avgVisibleNodes ? `${qc.avgVisibleNodes.toFixed(1)}-node average` : "average — run QC"}</p>
           {/if}
           {#if c.key === "confidence" && qc.checks.confidence}
             <!-- Keypoint-confidence mode: the single weakest visible keypoint, or the instance mean. -->
@@ -868,6 +869,11 @@
     font-size: 0.72rem;
     min-width: 2.1ch;
     text-align: right;
+  }
+  .thresh-note {
+    margin: 0.15rem 0 0;
+    font-size: 0.64rem;
+    color: var(--dim);
   }
   li.off .thresh {
     opacity: 0.5;

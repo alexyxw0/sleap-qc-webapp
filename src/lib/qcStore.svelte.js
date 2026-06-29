@@ -86,7 +86,7 @@ class QCStore {
   chiralityThreshold = $state(0.5); // L/R-flip flag ([0,1] wrong-side fraction; hard rule forces >=0.9)
   orderingThreshold = $state(0.3); // chain-ordering flag (combined: a crossing -> 1.0, else order_inversion_rate)
   poseSplitThreshold = $state(0.5); // chimera flag: saturating split score (raw split 1.0 -> 0.5)
-  sparseThreshold = $state(2); // flag an instance localized by fewer than this many visible nodes
+  sparseFraction = $state(0.5); // "sparse instance" cutoff as a fraction of the dataset's average visible-node count
   confidenceThreshold = $state(0.3); // flag a predicted instance whose keypoint confidence scores below this
   confidenceMode = $state("avg"); // keypoint-confidence mode: "avg" (mean over visible keypoints, default) or "min" (weakest visible keypoint)
   instConfidenceThreshold = $state(0.3); // flag a predicted instance whose instance-level score is below this
@@ -109,6 +109,8 @@ class QCStore {
   #ctxLabels = null; // identity of the labels #ctx was built for
   #ctxRev = -1; // store.rev the #ctx was built at — bumps when instances are edited in place
   #ctxBaselineSource = "all"; // baselineSource the #ctx was fit with (rebuild on change)
+  #avgVisKey = null; // #ctx the cached average visible-node count was computed for
+  #avgVisCache = 0; // memoized mean per-instance visible-node count
   #computed = {}; // unit -> result maps (the memoization cache)
   #featureSeq = 0; // id counter for user feature-checks
   #progress = null; // { steps: [{ key, label, status, ms }], done, total } — live during run, kept after
@@ -145,6 +147,24 @@ class QCStore {
   get hasPredictions() {
     this.rev;
     return this.#ctx?.hasPredictions ?? false;
+  }
+  /** Mean per-instance visible-node count (non-NaN coords) across the dataset, memoized on the ctx. */
+  get avgVisibleNodes() {
+    this.rev;
+    const poses = this.#ctx?.allPoses;
+    if (!poses?.length) return 0;
+    if (this.#avgVisKey === this.#ctx) return this.#avgVisCache;
+    let sum = 0;
+    for (const pose of poses) for (const xy of pose) if (!Number.isNaN(xy?.[0])) sum++;
+    this.#avgVisKey = this.#ctx;
+    this.#avgVisCache = sum / poses.length;
+    return this.#avgVisCache;
+  }
+  /** "Sparse instance" cutoff, derived from the data: `sparseFraction` × the average visible-node count
+   *  (min 1). Falls back to 2 before a context exists. Read live by every sparse check + the slider. */
+  get sparseThreshold() {
+    const avg = this.avgVisibleNodes;
+    return avg > 0 ? Math.max(1, Math.round(avg * this.sparseFraction)) : 2;
   }
   /** The frame's keypoint-confidence value for the active mode: weakest ("min") or mean ("avg"). */
   #kpConf(fq) {
