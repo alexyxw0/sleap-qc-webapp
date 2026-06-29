@@ -97,8 +97,8 @@ class QCStore {
 
   // Which detection techniques to run / include. The flagged frames are the UNION of the
   // enabled-and-computed checks. Defaults ON: anomaly, chirality, gmm, duplicates. The frame /
-  // structural checks (count, sparse, confidence, negative) default OFF — enable them as needed.
-  checks = $state({ anomaly: true, gmm: true, chirality: true, ordering: false, poseSplit: true, count: false, sparse: false, confidence: false, instConfidence: false, negative: false, duplicates: true });
+  // structural checks (sparse, confidence, negative) default OFF — enable them as needed. count is on.
+  checks = $state({ anomaly: true, gmm: true, chirality: true, ordering: false, poseSplit: true, count: true, sparse: false, confidence: false, instConfidence: false, negative: false, duplicates: true });
 
   // User-built per-feature checks: drag a feature out of the GMM/anomaly vector to flag instances
   // where THAT single feature is an outlier (|z| >= its threshold). Each: { id, feature, threshold, on }.
