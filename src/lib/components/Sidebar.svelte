@@ -542,8 +542,13 @@
   .fhead .side-h {
     margin: 0;
     flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .more {
+    flex: none;
     background: none;
     border: none;
     padding: 0;
@@ -666,6 +671,10 @@
   .ihead .side-h {
     margin: 0;
     flex: 1;
+    min-width: 0; /* shrink + ellipsize instead of shoving the +Instance button off-edge */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .addbtn {
     background: none;
@@ -676,6 +685,7 @@
     font-size: 0.7rem;
     cursor: pointer;
     white-space: nowrap;
+    flex: none; /* never shrink the button */
     transition: background 0.12s, border-color 0.12s;
   }
   .addbtn:hover {
