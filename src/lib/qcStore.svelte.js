@@ -1116,6 +1116,23 @@ class QCStore {
     if (!item || instIdx < 0) return null;
     return this.#contributions.get(`${this.#fkey(item)}:${instIdx}`) ?? null;
   }
+  /** Top features driving the Anomaly/GMM flag on a frame (its worst instance), by signed z vs the
+   *  fitted distribution. Each `{ feature, z }` — z>0 = above the norm, z<0 = below. [] if no anomaly fit. */
+  frameTopFeatures(item, n = 5) {
+    this.rev;
+    const a = this.#computed.anomaly;
+    if (!a?.det?.means || !a.featureNames) return [];
+    const c = this.contributionsFor(item, this.frameWorstInstance(item));
+    if (!c) return [];
+    const rows = [];
+    a.featureNames.forEach((name, j) => {
+      const raw = c[name];
+      if (raw == null || !Number.isFinite(raw)) return;
+      const z = (raw - a.det.means[j]) / (a.det.stds[j] || 1e-6);
+      if (Number.isFinite(z)) rows.push({ feature: name, z });
+    });
+    return rows.sort((p, q) => Math.abs(q.z) - Math.abs(p.z)).slice(0, n);
+  }
 
   reset() {
     this.status = "idle";

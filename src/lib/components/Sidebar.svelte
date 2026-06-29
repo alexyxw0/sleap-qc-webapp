@@ -134,6 +134,7 @@
 
   // Minimal by default: the full stats table and per-instance point lists are opt-in.
   let moreStats = $state(false);
+  let featDetailOpen = $state(false); // expand the statistical flag chips → top driving features
   let expanded = $state(new Set()); // expanded instance indices — the chevron is the source of truth
   const isOpen = (i) => expanded.has(i);
   function toggleOpen(i) {
@@ -291,11 +292,32 @@
         {#if flaggers.length}
           <div class="flaggers">
             {#each flaggers as f (f.key)}
-              <span class="ftag" class:structural={f.score == null} title="Flagged by {f.label}{f.score != null ? ` · ${f.score.toFixed(2)}` : ' · structural (no threshold)'}">
-                {f.label}{#if f.score != null}<i class="fscore">{f.score.toFixed(2)}</i>{/if}
-              </span>
+              {#if f.key === "anomaly" || f.key === "gmm"}
+                <button type="button" class="ftag stat" class:open={featDetailOpen} onclick={() => (featDetailOpen = !featDetailOpen)} title="Show the features driving this flag">
+                  {f.label}{#if f.score != null}<i class="fscore">{f.score.toFixed(2)}</i>{/if}<span class="fchev" class:open={featDetailOpen}>▸</span>
+                </button>
+              {:else}
+                <span class="ftag" class:structural={f.score == null} title="Flagged by {f.label}{f.score != null ? ` · ${f.score.toFixed(2)}` : ' · structural (no threshold)'}">
+                  {f.label}{#if f.score != null}<i class="fscore">{f.score.toFixed(2)}</i>{/if}
+                </span>
+              {/if}
             {/each}
           </div>
+          {#if featDetailOpen}
+            {@const top = qc.frameTopFeatures(item, 5)}
+            {#if top.length}
+              <ul class="fdrivers">
+                {#each top as t (t.feature)}
+                  <li>
+                    <span class="fdname" title={t.feature}>{t.feature.replace(/_zscore$/, "").replace(/_/g, " ")}</span>
+                    <span class="fdz" class:hi={t.z > 0} title="{t.z.toFixed(2)} std deviations {t.z > 0 ? 'above' : 'below'} the norm">{t.z > 0 ? "↑" : "↓"} {Math.abs(t.z).toFixed(1)}σ</span>
+                  </li>
+                {/each}
+              </ul>
+            {:else}
+              <p class="fdnote">Feature breakdown needs the Anomaly check on.</p>
+            {/if}
+          {/if}
         {/if}
       {/if}
       {#if hasFrameIssue(fq)}
@@ -662,6 +684,55 @@
     color: var(--dim);
     font-style: normal;
     font-variant-numeric: tabular-nums;
+  }
+  button.ftag {
+    background: none;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  button.ftag:hover {
+    border-color: var(--accent);
+  }
+  .fchev {
+    font-size: 0.5rem;
+    color: var(--dim);
+    transition: transform 0.15s var(--ease);
+  }
+  .fchev.open {
+    transform: rotate(90deg);
+  }
+  .fdrivers {
+    list-style: none;
+    margin: 0.4rem 0 0;
+    padding: 0;
+    display: grid;
+    gap: 0.14rem;
+  }
+  .fdrivers li {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    font-size: 0.7rem;
+  }
+  .fdname {
+    color: var(--muted);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .fdz {
+    color: #93c5fd; /* below the fitted norm */
+    font-variant-numeric: tabular-nums;
+    flex: none;
+  }
+  .fdz.hi {
+    color: #fca5a5; /* above the fitted norm */
+  }
+  .fdnote {
+    margin: 0.35rem 0 0;
+    font-size: 0.68rem;
+    color: var(--dim);
   }
   .ihead {
     display: flex;
