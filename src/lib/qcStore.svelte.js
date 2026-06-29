@@ -355,13 +355,16 @@ class QCStore {
     if (!item) return null;
     const fk = this.#fkey(item);
     let s = null;
+    // Threshold-aware: only a score that actually CLEARS its check's threshold contributes, so the
+    // heat chip / grid / timeline never read "high" on a frame the verdict calls "looks ok"
+    // (e.g. a GMM score of 0.94 sitting just under the 0.95 GMM threshold).
     if (this.checks.anomaly) {
       const a = this.#frameAnom.get(fk);
-      if (a != null) s = s == null ? a : Math.max(s, a);
+      if (a != null && a >= this.threshold) s = s == null ? a : Math.max(s, a);
     }
     if (this.checks.gmm) {
       const g = this.#frameGmm.get(fk);
-      if (g != null) s = s == null ? g : Math.max(s, g);
+      if (g != null && g >= this.gmmThreshold) s = s == null ? g : Math.max(s, g);
     }
     return s;
   }
