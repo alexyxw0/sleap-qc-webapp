@@ -88,7 +88,7 @@ class QCStore {
   poseSplitThreshold = $state(0.5); // chimera flag: saturating split score (raw split 1.0 -> 0.5)
   sparseThreshold = $state(2); // flag an instance localized by fewer than this many visible nodes
   confidenceThreshold = $state(0.3); // flag a predicted instance whose keypoint confidence scores below this
-  confidenceMode = $state("min"); // keypoint-confidence mode: "min" (weakest visible keypoint) or "avg" (mean)
+  confidenceMode = $state("avg"); // keypoint-confidence mode: "avg" (mean over visible keypoints, default) or "min" (weakest visible keypoint)
   instConfidenceThreshold = $state(0.3); // flag a predicted instance whose instance-level score is below this
   baselineSource = $state("all"); // outlier reference: "all" labeled instances, or "user"-annotated only
   rev = $state(0); // bump when results / selection change
