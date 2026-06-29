@@ -227,6 +227,22 @@ class QCStore {
     const f = this.featureChecks.find((x) => x.id === id);
     if (f) { f.on = !f.on; this.#refreshFeatureChecks(); }
   }
+  /** Right-click "solo": enable ONLY these built-in checks; disable every other check + feature check. */
+  soloChecks(names) {
+    const keep = new Set(names);
+    for (const k of Object.keys(this.checks)) this.checks[k] = keep.has(k);
+    let featOff = false;
+    for (const f of this.featureChecks) if (f.on) { f.on = false; featOff = true; }
+    this.rev++;
+    if (featOff) this.#refreshFeatureChecks();
+  }
+  /** Right-click "solo" a custom feature check: enable ONLY it; disable every built-in + other feature check. */
+  soloFeatureCheck(id) {
+    for (const k of Object.keys(this.checks)) this.checks[k] = false;
+    for (const f of this.featureChecks) f.on = f.id === id;
+    this.rev++;
+    this.#refreshFeatureChecks();
+  }
   setFeatureThreshold(id, v) {
     const f = this.featureChecks.find((x) => x.id === id);
     if (f) { f.threshold = v; this.rev++; } // a threshold change doesn't move |z| -> no re-derive

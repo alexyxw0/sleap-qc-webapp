@@ -191,6 +191,8 @@
                 type="checkbox"
                 checked={qc.checks[c.key]}
                 onchange={() => qc.toggleCheck(c.key)}
+                oncontextmenu={(e) => { e.preventDefault(); qc.soloChecks([c.key]); }}
+                title="Right-click: solo (run only this check)"
               />
             </label>
           </div>
@@ -375,7 +377,8 @@
               checked={allOn}
               indeterminate={onCount > 0 && !allOn}
               onchange={() => qc.setChecks(visKeys, !allOn)}
-              title="{allOn ? 'Disable' : 'Enable'} all {g.label.toLowerCase()} checks"
+              oncontextmenu={(e) => { e.preventDefault(); qc.soloChecks(visKeys); }}
+              title="{allOn ? 'Disable' : 'Enable'} all {g.label.toLowerCase()} checks · right-click: solo this group"
               aria-label="Toggle all {g.label} checks"
             />
           </div>
@@ -435,7 +438,7 @@
                     {@const ready = qc.checkReady("anomaly")}
                     <div class="fcheck" class:off={!f.on}>
                       <div class="fc-head">
-                        <input type="checkbox" class="grp-check" checked={f.on} onchange={() => qc.toggleFeatureCheck(f.id)} title="Enable / disable" />
+                        <input type="checkbox" class="grp-check" checked={f.on} onchange={() => qc.toggleFeatureCheck(f.id)} oncontextmenu={(e) => { e.preventDefault(); qc.soloFeatureCheck(f.id); }} title="Enable / disable · right-click: solo" />
                         <span class="fc-name" title={f.feature}>{f.feature.replace(/_zscore$/, "")}</span>
                         {#if ready}<span class="cnt">{qc.featureCheckCount(f.id)}</span>{/if}
                         <button type="button" class="fc-del" onclick={() => qc.removeFeatureCheck(f.id)} title="Remove this check" aria-label="Remove {f.feature}">×</button>
