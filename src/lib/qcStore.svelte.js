@@ -91,6 +91,7 @@ class QCStore {
   confidenceMode = $state("avg"); // keypoint-confidence mode: "avg" (mean over visible keypoints, default) or "min" (weakest visible keypoint)
   instConfidenceThreshold = $state(0.3); // flag a predicted instance whose instance-level score is below this
   baselineSource = $state("all"); // outlier reference: "all" labeled instances, or "user"-annotated only
+  reviewOrder = $state("severity"); // review-mode frame order: "severity" | "detectors" | "frame"
   rev = $state(0); // bump when results / selection change
   ranAtRev = -1; // store.rev at the time QC last ran (for staleness)
 
@@ -741,16 +742,23 @@ class QCStore {
     return best;
   }
 
-  /** Flagged frames as store-frame indices, **worst-first** by `flagConfidence` (ties → frame order). */
+  /** Flagged frames as store-frame indices, ordered per `reviewOrder`:
+   *  "severity" → worst single flag first (flagConfidence desc); "detectors" → most detectors
+   *  agreeing first (intersection count desc, then severity); "frame" → chronological. */
   get flaggedRanked() {
     this.rev;
     const frames = store.frames ?? [];
+    const order = this.reviewOrder;
     const ranked = [];
     for (let i = 0; i < frames.length; i++) {
       const conf = this.flagConfidence(frames[i]);
-      if (conf != null) ranked.push({ i, conf });
+      if (conf == null) continue;
+      const n = order === "detectors" ? this.frameFlaggingChecks(frames[i]).length : 0;
+      ranked.push({ i, conf, n });
     }
-    ranked.sort((a, b) => b.conf - a.conf || a.i - b.i);
+    if (order === "frame") ranked.sort((a, b) => a.i - b.i);
+    else if (order === "detectors") ranked.sort((a, b) => b.n - a.n || b.conf - a.conf || a.i - b.i);
+    else ranked.sort((a, b) => b.conf - a.conf || a.i - b.i);
     return ranked.map((r) => r.i);
   }
 
