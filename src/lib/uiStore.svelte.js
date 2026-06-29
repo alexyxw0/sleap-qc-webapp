@@ -43,6 +43,11 @@ class UIStore {
     this.sidebarDocked = this.sidebarDocked.filter((x) => x !== id);
     if (this.sidebarActiveTab === id) this.sidebarActiveTab = UIStore.MAIN; // its content returns to Main
   }
+  // Merge every docked tab back into Main (one action instead of closing tabs one ×-at-a-time).
+  undockAll() {
+    this.sidebarDocked = [];
+    this.sidebarActiveTab = UIStore.MAIN;
+  }
   activateSidebarTab(id) {
     this.sidebarActiveTab = id;
   }

@@ -178,6 +178,9 @@
           <button class="stab-x" onclick={() => ui.undockPanel(id)} title="Restore inline">×</button>
         </span>
       {/each}
+      {#if ui.sidebarDocked.length}
+        <button class="merge-tabs" onclick={() => ui.undockAll()} title="Merge all tabs back into Main">↩ merge all</button>
+      {/if}
       {#if draggingPanel && !ui.isDocked(draggingPanel)}<span class="th">＋ drop to tab</span>{/if}
     </div>
   {/if}
@@ -846,6 +849,24 @@
     font-size: 0.66rem;
     color: var(--accent);
     letter-spacing: 0.02em;
+  }
+  .merge-tabs {
+    margin-left: auto; /* sit at the far-right end of the strip */
+    align-self: center;
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: var(--r-xs);
+    color: var(--muted);
+    font-size: 0.68rem;
+    padding: 0.22rem 0.5rem;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: color 0.12s, border-color 0.12s, background 0.12s;
+  }
+  .merge-tabs:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: rgba(95, 217, 242, 0.08);
   }
   .panel {
     position: relative;
