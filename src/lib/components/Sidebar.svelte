@@ -621,6 +621,7 @@
     border-radius: var(--r-xs);
     padding: 0.06rem 0.4rem;
     font-size: 0.72rem;
+    flex: none; /* score badges keep their size; never shrink/clip the number */
   }
   .qchip.sm {
     font-size: 0.66rem;
@@ -807,12 +808,17 @@
   }
   .pname {
     color: var(--muted);
+    min-width: 0; /* a long node name ellipsizes instead of pushing the score off-row */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .pxy {
     color: #d7dee8;
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
+    flex: none;
   }
   .vis {
     width: 7px;
