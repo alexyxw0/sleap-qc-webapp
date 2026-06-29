@@ -1,6 +1,7 @@
 <script>
   import { qc } from "../qcStore.svelte.js";
   import { store } from "../labelsStore.svelte.js";
+  import DetectorOverlap from "./DetectorOverlap.svelte";
 
   // Each detection technique the user can include in the flagged set. Pick the ones you want
   // BEFORE running QC — only selected techniques are computed, and each result is memoized so
@@ -96,6 +97,7 @@
   let dragFeature = $state(null); // feature name currently being dragged out to the custom drop zone
   let dropHot = $state(false); // the custom drop zone is hovered during a drag
   let timingOpen = $state(false); // expand the per-step run-timing breakdown (auto-open while running)
+  let overlapOpen = $state(false); // the detector-overlap viz overlay (chord / upset / euler prototypes)
   let featTimeOpen = $state(false); // expand the feature-vector step into its per-metric breakdown
 
   // a check is hidden when it can't apply (confidence needs predicted instances)
@@ -459,6 +461,9 @@
       <p class="union">
         <span>flagged · union</span><b>{qc.flaggedFrameCount}</b>
       </p>
+      <button class="export" onclick={() => (overlapOpen = true)} title="See what % each detector flags + where they overlap">
+        ⊞ Detector overlap
+      </button>
     {/if}
     {#if qc.canExportCsv}
       <button class="export" onclick={() => qc.downloadCsv()} title="Download per-instance QC scores + features as a CSV">
@@ -471,6 +476,17 @@
       </p>
     {/if}
   </section>
+{/if}
+
+{#if overlapOpen}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <div class="ovl-backdrop" onclick={(e) => { if (e.target === e.currentTarget) overlapOpen = false; }}>
+    <div class="ovl-modal">
+      <button class="ovl-close" onclick={() => (overlapOpen = false)} title="Close">✕</button>
+      <DetectorOverlap />
+    </div>
+  </div>
 {/if}
 
 <style>
@@ -1093,5 +1109,36 @@
   }
   .fc-del:hover {
     color: #fb7185;
+  }
+  .ovl-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .ovl-modal {
+    position: relative;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem 1.1rem;
+    box-shadow: 0 14px 44px rgba(0, 0, 0, 0.5);
+  }
+  .ovl-close {
+    position: absolute;
+    top: 0.4rem;
+    right: 0.5rem;
+    background: none;
+    border: none;
+    color: var(--dim);
+    font-size: 0.85rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .ovl-close:hover {
+    color: var(--text);
   }
 </style>
