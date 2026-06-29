@@ -37,7 +37,7 @@ class UIStore {
   }
   dockPanel(id) {
     if (!this.sidebarDocked.includes(id)) this.sidebarDocked = [...this.sidebarDocked, id];
-    this.sidebarActiveTab = UIStore.MAIN; // dragging a panel out leaves you on the Main tab (the rest)
+    this.sidebarActiveTab = id; // dragging a panel out opens its freshly-created tab
   }
   undockPanel(id) {
     this.sidebarDocked = this.sidebarDocked.filter((x) => x !== id);

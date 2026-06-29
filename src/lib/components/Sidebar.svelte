@@ -176,9 +176,9 @@
     <p class="err side-section">{store.error}</p>
   {/if}
 
-  <!-- Discrete frame selector — a permanent navigator: not draggable, and always on screen
-       (above the tab content) so you can change frames from any tab. -->
-  <div class="panel frames-fixed">
+  <!-- Discrete frame selector — part of the Main view: not draggable, never its own tab,
+       and only shown on Main (not stacked on top of every docked tab). -->
+  <div class="panel" class:hidden={!ui.mainActive}>
     <FrameGrid />
   </div>
 
@@ -845,13 +845,6 @@
   }
   .panel-grow {
     flex: 1; /* the File panel fills leftover rail space */
-  }
-  .frames-fixed {
-    order: -1; /* always sit just under the tab strip, above the active tab's content */
-    flex: none;
-    border-bottom: 1px solid var(--border);
-    padding-bottom: 0.3rem;
-    margin-bottom: 0.1rem;
   }
   .panel-grip {
     display: flex;
