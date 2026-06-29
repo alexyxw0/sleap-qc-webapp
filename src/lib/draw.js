@@ -254,7 +254,7 @@ export function hitTestNode(lf, radius) {
 // Main entry: clear, apply the view transform (zoom/pan baked into the canvas so the
 // overlay re-rasterizes crisply), draw the frame image, then the pose overlay.
 export function drawScene(ctx, image, item, skeleton, opts = {}) {
-  const { transform, dims, scale = 1 } = opts;
+  const { transform, dims, scale = 1, overlay = true } = opts;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
   if (transform) {
@@ -266,6 +266,6 @@ export function drawScene(ctx, image, item, skeleton, opts = {}) {
   } else {
     drawPlaceholder(ctx, item, dims, scale);
   }
-  drawSkeleton(ctx, item?.lf, skeleton, opts);
+  if (overlay) drawSkeleton(ctx, item?.lf, skeleton, opts);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 }

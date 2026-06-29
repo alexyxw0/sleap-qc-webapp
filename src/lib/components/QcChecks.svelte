@@ -1,6 +1,7 @@
 <script>
   import { qc } from "../qcStore.svelte.js";
   import { store } from "../labelsStore.svelte.js";
+  import DetectorOverlap from "./DetectorOverlap.svelte";
 
   // Each detection technique the user can include in the flagged set. Pick the ones you want
   // BEFORE running QC — only selected techniques are computed, and each result is memoized so
@@ -96,6 +97,8 @@
   let dragFeature = $state(null); // feature name currently being dragged out to the custom drop zone
   let dropHot = $state(false); // the custom drop zone is hovered during a drag
   let timingOpen = $state(false); // expand the per-step run-timing breakdown (auto-open while running)
+  let overlapOpen = $state(false); // the detector-overlap viz overlay (chord / upset / euler prototypes)
+  let featTimeOpen = $state(false); // expand the feature-vector step into its per-metric breakdown
 
   // a check is hidden when it can't apply (confidence needs predicted instances)
   const visibleInGroup = (g) =>
@@ -134,13 +137,30 @@
         {#if timingOpen || running}
           <ul class="rt-steps">
             {#each p.steps as s (s.key)}
+              {@const hasSub = s.key === "features" && s.sub?.length}
               <li class="rt-step" class:on={s.status === "running"} class:done={s.status === "done"}>
-                <span class="rt-name">{s.label}</span>
+                {#if hasSub}
+                  <button type="button" class="rt-name rt-expand" onclick={() => (featTimeOpen = !featTimeOpen)} aria-expanded={featTimeOpen} title="Per-metric breakdown of the feature-vector build">
+                    <span class="rt-subchev" class:open={featTimeOpen}>▸</span>{s.label}
+                  </button>
+                {:else}
+                  <span class="rt-name">{s.label}</span>
+                {/if}
                 <span class="rt-track">
                   {#if s.status === "running"}<span class="rt-indet"></span>{:else if s.status === "done"}<span class="rt-meter" style:width="{Math.round((s.ms / maxMs) * 100)}%"></span>{/if}
                 </span>
                 <span class="rt-val">{s.status === "done" ? `${s.ms.toFixed(0)} ms` : s.status === "running" ? "…" : "·"}</span>
               </li>
+              {#if hasSub && featTimeOpen}
+                {@const subMax = Math.max(1, ...s.sub.map((x) => x.ms))}
+                {#each s.sub as sm (sm.label)}
+                  <li class="rt-step rt-substep done">
+                    <span class="rt-name" title={sm.label}>{sm.label}</span>
+                    <span class="rt-track"><span class="rt-meter sub" style:width="{Math.round((sm.ms / subMax) * 100)}%"></span></span>
+                    <span class="rt-val">{sm.ms.toFixed(0)} ms</span>
+                  </li>
+                {/each}
+              {/if}
             {/each}
           </ul>
         {/if}
@@ -171,6 +191,8 @@
                 type="checkbox"
                 checked={qc.checks[c.key]}
                 onchange={() => qc.toggleCheck(c.key)}
+                oncontextmenu={(e) => { e.preventDefault(); qc.soloChecks([c.key]); }}
+                title="Right-click: solo (run only this check)"
               />
             </label>
           </div>
@@ -355,7 +377,8 @@
               checked={allOn}
               indeterminate={onCount > 0 && !allOn}
               onchange={() => qc.setChecks(visKeys, !allOn)}
-              title="{allOn ? 'Disable' : 'Enable'} all {g.label.toLowerCase()} checks"
+              oncontextmenu={(e) => { e.preventDefault(); qc.soloChecks(visKeys); }}
+              title="{allOn ? 'Disable' : 'Enable'} all {g.label.toLowerCase()} checks · right-click: solo this group"
               aria-label="Toggle all {g.label} checks"
             />
           </div>
@@ -415,7 +438,7 @@
                     {@const ready = qc.checkReady("anomaly")}
                     <div class="fcheck" class:off={!f.on}>
                       <div class="fc-head">
-                        <input type="checkbox" class="grp-check" checked={f.on} onchange={() => qc.toggleFeatureCheck(f.id)} title="Enable / disable" />
+                        <input type="checkbox" class="grp-check" checked={f.on} onchange={() => qc.toggleFeatureCheck(f.id)} oncontextmenu={(e) => { e.preventDefault(); qc.soloFeatureCheck(f.id); }} title="Enable / disable · right-click: solo" />
                         <span class="fc-name" title={f.feature}>{f.feature.replace(/_zscore$/, "")}</span>
                         {#if ready}<span class="cnt">{qc.featureCheckCount(f.id)}</span>{/if}
                         <button type="button" class="fc-del" onclick={() => qc.removeFeatureCheck(f.id)} title="Remove this check" aria-label="Remove {f.feature}">×</button>
@@ -441,6 +464,12 @@
       <p class="union">
         <span>flagged · union</span><b>{qc.flaggedFrameCount}</b>
       </p>
+      <button class="export" onclick={() => (overlapOpen = !overlapOpen)} title="See what % each detector flags + where they overlap">
+        ⊞ Detector overlap {overlapOpen ? "▴" : "▾"}
+      </button>
+      {#if overlapOpen}
+        <div class="ovl-inline"><DetectorOverlap /></div>
+      {/if}
     {/if}
     {#if qc.canExportCsv}
       <button class="export" onclick={() => qc.downloadCsv()} title="Download per-instance QC scores + features as a CSV">
@@ -681,10 +710,10 @@
   }
   .rt-step {
     display: grid;
-    grid-template-columns: 1fr 3.4rem 2.9rem;
+    grid-template-columns: 1fr 3rem 3.5rem;
     align-items: center;
     gap: 0.45rem;
-    padding: 0.1rem 0;
+    padding: 0.12rem 0;
     color: var(--muted);
   }
   .rt-step.on {
@@ -711,6 +740,42 @@
     border-radius: 2px;
     transition: width 0.2s var(--ease);
   }
+  .rt-meter.sub {
+    background: color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  /* The feature-vector row expands into a per-metric breakdown. */
+  .rt-expand {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    min-width: 0;
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rt-expand:hover {
+    color: var(--accent);
+  }
+  .rt-subchev {
+    flex: none;
+    font-size: 0.55rem;
+    transition: transform 0.15s var(--ease);
+  }
+  .rt-subchev.open {
+    transform: rotate(90deg);
+  }
+  .rt-substep {
+    color: var(--dim);
+  }
+  .rt-substep .rt-name {
+    padding-left: 0.9rem; /* indent the metrics under the feature-vector row */
+  }
   /* Indeterminate bar for the running step. Animates `transform` (GPU-composited), so it keeps
      sliding on the compositor thread even while that step's synchronous compute blocks the main
      thread — a live "working" cue when there's no real intra-step progress to report. */
@@ -729,6 +794,7 @@
   }
   .rt-val {
     text-align: right;
+    white-space: nowrap;
     color: var(--dim);
   }
   .rt-step.done .rt-val {
@@ -1038,5 +1104,12 @@
   }
   .fc-del:hover {
     color: #fb7185;
+  }
+  .ovl-inline {
+    margin-top: 0.5rem;
+    padding: 0.6rem 0.5rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: var(--r-xs);
+    background: rgba(255, 255, 255, 0.015);
   }
 </style>

@@ -114,6 +114,7 @@
       selNode: selN,
       worstNodes,
       flaggedInstances,
+      overlay: view.showOverlay,
     });
   });
 
@@ -248,7 +249,30 @@
 
   function onWheel(e) {
     e.preventDefault();
-    e.deltaY < 0 ? view.zoomIn() : view.zoomOut();
+    let dy = e.deltaY;
+    if (e.deltaMode === 1) dy *= 16; // lines → ~px
+    else if (e.deltaMode === 2) dy *= 400; // pages → ~px
+    dy = Math.max(-100, Math.min(100, dy)); // clamp so one fast event can't jump far
+    zoomAtCursor(e, Math.exp(-dy * 0.0022)); // proportional (trackpad-safe) + a touch more responsive
+  }
+
+  // Zoom by `factor` keeping the image point under the cursor fixed (mirrors the draw transform).
+  function zoomAtCursor(e, factor) {
+    const rect = wrap.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const dpr = window.devicePixelRatio || 1;
+    const cw = Math.round(rect.width * dpr), ch = Math.round(rect.height * dpr);
+    const dims = frameDims(store.current, store.frameImage);
+    const fitCss = Math.min(rect.width / dims.w, rect.height / dims.h);
+    const z0 = view.zoom, z1 = view.clampZoom(z0 * factor);
+    if (z1 === z0) return;
+    const s0 = fitCss * z0 * dpr, s1 = fitCss * z1 * dpr;
+    const curX = (e.clientX - rect.left) * dpr, curY = (e.clientY - rect.top) * dpr;
+    const imgX = (curX - ((cw - dims.w * s0) / 2 + view.panX * dpr)) / s0;
+    const imgY = (curY - ((ch - dims.h * s0) / 2 + view.panY * dpr)) / s0;
+    const panX = (curX - imgX * s1 - (cw - dims.w * s1) / 2) / dpr;
+    const panY = (curY - imgY * s1 - (ch - dims.h * s1) / 2) / dpr;
+    view.applyFocus(z1, panX, panY);
   }
 
   function togglePlay() {
@@ -293,6 +317,9 @@
       e.preventDefault();
     } else if (e.key === "0") {
       view.reset();
+      e.preventDefault();
+    } else if (e.key === "h" || e.key === "H") {
+      view.toggleOverlay();
       e.preventDefault();
     } else if (e.key === "ArrowRight" || e.key === "d") {
       store.next();
@@ -356,6 +383,7 @@
         <span class="frac"><b>{pad(store.index + 1)}</b><span class="dim">/{pad(store.frameCount)}</span></span>
         <span class="dim">· {item?.lf?.instances?.length ?? 0} INST</span>
       </span>
+      {#if !view.showOverlay}<span class="chip ovl-off" title="Pose overlay hidden — press H to show">pose hidden · H</span>{/if}
       {#if hud}
         <span class="chip qc" class:flagged={hud.flagged}>
           {#if hud.score != null}<i class="heat" style:background={heatColor(hud.score)}></i>{/if}
@@ -583,5 +611,9 @@
     color: var(--dim);
     font-size: 0.66rem;
     letter-spacing: 0.1em;
+  }
+  .ovl-off {
+    color: var(--accent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
   }
 </style>

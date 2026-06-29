@@ -88,16 +88,17 @@ class QCStore {
   poseSplitThreshold = $state(0.5); // chimera flag: saturating split score (raw split 1.0 -> 0.5)
   sparseThreshold = $state(2); // flag an instance localized by fewer than this many visible nodes
   confidenceThreshold = $state(0.3); // flag a predicted instance whose keypoint confidence scores below this
-  confidenceMode = $state("min"); // keypoint-confidence mode: "min" (weakest visible keypoint) or "avg" (mean)
+  confidenceMode = $state("avg"); // keypoint-confidence mode: "avg" (mean over visible keypoints, default) or "min" (weakest visible keypoint)
   instConfidenceThreshold = $state(0.3); // flag a predicted instance whose instance-level score is below this
   baselineSource = $state("all"); // outlier reference: "all" labeled instances, or "user"-annotated only
+  reviewOrder = $state("severity"); // review-mode frame order: "severity" | "detectors" | "frame"
   rev = $state(0); // bump when results / selection change
   ranAtRev = -1; // store.rev at the time QC last ran (for staleness)
 
   // Which detection techniques to run / include. The flagged frames are the UNION of the
   // enabled-and-computed checks. Defaults ON: anomaly, chirality, gmm, duplicates. The frame /
-  // structural checks (count, sparse, confidence, negative) default OFF — enable them as needed.
-  checks = $state({ anomaly: true, gmm: true, chirality: true, ordering: false, poseSplit: true, count: false, sparse: false, confidence: false, instConfidence: false, negative: false, duplicates: true });
+  // structural checks (sparse, confidence, negative) default OFF — enable them as needed. count is on.
+  checks = $state({ anomaly: true, gmm: true, chirality: true, ordering: false, poseSplit: true, count: true, sparse: false, confidence: false, instConfidence: false, negative: false, duplicates: true });
 
   // User-built per-feature checks: drag a feature out of the GMM/anomaly vector to flag instances
   // where THAT single feature is an outlier (|z| >= its threshold). Each: { id, feature, threshold, on }.
@@ -192,7 +193,7 @@ class QCStore {
     // {@const totalMs = …reduce} (and the per-step {s.ms}) would freeze at the initial all-0 state —
     // showing "0 ms" forever. A new object/array each rev makes the derived + each re-evaluate.
     const p = this.#progress;
-    return p ? { done: p.done, total: p.total, steps: p.steps.map((s) => ({ ...s })) } : null;
+    return p ? { done: p.done, total: p.total, steps: p.steps.map((s) => ({ ...s, sub: s.sub ? s.sub.map((x) => ({ ...x })) : undefined })) } : null;
   }
   toggleCheck(name) {
     if (name in this.checks) {
@@ -225,6 +226,22 @@ class QCStore {
   toggleFeatureCheck(id) {
     const f = this.featureChecks.find((x) => x.id === id);
     if (f) { f.on = !f.on; this.#refreshFeatureChecks(); }
+  }
+  /** Right-click "solo": enable ONLY these built-in checks; disable every other check + feature check. */
+  soloChecks(names) {
+    const keep = new Set(names);
+    for (const k of Object.keys(this.checks)) this.checks[k] = keep.has(k);
+    let featOff = false;
+    for (const f of this.featureChecks) if (f.on) { f.on = false; featOff = true; }
+    this.rev++;
+    if (featOff) this.#refreshFeatureChecks();
+  }
+  /** Right-click "solo" a custom feature check: enable ONLY it; disable every built-in + other feature check. */
+  soloFeatureCheck(id) {
+    for (const k of Object.keys(this.checks)) this.checks[k] = false;
+    for (const f of this.featureChecks) f.on = f.id === id;
+    this.rev++;
+    this.#refreshFeatureChecks();
   }
   setFeatureThreshold(id, v) {
     const f = this.featureChecks.find((x) => x.id === id);
@@ -354,13 +371,16 @@ class QCStore {
     if (!item) return null;
     const fk = this.#fkey(item);
     let s = null;
+    // Threshold-aware: only a score that actually CLEARS its check's threshold contributes, so the
+    // heat chip / grid / timeline never read "high" on a frame the verdict calls "looks ok"
+    // (e.g. a GMM score of 0.94 sitting just under the 0.95 GMM threshold).
     if (this.checks.anomaly) {
       const a = this.#frameAnom.get(fk);
-      if (a != null) s = s == null ? a : Math.max(s, a);
+      if (a != null && a >= this.threshold) s = s == null ? a : Math.max(s, a);
     }
     if (this.checks.gmm) {
       const g = this.#frameGmm.get(fk);
-      if (g != null) s = s == null ? g : Math.max(s, g);
+      if (g != null && g >= this.gmmThreshold) s = s == null ? g : Math.max(s, g);
     }
     return s;
   }
@@ -493,6 +513,29 @@ class QCStore {
     const zs = this.#instFeatureZ.get(key);
     if (zs) for (const f of this.featureChecks) if (f.on && (zs[f.feature] ?? -1) >= f.threshold) return true;
     return false;
+  }
+
+  /** Per-detector flagged-FRAME sets over EVERY enabled check (instance-level reduced to frames +
+   *  the frame-level checks + custom feature checks) for the overlap viz. Reuses frameFlaggingChecks
+   *  so any newly-enabled check shows up automatically. { total, sets:[{ id, label, set:Set<frame> }] }. */
+  detectorSets() {
+    this.rev;
+    const frames = store.frames ?? [];
+    const LABEL = { anomaly: "Anomaly", gmm: "GMM", chirality: "Chirality", ordering: "Ordering", poseSplit: "Pose split", count: "Count", sparse: "Sparse", confidence: "Confidence", instConfidence: "Inst conf", negative: "Negative", duplicates: "Duplicates" };
+    const ORDER = ["anomaly", "gmm", "chirality", "ordering", "poseSplit", "count", "sparse", "confidence", "instConfidence", "negative", "duplicates"];
+    const byKey = new Map();
+    for (let i = 0; i < frames.length; i++) {
+      for (const f of this.frameFlaggingChecks(frames[i])) {
+        let e = byKey.get(f.key);
+        if (!e) {
+          e = { id: f.key, label: f.key.startsWith("feat:") ? f.label : LABEL[f.key] ?? f.key, set: new Set() };
+          byKey.set(f.key, e);
+        }
+        e.set.add(i);
+      }
+    }
+    const sets = [...byKey.values()].sort((a, b) => (ORDER.indexOf(a.id) + 1 || 99) - (ORDER.indexOf(b.id) + 1 || 99));
+    return { total: frames.length, sets };
   }
 
   /** Per-instance boolean array: is each instance flagged by ANY enabled check (instance- AND the
@@ -718,16 +761,23 @@ class QCStore {
     return best;
   }
 
-  /** Flagged frames as store-frame indices, **worst-first** by `flagConfidence` (ties → frame order). */
+  /** Flagged frames as store-frame indices, ordered per `reviewOrder`:
+   *  "severity" → worst single flag first (flagConfidence desc); "detectors" → most detectors
+   *  agreeing first (intersection count desc, then severity); "frame" → chronological. */
   get flaggedRanked() {
     this.rev;
     const frames = store.frames ?? [];
+    const order = this.reviewOrder;
     const ranked = [];
     for (let i = 0; i < frames.length; i++) {
       const conf = this.flagConfidence(frames[i]);
-      if (conf != null) ranked.push({ i, conf });
+      if (conf == null) continue;
+      const n = order === "detectors" ? this.frameFlaggingChecks(frames[i]).length : 0;
+      ranked.push({ i, conf, n });
     }
-    ranked.sort((a, b) => b.conf - a.conf || a.i - b.i);
+    if (order === "frame") ranked.sort((a, b) => a.i - b.i);
+    else if (order === "detectors") ranked.sort((a, b) => b.n - a.n || b.conf - a.conf || a.i - b.i);
+    else ranked.sort((a, b) => b.conf - a.conf || a.i - b.i);
     return ranked.map((r) => r.i);
   }
 
@@ -1004,7 +1054,15 @@ class QCStore {
         this.#ctxBaselineSource = this.baselineSource;
         this.#computed = {};
       });
-      if (usesFeatures) await runStep("features", () => ensureFeatures(this.#ctx)); // pre-build once → clean anomaly/gmm timings
+      if (usesFeatures) {
+        const fresh = !this.#ctx._fx; // attach the per-metric breakdown only when features are (re)built
+        await runStep("features", () => ensureFeatures(this.#ctx)); // pre-build once → clean anomaly/gmm timings
+        const fstep = steps.find((s) => s.key === "features");
+        if (fresh && fstep && this.#ctx._fx?._timings) {
+          fstep.sub = Object.entries(this.#ctx._fx._timings).map(([label, ms]) => ({ label, ms }));
+          this.rev++;
+        }
+      }
       for (const unit of units) await runStep(unit, () => { this.#computed[unit] = this.#computeUnit(unit); });
       await runStep("derive", () => this.#derive());
       this.ranAtRev = store.rev;
@@ -1076,6 +1134,58 @@ class QCStore {
     this.rev;
     if (!item || instIdx < 0) return null;
     return this.#contributions.get(`${this.#fkey(item)}:${instIdx}`) ?? null;
+  }
+  /** Top features driving the Anomaly/GMM flag on a frame (its worst instance), by signed z vs the
+   *  fitted distribution. Each `{ feature, z }` — z>0 = above the norm, z<0 = below. [] if no anomaly fit. */
+  frameTopFeatures(item, n = 5) {
+    this.rev;
+    const a = this.#computed.anomaly;
+    if (!a?.det?.means || !a.featureNames) return [];
+    const c = this.contributionsFor(item, this.frameWorstInstance(item));
+    if (!c) return [];
+    const rows = [];
+    a.featureNames.forEach((name, j) => {
+      const raw = c[name];
+      if (raw == null || !Number.isFinite(raw)) return;
+      const z = (raw - a.det.means[j]) / (a.det.stds[j] || 1e-6);
+      if (Number.isFinite(z)) rows.push({ feature: name, z });
+    });
+    return rows.sort((p, q) => Math.abs(q.z) - Math.abs(p.z)).slice(0, n);
+  }
+  /** Every ENABLED check's status for a frame, for the opt-in "all checks" detail view. Each:
+   *  { key, label, score, threshold, flagged, lowerIsWorse?, unit?, detail? }. */
+  frameDetectorDetails(item) {
+    this.rev;
+    if (!item) return [];
+    const fk = this.#fkey(item);
+    const c = this.checks;
+    const out = [];
+    const sc = (on, map, thr, key, label) => {
+      if (!on) return;
+      const s = map.get(fk) ?? null;
+      out.push({ key, label, score: s, threshold: thr, flagged: s != null && s >= thr });
+    };
+    sc(c.anomaly, this.#frameAnom, this.threshold, "anomaly", "Anomaly");
+    sc(c.gmm, this.#frameGmm, this.gmmThreshold, "gmm", "GMM");
+    sc(c.chirality, this.#frameChir, this.chiralityThreshold, "chirality", "Chirality");
+    sc(c.ordering, this.#frameOrdering, this.orderingThreshold, "ordering", "Ordering");
+    sc(c.poseSplit, this.#framePoseSplit, this.poseSplitThreshold, "poseSplit", "Pose split");
+    const fm = this.#frameFeatureZ.get(fk);
+    for (const f of this.featureChecks) {
+      if (!f.on) continue;
+      const z = fm?.[f.feature] ?? null;
+      out.push({ key: `feat:${f.id}`, label: f.feature.replace(/_zscore$/, ""), score: z, threshold: f.threshold, flagged: z != null && z >= f.threshold, unit: "σ" });
+    }
+    const fq = this.#frameResults.get(fk);
+    if (fq) {
+      if (c.count) out.push({ key: "count", label: "Instance count", flagged: fq.isWrongCount, detail: fq.isEmpty ? "empty" : `${fq.actualInstanceCount} / ${fq.expectedInstanceCount}` });
+      if (c.sparse) out.push({ key: "sparse", label: "Sparse instance", flagged: fq.minVisibleNodeCount < this.sparseThreshold, detail: `${fq.minVisibleNodeCount} min nodes` });
+      if (c.confidence) { const kp = this.#kpConf(fq); out.push({ key: "confidence", label: "Keypoint conf", score: kp, threshold: this.confidenceThreshold, flagged: kp < this.confidenceThreshold, lowerIsWorse: true }); }
+      if (c.instConfidence) out.push({ key: "instConfidence", label: "Instance conf", score: fq.minInstScore, threshold: this.instConfidenceThreshold, flagged: fq.minInstScore < this.instConfidenceThreshold, lowerIsWorse: true });
+      if (c.negative) out.push({ key: "negative", label: "Negative frame", flagged: fq.isNegativeWithInstances, detail: fq.isNegativeWithInstances ? "has instances" : "—" });
+      if (c.duplicates) out.push({ key: "duplicates", label: "Duplicates", flagged: (fq.duplicatePairs?.length ?? 0) > 0, detail: `${fq.duplicatePairs?.length ?? 0} pair(s)` });
+    }
+    return out;
   }
 
   reset() {

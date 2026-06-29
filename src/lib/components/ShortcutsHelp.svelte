@@ -28,7 +28,8 @@
       keys: [
         ["+ / −", "zoom in / out"],
         ["0", "reset view"],
-        ["scroll", "zoom at cursor"],
+        ["scroll", "zoom"],
+        ["H", "hide / show pose overlay"],
         ["⌘K", "command palette"],
         ["?", "this overlay"],
       ],

@@ -114,6 +114,15 @@
     goto(sessionRanked[pos]);
   }
   function close() { ui.reviewOpen = false; }
+  // Re-rank the session when the user picks a different order, keeping the frame we're on.
+  function setOrder(o) {
+    if (qc.reviewOrder === o) return;
+    const cur = sessionRanked[pos];
+    qc.reviewOrder = o;
+    sessionRanked = qc.flaggedRanked.slice();
+    const at = sessionRanked.indexOf(cur);
+    pos = at >= 0 ? at : 0;
+  }
 
   const dimsNow = () => frameDims(item, store.frameImage);
   const fitWhole = (cw, ch, dims) => Math.min(cw / dims.w, ch / dims.h); // scale at which the whole image fits
@@ -276,7 +285,11 @@
   }
   function onWheel(e) {
     e.preventDefault();
-    zoomBy(e.deltaY < 0 ? 1.15 : 1 / 1.15);
+    let dy = e.deltaY;
+    if (e.deltaMode === 1) dy *= 16; // lines → ~px
+    else if (e.deltaMode === 2) dy *= 400; // pages → ~px
+    dy = Math.max(-100, Math.min(100, dy));
+    zoomBy(Math.exp(-dy * 0.0016)); // proportional to scroll → trackpad-friendly
   }
 
   function onKey(e) {
@@ -311,8 +324,14 @@
       {#if total}
         <span class="prog">{pos + 1} <span class="dim">/ {total}</span></span>
         {#if conf != null}<span class="confchip" style:background={heatColor(conf)} title="Flag confidence">{conf.toFixed(2)}</span>{/if}
+        {#if item}{@const nd = qc.frameFlaggingChecks(item).length}<span class="ndchip" title="{nd} detector{nd === 1 ? '' : 's'} flag this frame">{nd}⚑</span>{/if}
         {#if item}<span class="dim fr">frame {item.frameIdx}</span>{/if}
         {#if edited}<span class="editbadge" title="You edited this frame">edited</span>{/if}
+        <span class="ord" title="Order flagged frames by">
+          <button type="button" class:on={qc.reviewOrder === "severity"} onclick={() => setOrder("severity")} title="Worst single detector first">Severity</button>
+          <button type="button" class:on={qc.reviewOrder === "detectors"} onclick={() => setOrder("detectors")} title="Most detectors agreeing first (intersection count)">Detectors</button>
+          <button type="button" class:on={qc.reviewOrder === "frame"} onclick={() => setOrder("frame")} title="Chronological (frame order)">Frame</button>
+        </span>
       {/if}
       <button class="x" onclick={close} title="Close (Esc)">✕</button>
     </header>
@@ -402,9 +421,40 @@
   .rhead {
     display: flex;
     align-items: center;
-    gap: 0.6rem;
+    gap: 0.5rem;
     padding: 0.65rem 0.9rem;
     border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .ndchip {
+    font-size: 0.68rem;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: var(--r-xs);
+    padding: 0.02rem 0.32rem;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .ord {
+    display: inline-flex;
+    margin-left: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--r-xs);
+    overflow: hidden;
+    flex: none;
+  }
+  .ord button {
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-size: 0.66rem;
+    padding: 0.2rem 0.42rem;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .ord button.on {
+    background: rgba(95, 217, 242, 0.14);
+    color: var(--text);
   }
   .title {
     font-weight: 700;

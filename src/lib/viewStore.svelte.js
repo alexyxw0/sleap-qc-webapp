@@ -14,6 +14,7 @@ class ViewStore {
   zoom = $state(1);
   panX = $state(0); // screen px
   panY = $state(0);
+  showOverlay = $state(true); // pose overlay (skeleton + nodes + labels) drawn over the frame; toggle with H
 
   // A pending "zoom to this image-space box" request. The Viewer (which knows the viewport +
   // fit scale) consumes it, computes the zoom/pan to frame the box, and clears it.
@@ -28,9 +29,13 @@ class ViewStore {
   }
   /** Apply a Viewer-computed focus (zoom + screen pan), clamped. */
   applyFocus(zoom, panX, panY) {
-    this.zoom = Math.min(MAX, Math.max(MIN, zoom));
-    this.panX = panX;
-    this.panY = panY;
+    const nz = Math.min(MAX, Math.max(MIN, zoom));
+    this.zoom = nz;
+    if (nz === MIN) { this.panX = 0; this.panY = 0; } // at fit there's nothing to pan — recenter
+    else { this.panX = panX; this.panY = panY; }
+  }
+  clampZoom(z) {
+    return Math.min(MAX, Math.max(MIN, z));
   }
 
   get transform() {
@@ -53,6 +58,12 @@ class ViewStore {
   }
   zoomOut() {
     this.setZoom(this.zoom / STEP);
+  }
+  zoomBy(factor) {
+    this.setZoom(this.zoom * factor);
+  }
+  toggleOverlay() {
+    this.showOverlay = !this.showOverlay;
   }
   reset() {
     this.zoom = MIN;
