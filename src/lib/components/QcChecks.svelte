@@ -461,9 +461,12 @@
       <p class="union">
         <span>flagged · union</span><b>{qc.flaggedFrameCount}</b>
       </p>
-      <button class="export" onclick={() => (overlapOpen = true)} title="See what % each detector flags + where they overlap">
-        ⊞ Detector overlap
+      <button class="export" onclick={() => (overlapOpen = !overlapOpen)} title="See what % each detector flags + where they overlap">
+        ⊞ Detector overlap {overlapOpen ? "▴" : "▾"}
       </button>
+      {#if overlapOpen}
+        <div class="ovl-inline"><DetectorOverlap /></div>
+      {/if}
     {/if}
     {#if qc.canExportCsv}
       <button class="export" onclick={() => qc.downloadCsv()} title="Download per-instance QC scores + features as a CSV">
@@ -476,17 +479,6 @@
       </p>
     {/if}
   </section>
-{/if}
-
-{#if overlapOpen}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="ovl-backdrop" onclick={(e) => { if (e.target === e.currentTarget) overlapOpen = false; }}>
-    <div class="ovl-modal">
-      <button class="ovl-close" onclick={() => (overlapOpen = false)} title="Close">✕</button>
-      <DetectorOverlap />
-    </div>
-  </div>
 {/if}
 
 <style>
@@ -1110,35 +1102,11 @@
   .fc-del:hover {
     color: #fb7185;
   }
-  .ovl-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 200;
-    background: rgba(0, 0, 0, 0.55);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .ovl-modal {
-    position: relative;
-    background: var(--surface);
+  .ovl-inline {
+    margin-top: 0.5rem;
+    padding: 0.6rem 0.5rem 0.5rem;
     border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 1rem 1.1rem;
-    box-shadow: 0 14px 44px rgba(0, 0, 0, 0.5);
-  }
-  .ovl-close {
-    position: absolute;
-    top: 0.4rem;
-    right: 0.5rem;
-    background: none;
-    border: none;
-    color: var(--dim);
-    font-size: 0.85rem;
-    line-height: 1;
-    cursor: pointer;
-  }
-  .ovl-close:hover {
-    color: var(--text);
+    border-radius: var(--r-xs);
+    background: rgba(255, 255, 255, 0.015);
   }
 </style>

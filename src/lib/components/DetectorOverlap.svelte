@@ -24,7 +24,7 @@
   }
 
   // ---- chord geometry ----
-  const CX = 150, CY = 150, R_IN = 80, R_OUT = 94, R_LBL = 102;
+  const CX = 180, CY = 150, R_IN = 92, R_OUT = 110, R_LBL = 118;
   const polar = (r, a) => [CX + r * Math.cos(a), CY + r * Math.sin(a)];
   function arcBand(a0, a1, rIn, rOut) {
     const [x0o, y0o] = polar(rOut, a0), [x1o, y1o] = polar(rOut, a1);
@@ -111,12 +111,12 @@
   {#if !active.length}
     <p class="ov-empty">No detectors are flagging anything — run QC and enable some checks.</p>
   {:else if mode === "chord"}
-    <svg viewBox="0 0 300 300" class="ov-svg">
+    <svg viewBox="0 0 360 300" class="ov-svg">
       {#each chord.ribbons as r (r.key)}
-        <path d={ribbonPath(r.s1, r.s2, R_IN)} fill={r.color} opacity="0.33" />
+        <path d={ribbonPath(r.s1, r.s2, R_IN)} fill={r.color} fill-opacity="0.4" stroke={r.color} stroke-opacity="0.75" stroke-width="0.8" stroke-linejoin="round" />
       {/each}
       {#each chord.arcs as a (a.det.id)}
-        <path d={arcBand(a.a0, a.a1, R_IN + 1, R_OUT)} fill={a.det.color} />
+        <path d={arcBand(a.a0, a.a1, R_IN + 1, R_OUT)} fill={a.det.color} stroke="#0b0e13" stroke-width="0.6" />
       {/each}
       {#each chord.arcs as a (a.det.id)}
         {@const lp = polar(R_LBL, a.mid)}
@@ -157,8 +157,7 @@
 
 <style>
   .ov {
-    width: 360px;
-    max-width: 90vw;
+    width: 100%;
     color: var(--text);
   }
   .ov-head {
@@ -201,7 +200,7 @@
   }
   .ov-lbl {
     fill: var(--text);
-    font-size: 8px;
+    font-size: 8.5px;
     font-weight: 600;
   }
   .ov-note {
