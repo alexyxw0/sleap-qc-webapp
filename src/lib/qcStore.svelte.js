@@ -495,30 +495,27 @@ class QCStore {
     return false;
   }
 
-  /** Per-detector flagged-instance sets (the instance-level, score-based checks) for the overlap
-   *  viz. Returns { total, sets:[{ id, label, set:Set<key> }] } over ALL enabled such checks. */
+  /** Per-detector flagged-FRAME sets over EVERY enabled check (instance-level reduced to frames +
+   *  the frame-level checks + custom feature checks) for the overlap viz. Reuses frameFlaggingChecks
+   *  so any newly-enabled check shows up automatically. { total, sets:[{ id, label, set:Set<frame> }] }. */
   detectorSets() {
     this.rev;
-    const total = this.#ctx?.allPoses?.length ?? 0;
-    const sets = [];
-    const fromScores = (id, label, map, thr, on) => {
-      if (!on) return;
-      const set = new Set();
-      if (map) for (const [k, v] of map) if (v != null && v >= thr) set.add(k);
-      sets.push({ id, label, set });
-    };
-    fromScores("anomaly", "Anomaly", this.#instanceScores, this.threshold, this.checks.anomaly);
-    fromScores("gmm", "GMM", this.#gmmScores, this.gmmThreshold, this.checks.gmm);
-    fromScores("chirality", "Chirality", this.#chiralityScores, this.chiralityThreshold, this.checks.chirality);
-    fromScores("ordering", "Ordering", this.#orderingScores, this.orderingThreshold, this.checks.ordering);
-    fromScores("poseSplit", "Pose split", this.#poseSplitScores, this.poseSplitThreshold, this.checks.poseSplit);
-    for (const f of this.featureChecks) {
-      if (!f.on) continue;
-      const set = new Set();
-      if (this.#instFeatureZ) for (const [k, zs] of this.#instFeatureZ) if ((zs[f.feature] ?? -1) >= f.threshold) set.add(k);
-      sets.push({ id: `feat:${f.id}`, label: f.feature.replace(/_zscore$/, ""), set });
+    const frames = store.frames ?? [];
+    const LABEL = { anomaly: "Anomaly", gmm: "GMM", chirality: "Chirality", ordering: "Ordering", poseSplit: "Pose split", count: "Count", sparse: "Sparse", confidence: "Confidence", instConfidence: "Inst conf", negative: "Negative", duplicates: "Duplicates" };
+    const ORDER = ["anomaly", "gmm", "chirality", "ordering", "poseSplit", "count", "sparse", "confidence", "instConfidence", "negative", "duplicates"];
+    const byKey = new Map();
+    for (let i = 0; i < frames.length; i++) {
+      for (const f of this.frameFlaggingChecks(frames[i])) {
+        let e = byKey.get(f.key);
+        if (!e) {
+          e = { id: f.key, label: f.key.startsWith("feat:") ? f.label : LABEL[f.key] ?? f.key, set: new Set() };
+          byKey.set(f.key, e);
+        }
+        e.set.add(i);
+      }
     }
-    return { total, sets };
+    const sets = [...byKey.values()].sort((a, b) => (ORDER.indexOf(a.id) + 1 || 99) - (ORDER.indexOf(b.id) + 1 || 99));
+    return { total: frames.length, sets };
   }
 
   /** Per-instance boolean array: is each instance flagged by ANY enabled check (instance- AND the

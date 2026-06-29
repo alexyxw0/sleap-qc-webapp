@@ -82,7 +82,7 @@
 
 <div class="ov">
   <div class="ov-head">
-    <span class="ov-title">Detector overlap<span class="ov-total"> · {data.total} instances</span></span>
+    <span class="ov-title">Detector overlap<span class="ov-total"> · {data.total} frames</span></span>
     <div class="ov-modes">
       <button type="button" class:on={mode === "chord"} onclick={() => (mode = "chord")}>Chord</button>
       <button type="button" class:on={mode === "upset"} onclick={() => (mode = "upset")}>UpSet</button>
@@ -109,7 +109,7 @@
         </text>
       {/each}
     </svg>
-    <p class="ov-note">Ribbon thickness = # instances both detectors flag (pairwise).</p>
+    <p class="ov-note">Ribbon thickness = # frames both detectors flag (pairwise).</p>
   {:else if mode === "euler"}
     <svg viewBox="0 0 300 300" class="ov-svg">
       {#each euler as c (c.d.id)}
@@ -134,7 +134,7 @@
         {/each}
       </div>
       <div class="us-combos">
-        <div class="us-cap">exact intersections (instances)</div>
+        <div class="us-cap">exact intersections (frames)</div>
         {#each combos as c (c.mask.join())}
           <div class="us-combo">
             <span class="us-mask">
