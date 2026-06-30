@@ -169,6 +169,32 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
       ctx.stroke();
     }
 
+    // QC: when the flag is fundamentally an EDGE (chirality L/R pair, pose-split bridge, worst
+    // anomaly edge), highlight that edge in place of the ring. A dark casing UNDER the red dashes
+    // keeps them legible where they overlay a same-warm-colored bone; drawn before the nodes so the
+    // endpoints stay clean.
+    if (worstEdges?.[idx]) {
+      const pa = points[worstEdges[idx][0]], pb = points[worstEdges[idx][1]];
+      if (placed(pa) && placed(pb)) {
+        ctx.save();
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(pa.xy[0], pa.xy[1]);
+        ctx.lineTo(pb.xy[0], pb.xy[1]);
+        ctx.globalAlpha = 0.85;
+        ctx.strokeStyle = "#0b0e13"; // dark casing
+        ctx.lineWidth = 5 * s;
+        ctx.setLineDash([]);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#ff2d55"; // red dashes on top of the casing -> high contrast
+        ctx.lineWidth = 3 * s;
+        ctx.setLineDash([5 * s, 4 * s]);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
     // nodes + labels — a hidden node renders only while its instance is selected (then faint, so it
     // can still be found and dragged); otherwise it isn't drawn at all.
     points.forEach((p, ni) => {
@@ -217,24 +243,6 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
       // instance isn't selected so invisible nodes read at a glance
       if (!focused) label(names[ni], px, py, p.visible ? 0.95 : 0.85, p.visible ? LABEL_VISIBLE : LABEL_HIDDEN);
     });
-
-    // QC: when the flag is fundamentally an EDGE (chirality L/R pair, pose-split bridge, worst
-    // anomaly edge), highlight the edge with the same dashed-red treatment, in place of the ring.
-    if (worstEdges?.[idx]) {
-      const pa = points[worstEdges[idx][0]], pb = points[worstEdges[idx][1]];
-      if (placed(pa) && placed(pb)) {
-        ctx.save();
-        ctx.globalAlpha = 0.9;
-        ctx.strokeStyle = "#ff2d55";
-        ctx.lineWidth = 2.5 * s;
-        ctx.setLineDash([5 * s, 4 * s]);
-        ctx.beginPath();
-        ctx.moveTo(pa.xy[0], pa.xy[1]);
-        ctx.lineTo(pb.xy[0], pb.xy[1]);
-        ctx.stroke();
-        ctx.restore();
-      }
-    }
   });
 
   // Focused node's label, opaque and on top of everything.
