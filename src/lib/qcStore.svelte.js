@@ -931,13 +931,16 @@ class QCStore {
     }
 
     if (aScore == null && gScore == null) return null;
+    // Only describe a statistical issue when Anomaly or GMM actually CLEARS its threshold — a score
+    // that merely exists (e.g. anomaly 0.26 < 0.70) isn't why the frame is flagged.
+    const aFlag = this.checks.anomaly && aScore != null && aScore >= this.threshold;
+    const gFlag = this.#gmmFlagged(key);
+    if (!aFlag && !gFlag) return null;
     const wn = this.faultyNodeFor(item, instIdx);
     const worstNodeName = wn >= 0 ? store.skeleton?.nodeNames?.[wn] ?? `node ${wn}` : null;
-    // Prefer the anomaly explanation (per-feature attribution); otherwise GMM gives a density
-    // verdict, now named by its most-improbable feature (the max Mahalanobis-distance dimension)
-    // and localized to its leave-one-out node.
-    const gFlag = this.#gmmFlagged(key);
-    const useGmm = aScore == null || (gFlag && this.checks.gmm && !(this.checks.anomaly && aScore >= this.threshold));
+    // Anomaly fired -> per-feature attribution; otherwise GMM fired -> density verdict, named by its
+    // most-improbable feature and localized to its leave-one-out node.
+    const useGmm = !aFlag;
     let base;
     if (useGmm) {
       const wf = this.gmmWorstFeature(item, instIdx);
@@ -961,7 +964,17 @@ class QCStore {
     this.rev;
     if (!item) return null;
     const worst = this.frameWorstInstance(item);
-    return worst < 0 ? null : this.instanceIssue(item, worst);
+    const inst = worst < 0 ? null : this.instanceIssue(item, worst);
+    if (inst) return inst;
+    // No instance-level check fired — the frame is flagged by a frame-level check (count, sparse,
+    // …). Name the dominant one so the heading says WHY it's flagged, not a non-flagging feature.
+    const flaggers = this.frameFlaggingChecks(item);
+    if (!flaggers.length) return null;
+    const binary = flaggers.filter((f) => f.score == null); // structural frame checks read clearest
+    const pick = binary.length
+      ? binary.sort((a, b) => (FRAME_SEVERITY[b.key] ?? 0) - (FRAME_SEVERITY[a.key] ?? 0))[0]
+      : flaggers[0];
+    return { score: pick.score ?? null, confidence: 0, feature: null, issue: pick.label, worstNode: -1, worstNodeName: null, worstNodeDist: null };
   }
   /**
    * The instance most responsible for this frame being flagged — the one furthest over its
