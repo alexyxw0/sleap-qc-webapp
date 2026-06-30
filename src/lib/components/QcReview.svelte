@@ -197,10 +197,11 @@
     lt = { s: vs, offX, offY };
 
     const insts = item.lf?.instances ?? [];
-    const worstNodes = insts.map((_, i) => (qc.instanceFlagged(item, i) ? qc.faultyNodeFor(item, i) : -1));
+    const worstEdges = insts.map((_, i) => (qc.instanceFlagged(item, i) ? qc.faultyEdgeFor(item, i) : null));
+    const worstNodes = insts.map((_, i) => (qc.instanceFlagged(item, i) && !worstEdges[i] ? qc.faultyNodeFor(item, i) : -1));
     drawScene(ctx, store.frameImage, item, store.skeleton, {
       transform: { s: vs, offX, offY }, dims: dimsNow(), scale: dpr / vs,
-      editing: true, selInstance: selI, selNode: selN, worstNodes, uncertainNodes: null,
+      editing: true, selInstance: selI, selNode: selN, worstNodes, worstEdges, uncertainNodes: null,
       hiddenAlpha: 0.55, // hidden/occluded nodes are correction targets here — keep them grabbable
     });
   });

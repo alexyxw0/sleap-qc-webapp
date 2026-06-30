@@ -137,6 +137,7 @@ class QCStore {
   #frameOrdering = new Map(); // "v:f" -> max ordering score
   #poseSplitScores = new Map(); // "v:f:i" -> chimera split score [0,1]
   #poseSplitWorst = new Map(); // "v:f:i" -> a bridge-edge node, -1 if none
+  #poseSplitBridge = new Map(); // "v:f:i" -> the over-stretched bridge edge [a,b], or null
   #framePoseSplit = new Map(); // "v:f" -> max split score
 
   get hasResults() {
@@ -684,7 +685,7 @@ class QCStore {
           res = { node: -1, dir: Math.sign(contributions[feature] ?? 0), feature };
         } else {
           const a = fx.baseline.attribute(pose)[feature];
-          res = { node: a?.nodes?.[0] ?? -1, dir: a?.dir ?? 0, feature };
+          res = { node: a?.nodes?.[0] ?? -1, nodes: a?.nodes ?? null, dir: a?.dir ?? 0, feature };
         }
       }
     }
@@ -730,6 +731,46 @@ class QCStore {
     }
     if (this.#gmmFlagged(key)) return this.gmmWorstNode(item, instIdx);
     return -1;
+  }
+  /** The other node in `n`'s symmetric L/R pair (from the fitted chirality model), or -1. */
+  #symmetricPartner(n) {
+    if (n < 0) return -1;
+    const pairs = this.#computed.chirality?.model?.symmetryPairs;
+    if (!pairs) return -1;
+    for (const [l, r] of pairs) { if (l === n) return r; if (r === n) return l; }
+    return -1;
+  }
+  /** When the dominant flag is fundamentally an EDGE, the `[a,b]` to highlight instead of a node:
+   *  the chirality L/R pair, the pose-split bridge, or an edge/pairwise-dominated anomaly. Mirrors
+   *  `faultyNodeFor`'s priority so the edge and node never disagree; null → the caller draws the ring. */
+  faultyEdgeFor(item, instIdx) {
+    this.rev;
+    if (!item) return null;
+    const key = `${this.#fkey(item)}:${instIdx}`;
+    if (this.checks.chirality) {
+      const s = this.#chiralityScores.get(key);
+      if (s != null && s >= this.chiralityThreshold) {
+        const n = this.#chiralityWorst.get(key) ?? -1;
+        const p = this.#symmetricPartner(n);
+        return n >= 0 && p >= 0 ? [n, p] : null; // chirality dominant: the L/R pair, or nothing
+      }
+    }
+    if (this.checks.ordering) {
+      const s = this.#orderingScores.get(key);
+      if (s != null && s >= this.orderingThreshold) return null; // ordering dominant -> node ring
+    }
+    if (this.checks.poseSplit) {
+      const s = this.#poseSplitScores.get(key);
+      if (s != null && s >= this.poseSplitThreshold) return this.#poseSplitBridge.get(key) ?? null;
+    }
+    if (this.checks.anomaly) {
+      const a = this.#instanceScores.get(key);
+      if (a != null && a >= this.threshold) {
+        const nodes = this.#anomalyAttribution(item, instIdx).nodes;
+        return nodes?.length === 2 ? [nodes[0], nodes[1]] : null; // edge/pairwise feature -> the edge
+      }
+    }
+    return null; // GMM or none -> node ring
   }
 
   seekFlagged(from, dir = 1) {
@@ -845,6 +886,7 @@ class QCStore {
       const r = poseSplitScoreOne(this.#computed.poseSplit.fx, pose);
       this.#computed.poseSplit.poseSplitScores.set(key, r.score);
       this.#computed.poseSplit.poseSplitWorst.set(key, r.worstNode);
+      this.#computed.poseSplit.poseSplitBridge?.set(key, r.bridge);
     }
     this.#derive(); // rebuild frame-max maps + clear the lazy attribution caches for this key
     this.rev++;
@@ -1007,6 +1049,7 @@ class QCStore {
     this.#chainIntersection = this.#computed.ordering?.chainIntersection ?? new Map();
     this.#poseSplitScores = this.#computed.poseSplit?.poseSplitScores ?? new Map();
     this.#poseSplitWorst = this.#computed.poseSplit?.poseSplitWorst ?? new Map();
+    this.#poseSplitBridge = this.#computed.poseSplit?.poseSplitBridge ?? new Map();
 
     const frameMax = (src, dst) => {
       dst.clear();

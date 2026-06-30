@@ -512,6 +512,7 @@ export function poseSplitScoreOne(fx, pose) {
     score: ps.splitScore / (ps.splitScore + 1), // saturating [0,1]: raw 1 -> 0.5, larger -> 1
     splitScore: ps.splitScore,
     worstNode: ps.bridge ? ps.bridge[0] : -1, // an endpoint of the over-stretched bridge edge
+    bridge: ps.bridge ?? null, // the over-stretched bridge edge [a,b] (for edge highlighting)
   };
 }
 
@@ -519,11 +520,13 @@ export function computePoseSplitUnit(ctx) {
   const fx = ensureFeatures(ctx);
   const poseSplitScores = new Map();
   const poseSplitWorst = new Map();
+  const poseSplitBridge = new Map();
   eachInstance(ctx, (f, i, row, key) => {
     const r = poseSplitScoreOne(fx, ctx.allPoses[row]);
     poseSplitScores.set(key, r.score);
     poseSplitWorst.set(key, r.worstNode);
+    poseSplitBridge.set(key, r.bridge);
   });
-  return { poseSplitScores, poseSplitWorst, fx };
+  return { poseSplitScores, poseSplitWorst, poseSplitBridge, fx };
 }
 

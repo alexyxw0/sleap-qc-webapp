@@ -89,7 +89,7 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
   const edges = skeleton.edges ?? [];
   const instances = lf.instances ?? [];
   const names = skeleton.nodeNames ?? [];
-  const { editing = false, selInstance = -1, selNode = -1, scale = 1, worstNodes = null, flaggedInstances = null, hiddenAlpha = 0.28 } = sel;
+  const { editing = false, selInstance = -1, selNode = -1, scale = 1, worstNodes = null, worstEdges = null, flaggedInstances = null, hiddenAlpha = 0.28 } = sel;
 
   // Sizes are specified in on-screen pixels and converted to image-space via `scale`
   // (image px per screen px), so the overlay + labels look consistent at any video
@@ -217,6 +217,24 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
       // instance isn't selected so invisible nodes read at a glance
       if (!focused) label(names[ni], px, py, p.visible ? 0.95 : 0.85, p.visible ? LABEL_VISIBLE : LABEL_HIDDEN);
     });
+
+    // QC: when the flag is fundamentally an EDGE (chirality L/R pair, pose-split bridge, worst
+    // anomaly edge), highlight the edge with the same dashed-red treatment, in place of the ring.
+    if (worstEdges?.[idx]) {
+      const pa = points[worstEdges[idx][0]], pb = points[worstEdges[idx][1]];
+      if (placed(pa) && placed(pb)) {
+        ctx.save();
+        ctx.globalAlpha = 0.9;
+        ctx.strokeStyle = "#ff2d55";
+        ctx.lineWidth = 2.5 * s;
+        ctx.setLineDash([5 * s, 4 * s]);
+        ctx.beginPath();
+        ctx.moveTo(pa.xy[0], pa.xy[1]);
+        ctx.lineTo(pb.xy[0], pb.xy[1]);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
   });
 
   // Focused node's label, opaque and on top of everything.
