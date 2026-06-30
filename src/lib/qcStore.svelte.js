@@ -86,7 +86,7 @@ class QCStore {
   chiralityThreshold = $state(0.5); // L/R-flip flag ([0,1] wrong-side fraction; hard rule forces >=0.9)
   orderingThreshold = $state(0.3); // chain-ordering flag (combined: a crossing -> 1.0, else order_inversion_rate)
   poseSplitThreshold = $state(0.5); // chimera flag: saturating split score (raw split 1.0 -> 0.5)
-  sparseThreshold = $state(2); // flag an instance localized by fewer than this many visible nodes
+  sparseFraction = $state(0.5); // "sparse instance" cutoff as a fraction of the dataset's average visible-node count
   confidenceThreshold = $state(0.3); // flag a predicted instance whose keypoint confidence scores below this
   confidenceMode = $state("avg"); // keypoint-confidence mode: "avg" (mean over visible keypoints, default) or "min" (weakest visible keypoint)
   instConfidenceThreshold = $state(0.3); // flag a predicted instance whose instance-level score is below this
@@ -109,6 +109,8 @@ class QCStore {
   #ctxLabels = null; // identity of the labels #ctx was built for
   #ctxRev = -1; // store.rev the #ctx was built at — bumps when instances are edited in place
   #ctxBaselineSource = "all"; // baselineSource the #ctx was fit with (rebuild on change)
+  #avgVisKey = null; // #ctx the cached average visible-node count was computed for
+  #avgVisCache = 0; // memoized mean per-instance visible-node count
   #computed = {}; // unit -> result maps (the memoization cache)
   #featureSeq = 0; // id counter for user feature-checks
   #progress = null; // { steps: [{ key, label, status, ms }], done, total } — live during run, kept after
@@ -135,6 +137,7 @@ class QCStore {
   #frameOrdering = new Map(); // "v:f" -> max ordering score
   #poseSplitScores = new Map(); // "v:f:i" -> chimera split score [0,1]
   #poseSplitWorst = new Map(); // "v:f:i" -> a bridge-edge node, -1 if none
+  #poseSplitBridge = new Map(); // "v:f:i" -> the over-stretched bridge edge [a,b], or null
   #framePoseSplit = new Map(); // "v:f" -> max split score
 
   get hasResults() {
@@ -145,6 +148,24 @@ class QCStore {
   get hasPredictions() {
     this.rev;
     return this.#ctx?.hasPredictions ?? false;
+  }
+  /** Mean per-instance visible-node count (non-NaN coords) across the dataset, memoized on the ctx. */
+  get avgVisibleNodes() {
+    this.rev;
+    const poses = this.#ctx?.allPoses;
+    if (!poses?.length) return 0;
+    if (this.#avgVisKey === this.#ctx) return this.#avgVisCache;
+    let sum = 0;
+    for (const pose of poses) for (const xy of pose) if (!Number.isNaN(xy?.[0])) sum++;
+    this.#avgVisKey = this.#ctx;
+    this.#avgVisCache = sum / poses.length;
+    return this.#avgVisCache;
+  }
+  /** "Sparse instance" cutoff, derived from the data: `sparseFraction` × the average visible-node count
+   *  (min 1). Falls back to 2 before a context exists. Read live by every sparse check + the slider. */
+  get sparseThreshold() {
+    const avg = this.avgVisibleNodes;
+    return avg > 0 ? Math.max(1, Math.round(avg * this.sparseFraction)) : 2;
   }
   /** The frame's keypoint-confidence value for the active mode: weakest ("min") or mean ("avg"). */
   #kpConf(fq) {
@@ -664,7 +685,7 @@ class QCStore {
           res = { node: -1, dir: Math.sign(contributions[feature] ?? 0), feature };
         } else {
           const a = fx.baseline.attribute(pose)[feature];
-          res = { node: a?.nodes?.[0] ?? -1, dir: a?.dir ?? 0, feature };
+          res = { node: a?.nodes?.[0] ?? -1, nodes: a?.nodes ?? null, dir: a?.dir ?? 0, feature };
         }
       }
     }
@@ -710,6 +731,46 @@ class QCStore {
     }
     if (this.#gmmFlagged(key)) return this.gmmWorstNode(item, instIdx);
     return -1;
+  }
+  /** The other node in `n`'s symmetric L/R pair (from the fitted chirality model), or -1. */
+  #symmetricPartner(n) {
+    if (n < 0) return -1;
+    const pairs = this.#computed.chirality?.model?.symmetryPairs;
+    if (!pairs) return -1;
+    for (const [l, r] of pairs) { if (l === n) return r; if (r === n) return l; }
+    return -1;
+  }
+  /** When the dominant flag is fundamentally an EDGE, the `[a,b]` to highlight instead of a node:
+   *  the chirality L/R pair, the pose-split bridge, or an edge/pairwise-dominated anomaly. Mirrors
+   *  `faultyNodeFor`'s priority so the edge and node never disagree; null → the caller draws the ring. */
+  faultyEdgeFor(item, instIdx) {
+    this.rev;
+    if (!item) return null;
+    const key = `${this.#fkey(item)}:${instIdx}`;
+    if (this.checks.chirality) {
+      const s = this.#chiralityScores.get(key);
+      if (s != null && s >= this.chiralityThreshold) {
+        const n = this.#chiralityWorst.get(key) ?? -1;
+        const p = this.#symmetricPartner(n);
+        return n >= 0 && p >= 0 ? [n, p] : null; // chirality dominant: the L/R pair, or nothing
+      }
+    }
+    if (this.checks.ordering) {
+      const s = this.#orderingScores.get(key);
+      if (s != null && s >= this.orderingThreshold) return null; // ordering dominant -> node ring
+    }
+    if (this.checks.poseSplit) {
+      const s = this.#poseSplitScores.get(key);
+      if (s != null && s >= this.poseSplitThreshold) return this.#poseSplitBridge.get(key) ?? null;
+    }
+    if (this.checks.anomaly) {
+      const a = this.#instanceScores.get(key);
+      if (a != null && a >= this.threshold) {
+        const nodes = this.#anomalyAttribution(item, instIdx).nodes;
+        return nodes?.length === 2 ? [nodes[0], nodes[1]] : null; // edge/pairwise feature -> the edge
+      }
+    }
+    return null; // GMM or none -> node ring
   }
 
   seekFlagged(from, dir = 1) {
@@ -825,6 +886,7 @@ class QCStore {
       const r = poseSplitScoreOne(this.#computed.poseSplit.fx, pose);
       this.#computed.poseSplit.poseSplitScores.set(key, r.score);
       this.#computed.poseSplit.poseSplitWorst.set(key, r.worstNode);
+      this.#computed.poseSplit.poseSplitBridge?.set(key, r.bridge);
     }
     this.#derive(); // rebuild frame-max maps + clear the lazy attribution caches for this key
     this.rev++;
@@ -869,13 +931,16 @@ class QCStore {
     }
 
     if (aScore == null && gScore == null) return null;
+    // Only describe a statistical issue when Anomaly or GMM actually CLEARS its threshold — a score
+    // that merely exists (e.g. anomaly 0.26 < 0.70) isn't why the frame is flagged.
+    const aFlag = this.checks.anomaly && aScore != null && aScore >= this.threshold;
+    const gFlag = this.#gmmFlagged(key);
+    if (!aFlag && !gFlag) return null;
     const wn = this.faultyNodeFor(item, instIdx);
     const worstNodeName = wn >= 0 ? store.skeleton?.nodeNames?.[wn] ?? `node ${wn}` : null;
-    // Prefer the anomaly explanation (per-feature attribution); otherwise GMM gives a density
-    // verdict, now named by its most-improbable feature (the max Mahalanobis-distance dimension)
-    // and localized to its leave-one-out node.
-    const gFlag = this.#gmmFlagged(key);
-    const useGmm = aScore == null || (gFlag && this.checks.gmm && !(this.checks.anomaly && aScore >= this.threshold));
+    // Anomaly fired -> per-feature attribution; otherwise GMM fired -> density verdict, named by its
+    // most-improbable feature and localized to its leave-one-out node.
+    const useGmm = !aFlag;
     let base;
     if (useGmm) {
       const wf = this.gmmWorstFeature(item, instIdx);
@@ -899,7 +964,17 @@ class QCStore {
     this.rev;
     if (!item) return null;
     const worst = this.frameWorstInstance(item);
-    return worst < 0 ? null : this.instanceIssue(item, worst);
+    const inst = worst < 0 ? null : this.instanceIssue(item, worst);
+    if (inst) return inst;
+    // No instance-level check fired — the frame is flagged by a frame-level check (count, sparse,
+    // …). Name the dominant one so the heading says WHY it's flagged, not a non-flagging feature.
+    const flaggers = this.frameFlaggingChecks(item);
+    if (!flaggers.length) return null;
+    const binary = flaggers.filter((f) => f.score == null); // structural frame checks read clearest
+    const pick = binary.length
+      ? binary.sort((a, b) => (FRAME_SEVERITY[b.key] ?? 0) - (FRAME_SEVERITY[a.key] ?? 0))[0]
+      : flaggers[0];
+    return { score: pick.score ?? null, confidence: 0, feature: null, issue: pick.label, worstNode: -1, worstNodeName: null, worstNodeDist: null };
   }
   /**
    * The instance most responsible for this frame being flagged — the one furthest over its
@@ -987,6 +1062,7 @@ class QCStore {
     this.#chainIntersection = this.#computed.ordering?.chainIntersection ?? new Map();
     this.#poseSplitScores = this.#computed.poseSplit?.poseSplitScores ?? new Map();
     this.#poseSplitWorst = this.#computed.poseSplit?.poseSplitWorst ?? new Map();
+    this.#poseSplitBridge = this.#computed.poseSplit?.poseSplitBridge ?? new Map();
 
     const frameMax = (src, dst) => {
       dst.clear();

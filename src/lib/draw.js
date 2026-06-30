@@ -89,7 +89,7 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
   const edges = skeleton.edges ?? [];
   const instances = lf.instances ?? [];
   const names = skeleton.nodeNames ?? [];
-  const { editing = false, selInstance = -1, selNode = -1, scale = 1, worstNodes = null, flaggedInstances = null, hiddenAlpha = 0.28 } = sel;
+  const { editing = false, selInstance = -1, selNode = -1, scale = 1, worstNodes = null, worstEdges = null, flaggedInstances = null, hiddenAlpha = 0.28 } = sel;
 
   // Sizes are specified in on-screen pixels and converted to image-space via `scale`
   // (image px per screen px), so the overlay + labels look consistent at any video
@@ -167,6 +167,32 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
       ctx.moveTo(a.xy[0], a.xy[1]);
       ctx.lineTo(b.xy[0], b.xy[1]);
       ctx.stroke();
+    }
+
+    // QC: when the flag is fundamentally an EDGE (chirality L/R pair, pose-split bridge, worst
+    // anomaly edge), highlight that edge in place of the ring. A dark casing UNDER the red dashes
+    // keeps them legible where they overlay a same-warm-colored bone; drawn before the nodes so the
+    // endpoints stay clean.
+    if (worstEdges?.[idx]) {
+      const pa = points[worstEdges[idx][0]], pb = points[worstEdges[idx][1]];
+      if (placed(pa) && placed(pb)) {
+        ctx.save();
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(pa.xy[0], pa.xy[1]);
+        ctx.lineTo(pb.xy[0], pb.xy[1]);
+        ctx.globalAlpha = 0.85;
+        ctx.strokeStyle = "#0b0e13"; // dark casing
+        ctx.lineWidth = 5 * s;
+        ctx.setLineDash([]);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#ff2d55"; // red dashes on top of the casing -> high contrast
+        ctx.lineWidth = 3 * s;
+        ctx.setLineDash([5 * s, 4 * s]);
+        ctx.stroke();
+        ctx.restore();
+      }
     }
 
     // nodes + labels — a hidden node renders only while its instance is selected (then faint, so it

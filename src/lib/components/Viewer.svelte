@@ -83,12 +83,16 @@
     // least-confident node of low-confidence instances. Both only when concerning, so normal
     // poses stay clean. *Nodes[instIdx] = nodeIdx to ring, or -1.
     let worstNodes = null;
+    let worstEdges = null;
     let flaggedInstances = null;
     if (qc.hasResults && item) {
       const insts = item.lf?.instances ?? [];
       // red ring on the faulty node of any flagged instance — chirality's wrong-pair node,
       // the pose-split bridge node, or the GMM's leave-one-out node. Reacts live to the sliders.
-      worstNodes = insts.map((_, i) => (qc.instanceFlagged(item, i) ? qc.faultyNodeFor(item, i) : -1));
+      // When the flag is an EDGE (chirality pair / pose-split bridge / worst anomaly edge) we
+      // highlight the edge instead and suppress that instance's ring.
+      worstEdges = insts.map((_, i) => (qc.instanceFlagged(item, i) ? qc.faultyEdgeFor(item, i) : null));
+      worstNodes = insts.map((_, i) => (qc.instanceFlagged(item, i) && !worstEdges[i] ? qc.faultyNodeFor(item, i) : -1));
       flaggedInstances = qc.frameFlaggedInstances(item); // bbox around each flagged instance
     }
 
@@ -113,6 +117,7 @@
       selInstance: selI,
       selNode: selN,
       worstNodes,
+      worstEdges,
       flaggedInstances,
       overlay: view.showOverlay,
     });
