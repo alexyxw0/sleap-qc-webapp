@@ -135,7 +135,11 @@ class LabelsStore {
       for (const lf of labels.labeledFrames) {
         if (Number.isFinite(lf.frameIdx)) frames.push({ video: lf.video, frameIdx: lf.frameIdx, lf });
       }
-      frames.sort((a, b) => a.frameIdx - b.frameIdx);
+      // Group by video (file order), then chronological within each. A multi-video .pkg.slp
+      // otherwise interleaves videos by frameIdx (each embedded video has its own 0..N range),
+      // scrambling navigation across videos.
+      const vOrder = new Map((labels.videos ?? []).map((v, i) => [v, i]));
+      frames.sort((a, b) => (vOrder.get(a.video) ?? 0) - (vOrder.get(b.video) ?? 0) || a.frameIdx - b.frameIdx);
 
       this.frames = frames;
       this.index = 0;
@@ -246,7 +250,10 @@ class LabelsStore {
   #frameKey(item) {
     if (!item) return "none";
     const src = this.videoModel ? "ext" : "emb";
-    return `${src}:${item.video?.filename ?? ""}:${item.frameIdx}`;
+    // Identify the video by its index, not filename — embedded .pkg.slp videos all report "." so a
+    // filename key collides across videos and paints a stale frame from the wrong video.
+    const vi = this.labels?.videos?.indexOf(item.video) ?? -1;
+    return `${src}:${vi}:${item.frameIdx}`;
   }
 
   /**
