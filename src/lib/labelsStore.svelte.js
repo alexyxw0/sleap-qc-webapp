@@ -92,6 +92,15 @@ class LabelsStore {
   get frameCount() {
     return this.frames.length;
   }
+  /** Number of videos in the loaded file (a .pkg.slp can embed many). */
+  get videoCount() {
+    return this.labels?.videos?.length ?? 0;
+  }
+  /** Index (0-based) of the video the current frame belongs to, or -1. */
+  get currentVideoIndex() {
+    const v = this.current?.video;
+    return v ? this.labels?.videos?.indexOf(v) ?? -1 : -1;
+  }
   get ready() {
     return this.status === "ready" && this.frames.length > 0;
   }

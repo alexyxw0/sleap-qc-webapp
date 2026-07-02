@@ -188,6 +188,7 @@ export class LabelQCDetector {
       isWrongCount: counted && count.isWrongCount,
       isEmpty: counted && poses.length === 0,
       expectedInstanceCount: Math.round(count.expectedCount),
+      avgInstanceCount: count.meanCount ?? null, // per-video average, for display
       actualInstanceCount: poses.length,
       minVisibleNodeCount,
       sparsestInstance,

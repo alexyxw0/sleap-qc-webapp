@@ -195,6 +195,9 @@
       aria-label="Go to frame number"
     />
     / {store.frameCount}
+    {#if store.videoCount > 1}
+      <span class="vid" title="Which embedded video in this .pkg.slp you're viewing">· vid {store.currentVideoIndex + 1}/{store.videoCount}</span>
+    {/if}
   </div>
 </section>
 
@@ -286,6 +289,9 @@
     color: var(--dim);
     white-space: nowrap;
     align-self: flex-end;
+  }
+  .jump .vid {
+    color: var(--accent);
   }
   .jump input {
     width: 4.2em;

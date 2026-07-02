@@ -357,6 +357,14 @@
   // Zero-padded frame readout, instrument style: 0169/0266.
   const pad = (n) => String(n).padStart(String(store.frameCount).length, "0");
 
+  // Expected / average instance count for the current frame's video (per-video, once QC has run).
+  const countInfo = $derived.by(() => {
+    void qc.rev;
+    if (!qc.hasResults || !item) return null;
+    const fq = qc.frameQC(item);
+    return fq ? { expected: fq.expectedInstanceCount, avg: fq.avgInstanceCount } : null;
+  });
+
   // HUD: current-frame QC verdict for the chip overlaid on the canvas.
   const hud = $derived.by(() => {
     void qc.rev;
@@ -386,7 +394,12 @@
     <div class="hud">
       <span class="chip">
         <span class="frac"><b>{pad(store.index + 1)}</b><span class="dim">/{pad(store.frameCount)}</span></span>
-        <span class="dim">· {item?.lf?.instances?.length ?? 0} INST</span>
+        {#if store.videoCount > 1}<span class="dim" title="Which embedded video in this .pkg.slp">· vid {store.currentVideoIndex + 1}/{store.videoCount}</span>{/if}
+        <span
+          class="dim"
+          class:miscount={countInfo && (item?.lf?.instances?.length ?? 0) !== countInfo.expected}
+          title={countInfo ? `${item?.lf?.instances?.length ?? 0} placed · expected ${countInfo.expected}${countInfo.avg != null ? ` (avg ${countInfo.avg.toFixed(1)})` : ""} for ${store.videoCount > 1 ? "this video" : "this file"}` : "instances in this frame"}
+        >· {item?.lf?.instances?.length ?? 0}{#if countInfo}/{countInfo.expected}{/if} INST</span>
       </span>
       {#if !view.showOverlay}<span class="chip ovl-off" title="Pose overlay hidden — press H to show">pose hidden · H</span>{/if}
       {#if hud}
@@ -620,5 +633,9 @@
   .ovl-off {
     color: var(--accent);
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  .chip .miscount {
+    color: #fca5a5; /* placed instance count != expected for this video */
+    font-weight: 600;
   }
 </style>
