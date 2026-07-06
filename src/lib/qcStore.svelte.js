@@ -1175,12 +1175,13 @@ class QCStore {
     const records = [];
     store.labels.videos.forEach((video, vIdx) => {
       for (const lf of store.labels.labeledFrames.filter((f) => f.video === video)) {
+        const frameFlagged = this.frameFlagged(lf); // final verdict for this frame (active checks/thresholds)
         lf.instances.forEach((inst, iIdx) => {
           const key = `${vIdx}:${lf.frameIdx}:${iIdx}`;
           if (!this.#instanceScores.has(key)) return; // unscored -> no contributions either
           const zScore = this.#instanceScores.get(key);
           const score = useGmm ? this.#gmmScores.get(key) ?? zScore : zScore;
-          records.push({ videoIdx: vIdx, frameIdx: lf.frameIdx, instIdx: iIdx, score, contributions: this.#contributions.get(key), orderInversion: this.#orderInversion.get(key) ?? 0, chainIntersection: this.#chainIntersection.get(key) ?? 0 });
+          records.push({ videoIdx: vIdx, frameIdx: lf.frameIdx, instIdx: iIdx, score, contributions: this.#contributions.get(key), orderInversion: this.#orderInversion.get(key) ?? 0, chainIntersection: this.#chainIntersection.get(key) ?? 0, frameFlagged });
         });
       }
     });
