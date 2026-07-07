@@ -1,8 +1,8 @@
 <script>
   // Upload a "manual check" CSV (human faulty/not-faulty review per frame) and compare it to the
-  // QC checker's per-frame verdict: a proportional Euler (Venn) of the two flagged sets, agreement
-  // metrics, clickable category tabs that tile the frames in each bucket, and a ranking of which
-  // detector best predicts the human-faulty labels (by F1).
+  // QC checker's per-frame verdict: a Venn of the two flagged sets, agreement metrics, clickable
+  // category tabs that tile each bucket, a per-video area breakdown, and a ranking of which
+  // detector (and which feature) best predicts the human-faulty labels. Poppable to a wide layout.
   import { onDestroy } from "svelte";
   import { qc } from "../qcStore.svelte.js";
   import { store } from "../labelsStore.svelte.js";
@@ -11,7 +11,9 @@
   let manual = $state(null); // { byKey, faulty, total } | { error }
   let fileName = $state("");
   let activeTab = $state(null); // "both" | "qcOnly" | "manualOnly" | null
-  let perVideoOpen = $state(false); // per-video area breakdown
+  let expanded = $state(null); // detector id whose feature impact is shown
+  let perVideoOpen = $state(false);
+  let popped = $state(false); // render in a wide pop-out window
 
   async function onFile(e) {
     const f = e.currentTarget.files?.[0];
@@ -30,10 +32,10 @@
     if (!manual || manual.error || !qc.hasResults) return null;
     const vidx = vidxMap();
     const cats = { both: [], qcOnly: [], manualOnly: [], neither: [] };
-    const perVid = new Map(); // videoIdx -> region counts + first matched frame
+    const perVid = new Map();
     store.frames.forEach((f, i) => {
       const m = manual.byKey.get(keyOf(f, vidx));
-      if (!m) return; // frame wasn't in the manual review — excluded
+      if (!m) return;
       const qcFlag = qc.frameFlagged(f);
       const cat = qcFlag && m.faulty ? "both" : qcFlag ? "qcOnly" : m.faulty ? "manualOnly" : "neither";
       cats[cat].push({ i, note: m.notes });
@@ -43,28 +45,28 @@
       pv[cat]++; pv.n++;
     });
     const m = metrics({ both: cats.both.length, qcOnly: cats.qcOnly.length, manualOnly: cats.manualOnly.length, neither: cats.neither.length });
-    // Per-video breakdown, worst-first (highest human-faulty rate).
-    const perVideo = [...perVid.values()].sort(
-      (a, b) => (b.both + b.manualOnly) / b.n - (a.both + a.manualOnly) / a.n || a.videoIdx - b.videoIdx,
-    );
+    const perVideo = [...perVid.values()].sort((a, b) => (b.both + b.manualOnly) / b.n - (a.both + a.manualOnly) / a.n || a.videoIdx - b.videoIdx);
     return { cats, m, manualUnmatched: manual.total - m.n, perVideo };
   });
 
-  // Euler geometry: circle AREA ∝ set size; center distance ∝ how much of the smaller set overlaps.
+  // Venn: circle AREA ∝ set size, with a fixed comfortable overlap so the intersection label always
+  // has room (exact counts are labeled; the metrics carry the exact numbers).
   const venn = $derived.by(() => {
     if (!cmp) return null;
-    const { qcFlagged: A, manualFaulty: B, both } = cmp.m;
-    const W = 240, cy = 58, Rmax = 42, big = Math.max(A, B, 1);
-    const rA = A ? Math.max(9, Rmax * Math.sqrt(A / big)) : 0;
-    const rB = B ? Math.max(9, Rmax * Math.sqrt(B / big)) : 0;
-    const overlap = Math.min(A, B) ? both / Math.min(A, B) : 0;
-    const d = rA && rB ? rA + rB - overlap * (rA + rB - Math.abs(rA - rB)) : 0;
-    const ax = W / 2 - d / 2, bx = W / 2 + d / 2;
-    const lens = rA && rB ? (ax + rA + (bx - rB)) / 2 : W / 2;
-    return { W, H: 116, cy, rA, rB, ax, bx, lens };
+    const { qcFlagged: A, manualFaulty: B } = cmp.m;
+    const W = 250, H = 118, cy = 60, Rmax = 45, big = Math.max(A, B, 1);
+    const rA = A ? Math.max(15, Rmax * Math.sqrt(A / big)) : 0;
+    const rB = B ? Math.max(15, Rmax * Math.sqrt(B / big)) : 0;
+    if (!rA || !rB) {
+      const r = rA || rB, x = W / 2;
+      return { W, H, cy, rA, rB, ax: x, bx: x, leftX: x, lensX: x, rightX: x, single: true };
+    }
+    const d = rA + rB - 0.55 * Math.min(rA, rB); // center distance -> ~comfortable lens
+    const startX = (W - (rA + d + rB)) / 2;
+    const ax = startX + rA, bx = ax + d;
+    return { W, H, cy, rA, rB, ax, bx, leftX: (ax - rA + (bx - rB)) / 2, lensX: (ax + rA + (bx - rB)) / 2, rightX: (ax + rA + (bx + rB)) / 2 };
   });
 
-  // Score a flagged frame set (of store indices) against the matched/faulty sets.
   function scoreSet(set, matched, faulty, nFaulty) {
     let tp = 0, det = 0;
     for (const i of set) if (matched.has(i)) { det++; if (faulty.has(i)) tp++; }
@@ -74,8 +76,7 @@
     return { tp, det, precision, recall, f1 };
   }
 
-  // Which detector best predicts the human-faulty labels? Per detector: precision/recall/F1 over
-  // the matched frames. F1 balances "flags real faults" (recall) with "flags aren't noise" (precision).
+  // Which detector best predicts the human-faulty labels? Ranked by F1.
   const ranking = $derived.by(() => {
     void qc.rev;
     if (!cmp || !manual) return null;
@@ -94,24 +95,19 @@
     return { rows, nFaulty, matched, faulty };
   });
 
-  // Feature-level breakdown for an expanded Anomaly/GMM row: how well each feature (its 3σ-outlier
-  // frames) predicts the human-faulty labels. Computed only while a row is expanded.
-  let expanded = $state(null); // detector id whose feature impact is shown
+  // Per-feature breakdown when an Anomaly/GMM row is expanded (feature 3σ-set vs manual).
   const featureRanking = $derived.by(() => {
     void qc.rev;
     if (!expanded || !ranking) return null;
     const { matched, faulty, nFaulty } = ranking;
-    return qc
-      .featureImpactSets(3)
+    return qc.featureImpactSets(3)
       .map((s) => ({ label: s.label, ...scoreSet(s.set, matched, faulty, nFaulty) }))
       .filter((r) => r.det > 0)
       .sort((a, b) => b.f1 - a.f1 || b.precision - a.precision);
   });
 
   // While a category tab is open, arrow keys traverse just that bucket; revert when it closes.
-  $effect(() => {
-    store.setNavOverride(activeTab && cmp ? cmp.cats[activeTab].map((t) => t.i) : null);
-  });
+  $effect(() => { store.setNavOverride(activeTab && cmp ? cmp.cats[activeTab].map((t) => t.i) : null); });
   onDestroy(() => store.setNavOverride(null));
 
   function goto(i) { store.setIndex(i); store.syncFrameImage?.(); }
@@ -127,193 +123,177 @@
   ];
 </script>
 
-<div class="mcc">
-  <label class="upload">
-    <input type="file" accept=".csv,text/csv" onchange={onFile} />
-    <span>⤒ Upload manual-check CSV</span>
-  </label>
-  {#if fileName}<span class="fname" title={fileName}>{fileName}</span>{/if}
-
-  {#if manual?.error}
-    <p class="err">{manual.error}</p>
-  {:else if manual && !qc.hasResults}
-    <p class="hint">Run QC first, then the comparison appears.</p>
-  {:else if cmp}
-    {@const m = cmp.m}
-    {@const v = venn}
-    <svg class="venn" viewBox="0 0 {v.W} {v.H}" role="img" aria-label="QC-flagged vs manual-faulty overlap">
-      {#if v.rA}<circle cx={v.ax} cy={v.cy} r={v.rA} class="cA" />{/if}
-      {#if v.rB}<circle cx={v.bx} cy={v.cy} r={v.rB} class="cB" />{/if}
-      {#if m.qcOnly}<text x={v.rA ? v.ax - v.rA * 0.45 : v.W / 2} y={v.cy} class="rc">{m.qcOnly}</text>{/if}
-      {#if m.both}<text x={v.lens} y={v.cy} class="rc">{m.both}</text>{/if}
-      {#if m.manualOnly}<text x={v.rB ? v.bx + v.rB * 0.45 : v.W / 2} y={v.cy} class="rc">{m.manualOnly}</text>{/if}
-      <text x="1" y={v.H - 3} class="lbl a" text-anchor="start">◑ QC flagged · {m.qcFlagged}</text>
-      <text x={v.W - 1} y={v.H - 3} class="lbl b" text-anchor="end">manual faulty · {m.manualFaulty} ◐</text>
-    </svg>
-
-    <div class="metrics">
-      <div><b>{pct(m.recall)}</b><span>caught<i>{m.both}/{m.manualFaulty} faulty found</i></span></div>
-      <div><b>{pct(m.precision)}</b><span>precision<i>{m.both}/{m.qcFlagged} flags real</i></span></div>
-      <div><b>{pct(m.accuracy)}</b><span>agreement<i>{m.both + m.neither}/{m.n} match</i></span></div>
-      <div><b>{m.kappa.toFixed(2)}</b><span>κ kappa<i>beyond chance</i></span></div>
+{#snippet body()}
+  <div class="mcc" class:wide={popped}>
+    <div class="mcc-head">
+      <label class="upload">
+        <input type="file" accept=".csv,text/csv" onchange={onFile} />
+        <span>⤒ Upload manual-check CSV</span>
+      </label>
+      {#if fileName}<span class="fname" title={fileName}>{fileName}</span>{/if}
+      <button class="mcc-pop" onclick={() => (popped = !popped)} title={popped ? "Dock back" : "Pop out"}>{popped ? "⤡" : "⤢"}</button>
     </div>
 
-    <div class="tabs" role="tablist">
-      {#each TABS as t (t.key)}
-        <button
-          class="tab {t.key}"
-          class:on={activeTab === t.key}
-          disabled={!cmp.cats[t.key].length}
-          onclick={() => (activeTab = activeTab === t.key ? null : t.key)}
-        >{t.label} <b>{cmp.cats[t.key].length}</b></button>
-      {/each}
-    </div>
+    {#if manual?.error}
+      <p class="err">{manual.error}</p>
+    {:else if manual && !qc.hasResults}
+      <p class="hint">Run QC first, then the comparison appears.</p>
+    {:else if cmp}
+      {@const m = cmp.m}
+      {@const v = venn}
+      <div class="mcc-cols">
+        <div class="col-a">
+          <svg class="venn" viewBox="0 0 {v.W} {v.H}" role="img" aria-label="QC-flagged vs manual-faulty overlap">
+            {#if v.rA}<circle cx={v.ax} cy={v.cy} r={v.rA} class="cA" />{/if}
+            {#if v.rB}<circle cx={v.bx} cy={v.cy} r={v.rB} class="cB" />{/if}
+            {#if m.qcOnly}<text x={v.leftX} y={v.cy} class="rc">{m.qcOnly}</text>{/if}
+            {#if m.both}<text x={v.lensX} y={v.cy} class="rc lens">{m.both}</text>{/if}
+            {#if m.manualOnly}<text x={v.rightX} y={v.cy} class="rc">{m.manualOnly}</text>{/if}
+            <text x="2" y={v.H - 3} class="lbl a" text-anchor="start">QC flagged · {m.qcFlagged}</text>
+            <text x={v.W - 2} y={v.H - 3} class="lbl b" text-anchor="end">manual faulty · {m.manualFaulty}</text>
+          </svg>
 
-    {#if activeTab && cmp.cats[activeTab].length}
-      <div class="tiles">
-        {#each cmp.cats[activeTab].slice(0, 800) as t (t.i)}
-          <button
-            class="tile {activeTab}"
-            class:cur={t.i === store.index}
-            class:noted={!!t.note}
-            title={tileTitle(t)}
-            onclick={() => goto(t.i)}
-            aria-label={`Go to frame ${t.i + 1}`}
-          ></button>
-        {/each}
-      </div>
-      {#if cmp.cats[activeTab].length > 800}<p class="cover">showing first 800 of {cmp.cats[activeTab].length}</p>{/if}
-    {/if}
-
-    {#if cmp.perVideo.length > 1}
-      <button class="pv-toggle" onclick={() => (perVideoOpen = !perVideoOpen)} title="Category-area breakdown per video in the CSV (worst first)">
-        {perVideoOpen ? "▾" : "▸"} Per-video areas · {cmp.perVideo.length} videos
-      </button>
-      {#if perVideoOpen}
-        <div class="pv-legend">
-          <span class="lg both">agree-faulty</span><span class="lg man">missed</span><span class="lg qc">QC-only</span><span class="lg neither">clean</span>
-        </div>
-        <div class="pv-list">
-          {#each cmp.perVideo as pv (pv.videoIdx)}
-            {@const faultyPct = Math.round((100 * (pv.both + pv.manualOnly)) / pv.n)}
-            <button class="pv-row" onclick={() => goto(pv.firstIdx)} title="video {pv.videoIdx} · {pv.n} frames · {faultyPct}% faulty (agree-faulty {pv.both}, missed {pv.manualOnly}, QC-only {pv.qcOnly}, clean {pv.neither}) — click to jump">
-              <span class="pv-name">vid {pv.videoIdx}</span>
-              <span class="pv-bar"><i class="s both" style:width="{(100 * pv.both) / pv.n}%"></i><i class="s man" style:width="{(100 * pv.manualOnly) / pv.n}%"></i><i class="s qc" style:width="{(100 * pv.qcOnly) / pv.n}%"></i><i class="s neither" style:width="{(100 * pv.neither) / pv.n}%"></i></span>
-              <span class="pv-pct" class:hot={faultyPct >= 20}>{faultyPct}%</span>
-              <span class="pv-n">{pv.n}</span>
-            </button>
-          {/each}
-        </div>
-      {/if}
-    {/if}
-
-    {#if ranking && ranking.rows.length}
-      <div class="rank">
-        <p class="rank-h">Detector effectiveness <span title="Ranked by F1 against the human-faulty labels — the balance of precision (flags aren't noise) and recall (catches real faults). Best for this imbalanced, {ranking.nFaulty}-faulty set.">vs manual · by F1</span></p>
-        {#each ranking.rows as r (r.id)}
-          <div class="rrow" title="{r.label}: F1 {r.f1.toFixed(2)} · precision {pct(r.precision)} ({r.tp}/{r.det}) · recall {pct(r.recall)} ({r.tp}/{ranking.nFaulty})">
-            {#if r.expandable}
-              <button class="rexp" onclick={() => (expanded = expanded === r.id ? null : r.id)} title="Break down by feature">{expanded === r.id ? "▾" : "▸"}</button>
-            {:else}
-              <span class="rexp"></span>
-            {/if}
-            <span class="rname">{r.label}</span>
-            <span class="rbar"><i style:width={pct(r.f1)}></i></span>
-            <span class="rf1">{r.f1.toFixed(2)}</span>
-            <span class="rpr">{pct(r.precision)}<span class="rsep">/</span>{pct(r.recall)}</span>
+          <div class="metrics">
+            <div><b>{pct(m.recall)}</b><span>caught<i>{m.both}/{m.manualFaulty} faulty found</i></span></div>
+            <div><b>{pct(m.precision)}</b><span>precision<i>{m.both}/{m.qcFlagged} flags real</i></span></div>
+            <div><b>{pct(m.accuracy)}</b><span>agreement<i>{m.both + m.neither}/{m.n} match</i></span></div>
+            <div><b>{m.kappa.toFixed(2)}</b><span>κ kappa<i>beyond chance</i></span></div>
           </div>
-          {#if expanded === r.id}
-            {#if featureRanking?.length}
-              {#each featureRanking as fr (fr.label)}
-                <div class="rrow sub" title="{fr.label}: F1 {fr.f1.toFixed(2)} · precision {pct(fr.precision)} ({fr.tp}/{fr.det}) · recall {pct(fr.recall)} ({fr.tp}/{ranking.nFaulty})">
-                  <span class="rexp"></span>
-                  <span class="rname sub">{fr.label}</span>
-                  <span class="rbar sub"><i style:width={pct(fr.f1)}></i></span>
-                  <span class="rf1">{fr.f1.toFixed(2)}</span>
-                  <span class="rpr">{pct(fr.precision)}<span class="rsep">/</span>{pct(fr.recall)}</span>
-                </div>
+
+          <div class="tabs" role="tablist">
+            {#each TABS as t (t.key)}
+              <button class="tab {t.key}" class:on={activeTab === t.key} disabled={!cmp.cats[t.key].length}
+                onclick={() => (activeTab = activeTab === t.key ? null : t.key)}>{t.label} <b>{cmp.cats[t.key].length}</b></button>
+            {/each}
+          </div>
+
+          {#if activeTab && cmp.cats[activeTab].length}
+            <div class="tiles">
+              {#each cmp.cats[activeTab].slice(0, 800) as t (t.i)}
+                <button class="tile {activeTab}" class:cur={t.i === store.index} class:noted={!!t.note}
+                  title={tileTitle(t)} onclick={() => goto(t.i)} aria-label={`Go to frame ${t.i + 1}`}></button>
               {/each}
-            {:else}
-              <p class="rank-k sub-note">no single feature clears 3σ on the reviewed frames</p>
+            </div>
+            {#if cmp.cats[activeTab].length > 800}<p class="cover">first 800 of {cmp.cats[activeTab].length}</p>{/if}
+          {/if}
+          <p class="cover">{m.n} matched · {m.neither} agree-clean{#if cmp.manualUnmatched > 0} · {cmp.manualUnmatched} not in file{/if}</p>
+        </div>
+
+        <div class="col-b">
+          {#if cmp.perVideo.length > 1}
+            {#if !popped}<button class="pv-toggle" onclick={() => (perVideoOpen = !perVideoOpen)} title="Category areas per video (worst first)">{perVideoOpen ? "▾" : "▸"} Per-video areas · {cmp.perVideo.length} videos</button>{/if}
+            {#if perVideoOpen || popped}
+              <div class="pv-legend">
+                <span class="lg both">agree-faulty</span><span class="lg man">missed</span><span class="lg qc">QC-only</span><span class="lg neither">clean</span>
+              </div>
+              <div class="pv-list">
+                {#each cmp.perVideo as pv (pv.videoIdx)}
+                  {@const faultyPct = Math.round((100 * (pv.both + pv.manualOnly)) / pv.n)}
+                  <button class="pv-row" onclick={() => goto(pv.firstIdx)} title="video {pv.videoIdx} · {pv.n} frames · {faultyPct}% faulty (agree-faulty {pv.both}, missed {pv.manualOnly}, QC-only {pv.qcOnly}, clean {pv.neither}) — click to jump">
+                    <span class="pv-name">vid {pv.videoIdx}</span>
+                    <span class="pv-bar"><i class="s both" style:width="{(100 * pv.both) / pv.n}%"></i><i class="s man" style:width="{(100 * pv.manualOnly) / pv.n}%"></i><i class="s qc" style:width="{(100 * pv.qcOnly) / pv.n}%"></i><i class="s neither" style:width="{(100 * pv.neither) / pv.n}%"></i></span>
+                    <span class="pv-pct" class:hot={faultyPct >= 20}>{faultyPct}%</span>
+                    <span class="pv-n">{pv.n}</span>
+                  </button>
+                {/each}
+              </div>
             {/if}
           {/if}
-        {/each}
-        <p class="rank-k">▸ expand Anomaly/GMM for per-feature impact · P/R = precision/recall</p>
-      </div>
-    {/if}
 
-    <p class="cover">
-      {m.n} matched · {m.neither} agree-clean{#if cmp.manualUnmatched > 0} · {cmp.manualUnmatched} manual row{cmp.manualUnmatched === 1 ? "" : "s"} not in file{/if}
-    </p>
-  {:else if manual}
-    <p class="hint">Parsed {manual.total} row{manual.total === 1 ? "" : "s"} ({manual.faulty} faulty) — run QC to compare.</p>
-  {/if}
-</div>
+          {#if ranking && ranking.rows.length}
+            <div class="rank">
+              <p class="rank-h">Detector effectiveness <span title="Ranked by F1 against the human-faulty labels — precision (flags aren't noise) x recall (catches real faults). {ranking.nFaulty} faulty.">vs manual · by F1</span></p>
+              {#each ranking.rows as r (r.id)}
+                <div class="rrow" title="{r.label}: F1 {r.f1.toFixed(2)} · precision {pct(r.precision)} ({r.tp}/{r.det}) · recall {pct(r.recall)} ({r.tp}/{ranking.nFaulty})">
+                  {#if r.expandable}<button class="rexp" onclick={() => (expanded = expanded === r.id ? null : r.id)} title="Break down by feature">{expanded === r.id ? "▾" : "▸"}</button>{:else}<span class="rexp"></span>{/if}
+                  <span class="rname">{r.label}</span>
+                  <span class="rbar"><i style:width={pct(r.f1)}></i></span>
+                  <span class="rf1">{r.f1.toFixed(2)}</span>
+                  <span class="rpr">{pct(r.precision)}<span class="rsep">/</span>{pct(r.recall)}</span>
+                </div>
+                {#if expanded === r.id}
+                  {#if featureRanking?.length}
+                    {#each featureRanking as fr (fr.label)}
+                      <div class="rrow sub" title="{fr.label}: F1 {fr.f1.toFixed(2)} · precision {pct(fr.precision)} ({fr.tp}/{fr.det}) · recall {pct(fr.recall)} ({fr.tp}/{ranking.nFaulty})">
+                        <span class="rexp"></span>
+                        <span class="rname sub">{fr.label}</span>
+                        <span class="rbar sub"><i style:width={pct(fr.f1)}></i></span>
+                        <span class="rf1">{fr.f1.toFixed(2)}</span>
+                        <span class="rpr">{pct(fr.precision)}<span class="rsep">/</span>{pct(fr.recall)}</span>
+                      </div>
+                    {/each}
+                  {:else}
+                    <p class="rank-k sub-note">no single feature clears 3σ on the reviewed frames</p>
+                  {/if}
+                {/if}
+              {/each}
+              <p class="rank-k">▸ expand Anomaly/GMM for per-feature impact · P/R = precision/recall</p>
+            </div>
+          {/if}
+        </div>
+      </div>
+    {:else if manual}
+      <p class="hint">Parsed {manual.total} row{manual.total === 1 ? "" : "s"} ({manual.faulty} faulty) — run QC to compare.</p>
+    {/if}
+  </div>
+{/snippet}
+
+{#if popped}
+  <p class="mcc-popped">Popped out · <button class="mcc-link" onclick={() => (popped = false)}>show inline</button></p>
+  <div class="mcc-backdrop" onclick={(e) => { if (e.target === e.currentTarget) popped = false; }}>
+    <div class="mcc-card">{@render body()}</div>
+  </div>
+{:else}
+  {@render body()}
+{/if}
 
 <style>
-  .mcc { display: flex; flex-direction: column; gap: 0.45rem; }
+  .mcc { display: flex; flex-direction: column; gap: 0.5rem; }
+  .mcc-head { display: flex; align-items: center; gap: 0.4rem; }
   .upload {
-    display: inline-flex;
-    align-items: center;
-    align-self: flex-start;
-    font-size: 0.72rem;
-    color: var(--accent);
+    display: inline-flex; align-items: center; font-size: 0.72rem; color: var(--accent);
     border: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent);
-    border-radius: var(--r-xs);
-    padding: 0.28rem 0.5rem;
-    cursor: pointer;
+    border-radius: var(--r-xs); padding: 0.28rem 0.5rem; cursor: pointer; white-space: nowrap;
   }
   .upload input { display: none; }
-  .fname { font-size: 0.64rem; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fname { font-size: 0.64rem; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; min-width: 0; }
+  .mcc-pop { margin-left: auto; background: none; border: none; color: var(--dim); font-size: 0.9rem; cursor: pointer; padding: 0 0.1rem; flex: none; }
+  .mcc-pop:hover { color: var(--accent); }
   .err { font-size: 0.68rem; color: #fca5a5; margin: 0; }
   .hint { font-size: 0.68rem; color: var(--dim); margin: 0; }
 
-  .venn { width: 100%; max-width: 260px; align-self: center; overflow: visible; }
-  .cA { fill: rgba(95, 217, 242, 0.32); stroke: #5fd9f2; stroke-width: 1; }
-  .cB { fill: rgba(251, 146, 110, 0.32); stroke: #fb926e; stroke-width: 1; }
-  .rc { fill: var(--text); font-size: 12px; font-weight: 700; text-anchor: middle; dominant-baseline: central; paint-order: stroke; stroke: #0b0e13; stroke-width: 2.5px; }
+  .mcc-cols { display: flex; flex-direction: column; gap: 0.5rem; }
+  .mcc-card .mcc-cols { display: grid; grid-template-columns: 264px 1fr; gap: 1.2rem; align-items: start; }
+  .col-a, .col-b { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
+
+  /* Venn */
+  .venn { width: 100%; max-width: 250px; align-self: center; overflow: visible; }
+  .mcc-card .venn { max-width: 250px; }
+  .cA { fill: rgba(95, 217, 242, 0.30); stroke: #5fd9f2; stroke-width: 1.2; }
+  .cB { fill: rgba(251, 146, 110, 0.30); stroke: #fb926e; stroke-width: 1.2; }
+  .rc { fill: var(--text); font-size: 13px; font-weight: 700; text-anchor: middle; dominant-baseline: central; paint-order: stroke; stroke: #0b0e13; stroke-width: 3px; }
+  .rc.lens { font-size: 11px; }
   .lbl { font-size: 8.5px; }
   .lbl.a { fill: #5fd9f2; }
   .lbl.b { fill: #fb926e; }
 
   .metrics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.3rem; }
-  .metrics > div { display: flex; align-items: baseline; gap: 0.3rem; background: rgba(255, 255, 255, 0.03); border-radius: var(--r-xs); padding: 0.28rem 0.4rem; }
-  .metrics b { font-size: 0.85rem; font-variant-numeric: tabular-nums; min-width: 2.6ch; }
+  .metrics > div { display: flex; align-items: baseline; gap: 0.4rem; background: rgba(255, 255, 255, 0.03); border-radius: var(--r-xs); padding: 0.3rem 0.45rem; }
+  .metrics b { font-size: 0.9rem; font-variant-numeric: tabular-nums; }
   .metrics span { display: flex; flex-direction: column; font-size: 0.66rem; color: var(--muted); line-height: 1.2; }
   .metrics i { font-style: normal; font-size: 0.56rem; color: var(--dim); }
 
   .tabs { display: flex; gap: 0.3rem; }
-  .tab {
-    flex: 1 1 0;
-    min-width: 0;
-    font-size: 0.64rem;
-    border: 1px solid var(--border);
-    border-radius: var(--r-xs);
-    padding: 0.26rem 0.3rem;
-    background: none;
-    color: var(--muted);
-    cursor: pointer;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
+  .tab { flex: 1 1 0; min-width: 0; font-size: 0.64rem; border: 1px solid var(--border); border-radius: var(--r-xs); padding: 0.26rem 0.3rem; background: none; color: var(--muted); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .tab b { font-variant-numeric: tabular-nums; }
   .tab:disabled { opacity: 0.4; cursor: default; }
   .tab.both.on { border-color: #86efac; color: #86efac; background: rgba(134, 239, 172, 0.12); }
   .tab.qcOnly.on { border-color: #5fd9f2; color: #5fd9f2; background: rgba(95, 217, 242, 0.12); }
   .tab.manualOnly.on { border-color: #fb926e; color: #fb926e; background: rgba(251, 146, 110, 0.12); }
 
-  .tiles {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 3px;
-    max-height: 150px;
-    overflow-y: auto;
-    padding: 2px;
-    background: rgba(0, 0, 0, 0.2);
-    border-radius: var(--r-xs);
-  }
-  .tile { width: 15px; height: 15px; border: 1px solid transparent; border-radius: 2px; cursor: pointer; padding: 0; }
+  .tiles { display: flex; flex-wrap: wrap; gap: 3px; max-height: 150px; overflow-y: auto; padding: 2px; background: rgba(0, 0, 0, 0.2); border-radius: var(--r-xs); }
+  .mcc-card .tiles { max-height: 220px; }
+  .tile { width: 15px; height: 15px; border-radius: 2px; cursor: pointer; padding: 0; border: none; }
   .tile.both { background: rgba(134, 239, 172, 0.35); }
   .tile.qcOnly { background: rgba(95, 217, 242, 0.35); }
   .tile.manualOnly { background: rgba(251, 146, 110, 0.35); }
@@ -331,6 +311,7 @@
   .lg.qc::before { background: #5fd9f2; }
   .lg.neither::before { background: #39414f; }
   .pv-list { display: flex; flex-direction: column; gap: 2px; max-height: 160px; overflow-y: auto; }
+  .mcc-card .pv-list { max-height: 300px; }
   .pv-row { display: grid; grid-template-columns: 2.6rem 1fr 2.2rem 2.4rem; align-items: center; gap: 0.35rem; background: none; border: none; padding: 1px 0; cursor: pointer; }
   .pv-row:hover { background: rgba(255, 255, 255, 0.04); }
   .pv-name { font-size: 0.62rem; color: var(--muted); text-align: left; }
@@ -354,12 +335,18 @@
   .sub-note { padding-left: 1.2rem; margin: 0; }
   .rname { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rname.sub { color: var(--muted); }
-  .rbar.sub i { opacity: 0.7; }
   .rbar { height: 6px; background: rgba(255, 255, 255, 0.06); border-radius: 3px; overflow: hidden; }
   .rbar i { display: block; height: 100%; background: linear-gradient(90deg, #5fd9f2, #86efac); }
+  .rbar.sub i { opacity: 0.7; }
   .rf1 { font-variant-numeric: tabular-nums; color: var(--text); text-align: right; }
   .rpr { font-variant-numeric: tabular-nums; color: var(--dim); text-align: right; }
   .rsep { color: var(--border); margin: 0 1px; }
   .rank-k { font-size: 0.56rem; color: var(--dim); margin: 0.05rem 0 0; text-align: right; }
   .cover { font-size: 0.62rem; color: var(--dim); margin: 0; }
+
+  /* pop-out */
+  .mcc-popped { margin: 0; font-size: 0.72rem; color: var(--dim); }
+  .mcc-link { background: none; border: none; padding: 0; font: inherit; color: var(--accent); cursor: pointer; }
+  .mcc-backdrop { position: fixed; inset: 0; z-index: 300; background: rgba(0, 0, 0, 0.55); display: flex; align-items: center; justify-content: center; }
+  .mcc-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.2rem; box-shadow: 0 16px 50px rgba(0, 0, 0, 0.5); width: 760px; max-width: 94vw; max-height: 90vh; overflow: auto; }
 </style>
