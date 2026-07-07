@@ -135,10 +135,12 @@
       <button class="mcc-pop" onclick={() => (popped = !popped)} title={popped ? "Dock back" : "Pop out"}>{popped ? "⤡" : "⤢"}</button>
     </div>
 
-    {#if manual?.error}
+    {#if !manual}
+      <p class="hint">Upload a per-frame faulty / not-faulty review CSV to compare it against QC.</p>
+    {:else if manual.error}
       <p class="err">{manual.error}</p>
-    {:else if manual && !qc.hasResults}
-      <p class="hint">Run QC first, then the comparison appears.</p>
+    {:else if !qc.hasResults}
+      <p class="hint">Parsed {manual.total} rows ({manual.faulty} faulty) — run QC to compare.</p>
     {:else if cmp}
       {@const m = cmp.m}
       {@const v = venn}
@@ -233,8 +235,6 @@
           {/if}
         </div>
       </div>
-    {:else if manual}
-      <p class="hint">Parsed {manual.total} row{manual.total === 1 ? "" : "s"} ({manual.faulty} faulty) — run QC to compare.</p>
     {/if}
   </div>
 {/snippet}

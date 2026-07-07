@@ -1,11 +1,18 @@
+<script module>
+  // Remember each window's last position across open/close (keyed by title), so re-opening a
+  // pop-out returns it to where you left it instead of re-centering.
+  const POS = new Map();
+</script>
+
 <script>
   // A non-blocking, draggable floating window (no backdrop) so the main app stays interactive —
   // e.g. arrow-key frame traversal keeps working while it's open. Drag by the title bar.
   let { title = "", onclose, width = "420px", children } = $props();
 
   let el = $state.raw(null);
-  let x = $state(null); // left px; null = initial centered
-  let y = $state(null); // top px
+  const saved = POS.get(title);
+  let x = $state(saved?.x ?? null); // left px; null = initial centered
+  let y = $state(saved?.y ?? null); // top px
   let drag = null;
 
   function down(e) {
@@ -25,7 +32,13 @@
   }
   function up(e) {
     drag = null;
+    if (x != null) POS.set(title, { x, y }); // remember where it was left
     try { e.currentTarget.releasePointerCapture?.(e.pointerId); } catch { /* ignore */ }
+  }
+  function reset(e) {
+    if (e.target.closest("button")) return; // ignore dbl-clicks on the ✕
+    x = null; y = null;
+    POS.delete(title);
   }
 </script>
 
@@ -39,7 +52,7 @@
   role="dialog"
   aria-label={title}
 >
-  <div class="bar" onpointerdown={down} onpointermove={move} onpointerup={up}>
+  <div class="bar" onpointerdown={down} onpointermove={move} onpointerup={up} ondblclick={reset} title="Drag to move · double-click to reset">
     <span class="grip" aria-hidden="true">⠿</span>
     <span class="ttl">{title}</span>
     <button class="x" onclick={onclose} title="Close">✕</button>
@@ -72,6 +85,7 @@
     user-select: none;
     touch-action: none;
   }
+  .bar:hover { background: rgba(255, 255, 255, 0.05); }
   .grip { color: var(--dim); font-size: 0.7rem; letter-spacing: -2px; }
   .ttl { font-size: 0.72rem; color: var(--muted); flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .x { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 0.8rem; padding: 0 0.2rem; flex: none; }
