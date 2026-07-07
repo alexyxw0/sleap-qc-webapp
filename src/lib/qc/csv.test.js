@@ -11,17 +11,17 @@ const contrib = {
 };
 
 describe("qcResultsCsv", () => {
-  it("emits the qc_results.csv header (24 base cols + 2 ordering cols; hull_area not hull_area_zscore)", () => {
+  it("emits the qc_results.csv header (24 base cols + 2 ordering + frame_flagged; hull_area not hull_area_zscore)", () => {
     expect(qcResultsCsv([])).toBe(QC_CSV_HEADER.join(","));
     expect(QC_CSV_HEADER.slice(0, 6)).toEqual(["video_idx", "frame_idx", "instance_idx", "score", "confidence", "top_issue"]);
     expect(QC_CSV_HEADER).toContain("hull_area");
     expect(QC_CSV_HEADER).not.toContain("hull_area_zscore");
-    expect(QC_CSV_HEADER.slice(-2)).toEqual(["order_inversion_rate", "chain_intersection_count"]);
-    expect(QC_CSV_HEADER).toHaveLength(26);
+    expect(QC_CSV_HEADER.slice(-3)).toEqual(["order_inversion_rate", "chain_intersection_count", "frame_flagged"]);
+    expect(QC_CSV_HEADER).toHaveLength(27);
   });
 
-  it("writes one row per record: identity + score/confidence/top_issue + 18 features + 2 ordering", () => {
-    const rows = qcResultsCsv([{ videoIdx: 0, frameIdx: 1737, instIdx: 0, score: 0.88, contributions: contrib, orderInversion: 0.5, chainIntersection: 2 }]).split("\n");
+  it("writes one row per record: identity + score/confidence/top_issue + 18 features + 2 ordering + frame_flagged", () => {
+    const rows = qcResultsCsv([{ videoIdx: 0, frameIdx: 1737, instIdx: 0, score: 0.88, contributions: contrib, orderInversion: 0.5, chainIntersection: 2, frameFlagged: true }]).split("\n");
     expect(rows).toHaveLength(2);
     const cells = rows[1].split(",");
     expect(cells.slice(0, 5)).toEqual(["0", "1737", "0", "0.88", "high"]); // indices int, score float
@@ -32,7 +32,8 @@ describe("qcResultsCsv", () => {
     expect(cells[QC_CSV_HEADER.indexOf("has_isolated_invisible")]).toBe("0.0");
     expect(cells[QC_CSV_HEADER.indexOf("order_inversion_rate")]).toBe("0.5");
     expect(cells[QC_CSV_HEADER.indexOf("chain_intersection_count")]).toBe("2.0");
-    expect(cells).toHaveLength(26);
+    expect(cells[QC_CSV_HEADER.indexOf("frame_flagged")]).toBe("True");
+    expect(cells).toHaveLength(27);
   });
 
   it("coalesces non-finite feature values to 0.0", () => {

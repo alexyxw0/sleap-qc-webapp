@@ -30,8 +30,11 @@ export class InstanceCountChecker {
   }
   fit(frameCounts, videoIds = null) {
     const nonEmpty = (xs) => xs.filter((c) => c > 0);
+    const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
     const ne = nonEmpty(frameCounts);
     this.globalExpected = median(ne.length ? ne : frameCounts);
+    this.globalMean = mean(ne.length ? ne : frameCounts);
+    this.meanCounts = new Map();
     if (this.perVideo && videoIds) {
       const byVid = new Map();
       frameCounts.forEach((c, i) => {
@@ -40,21 +43,24 @@ export class InstanceCountChecker {
         if (!byVid.has(v)) byVid.set(v, []);
         byVid.get(v).push(c);
       });
-      for (const [v, counts] of byVid) this.expectedCounts.set(v, median(counts));
+      for (const [v, counts] of byVid) {
+        this.expectedCounts.set(v, median(counts));
+        this.meanCounts.set(v, mean(counts));
+      }
     }
     return this;
   }
   check(instanceCount, videoId = null) {
-    const expectedRaw =
-      this.perVideo && videoId != null && this.expectedCounts.has(videoId)
-        ? this.expectedCounts.get(videoId)
-        : this.globalExpected;
+    const perVid = this.perVideo && videoId != null && this.expectedCounts.has(videoId);
+    const expectedRaw = perVid ? this.expectedCounts.get(videoId) : this.globalExpected;
+    const meanRaw = perVid ? this.meanCounts.get(videoId) : this.globalMean;
     const expected = Math.round(expectedRaw);
     return {
       isIncomplete: instanceCount < expected, // missing instance(s)
       isOvercount: instanceCount > expected, // extra / spurious instance(s)
       isWrongCount: instanceCount !== expected,
       expectedCount: expectedRaw,
+      meanCount: meanRaw, // per-video average (for display)
       actualCount: instanceCount,
       countDifference: instanceCount - expected,
     };

@@ -85,7 +85,7 @@ class QCStore {
   gmmThreshold = $state(0.95); // GMM anomaly (1 − likelihood-percentile) flag — top ~5%
   chiralityThreshold = $state(0.5); // L/R-flip flag ([0,1] wrong-side fraction; hard rule forces >=0.9)
   orderingThreshold = $state(0.3); // chain-ordering flag (combined: a crossing -> 1.0, else order_inversion_rate)
-  poseSplitThreshold = $state(0.5); // chimera flag: saturating split score (raw split 1.0 -> 0.5)
+  poseSplitThreshold = $state(0.9); // chimera flag: saturating split score (raw split 9.0 -> 0.9)
   sparseFraction = $state(0.5); // "sparse instance" cutoff as a fraction of the dataset's average visible-node count
   confidenceThreshold = $state(0.3); // flag a predicted instance whose keypoint confidence scores below this
   confidenceMode = $state("avg"); // keypoint-confidence mode: "avg" (mean over visible keypoints, default) or "min" (weakest visible keypoint)
@@ -1175,12 +1175,13 @@ class QCStore {
     const records = [];
     store.labels.videos.forEach((video, vIdx) => {
       for (const lf of store.labels.labeledFrames.filter((f) => f.video === video)) {
+        const frameFlagged = this.frameFlagged(lf); // final verdict for this frame (active checks/thresholds)
         lf.instances.forEach((inst, iIdx) => {
           const key = `${vIdx}:${lf.frameIdx}:${iIdx}`;
           if (!this.#instanceScores.has(key)) return; // unscored -> no contributions either
           const zScore = this.#instanceScores.get(key);
           const score = useGmm ? this.#gmmScores.get(key) ?? zScore : zScore;
-          records.push({ videoIdx: vIdx, frameIdx: lf.frameIdx, instIdx: iIdx, score, contributions: this.#contributions.get(key), orderInversion: this.#orderInversion.get(key) ?? 0, chainIntersection: this.#chainIntersection.get(key) ?? 0 });
+          records.push({ videoIdx: vIdx, frameIdx: lf.frameIdx, instIdx: iIdx, score, contributions: this.#contributions.get(key), orderInversion: this.#orderInversion.get(key) ?? 0, chainIntersection: this.#chainIntersection.get(key) ?? 0, frameFlagged });
         });
       }
     });

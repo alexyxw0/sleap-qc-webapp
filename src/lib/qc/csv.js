@@ -24,6 +24,7 @@ const ORDERING_COLS = ["order_inversion_rate", "chain_intersection_count"];
 
 export const QC_CSV_HEADER = [
   "video_idx", "frame_idx", "instance_idx", "score", "confidence", "top_issue", ...FEATURE_COLS, ...ORDERING_COLS,
+  "frame_flagged", // whether the instance's frame was ultimately flagged (with the active checks/thresholds)
 ];
 
 // RFC-4180 minimal quoting: wrap in quotes (and double internal quotes) only when needed.
@@ -53,6 +54,7 @@ export function qcResultsCsv(records) {
       fnum(s), confidence(s), csvField(topIssue(c).issue),
       ...FEATURE_COLS.map((col) => fnum(c[CONTRIB_KEY[col] ?? col])),
       fnum(r.orderInversion), fnum(r.chainIntersection),
+      r.frameFlagged ? "True" : "False",
     ].join(","));
   }
   return lines.join("\n");

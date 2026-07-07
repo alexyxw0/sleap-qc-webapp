@@ -188,6 +188,7 @@ export class LabelQCDetector {
       isWrongCount: counted && count.isWrongCount,
       isEmpty: counted && poses.length === 0,
       expectedInstanceCount: Math.round(count.expectedCount),
+      avgInstanceCount: count.meanCount ?? null, // per-video average, for display
       actualInstanceCount: poses.length,
       minVisibleNodeCount,
       sparsestInstance,
@@ -216,8 +217,10 @@ export class LabelQCDetector {
   }
 }
 
-const videoIdString = (video, idx) =>
-  typeof video?.filename === "string" && video.filename ? video.filename : String(idx);
+// One id per video ENTRY — the index guarantees uniqueness. Embedded .pkg.slp videos all report
+// filename "." (or empty), so a filename key collapses every video into one group and the
+// per-video expected-count degenerates to a single global median (false count flags everywhere).
+const videoIdString = (video, idx) => `${idx}:${video?.filename ?? ""}`;
 
 /**
  * Run the full QC pipeline on a sleap-io.js Labels (fit + score). Returns instance
