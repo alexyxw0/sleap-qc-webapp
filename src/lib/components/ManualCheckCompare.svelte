@@ -7,6 +7,7 @@
   import { qc } from "../qcStore.svelte.js";
   import { store } from "../labelsStore.svelte.js";
   import { parseManualCheck, metrics } from "../manualCheck.js";
+  import PopoutWindow from "./PopoutWindow.svelte";
 
   let manual = $state(null); // { byKey, faulty, total } | { error }
   let fileName = $state("");
@@ -240,9 +241,7 @@
 
 {#if popped}
   <p class="mcc-popped">Popped out · <button class="mcc-link" onclick={() => (popped = false)}>show inline</button></p>
-  <div class="mcc-backdrop" onclick={(e) => { if (e.target === e.currentTarget) popped = false; }}>
-    <div class="mcc-card">{@render body()}</div>
-  </div>
+  <PopoutWindow title="Manual-check comparison" width="760px" onclose={() => (popped = false)}>{@render body()}</PopoutWindow>
 {:else}
   {@render body()}
 {/if}
@@ -263,12 +262,11 @@
   .hint { font-size: 0.68rem; color: var(--dim); margin: 0; }
 
   .mcc-cols { display: flex; flex-direction: column; gap: 0.5rem; }
-  .mcc-card .mcc-cols { display: grid; grid-template-columns: 264px 1fr; gap: 1.2rem; align-items: start; }
+  .mcc.wide .mcc-cols { display: grid; grid-template-columns: 264px 1fr; gap: 1.2rem; align-items: start; }
   .col-a, .col-b { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
 
   /* Venn */
   .venn { width: 100%; max-width: 250px; align-self: center; overflow: visible; }
-  .mcc-card .venn { max-width: 250px; }
   .cA { fill: rgba(95, 217, 242, 0.30); stroke: #5fd9f2; stroke-width: 1.2; }
   .cB { fill: rgba(251, 146, 110, 0.30); stroke: #fb926e; stroke-width: 1.2; }
   .rc { fill: var(--text); font-size: 13px; font-weight: 700; text-anchor: middle; dominant-baseline: central; paint-order: stroke; stroke: #0b0e13; stroke-width: 3px; }
@@ -292,7 +290,7 @@
   .tab.manualOnly.on { border-color: #fb926e; color: #fb926e; background: rgba(251, 146, 110, 0.12); }
 
   .tiles { display: flex; flex-wrap: wrap; gap: 3px; max-height: 150px; overflow-y: auto; padding: 2px; background: rgba(0, 0, 0, 0.2); border-radius: var(--r-xs); }
-  .mcc-card .tiles { max-height: 220px; }
+  .mcc.wide .tiles { max-height: 220px; }
   .tile { width: 15px; height: 15px; border-radius: 2px; cursor: pointer; padding: 0; border: none; }
   .tile.both { background: rgba(134, 239, 172, 0.35); }
   .tile.qcOnly { background: rgba(95, 217, 242, 0.35); }
@@ -311,7 +309,7 @@
   .lg.qc::before { background: #5fd9f2; }
   .lg.neither::before { background: #39414f; }
   .pv-list { display: flex; flex-direction: column; gap: 2px; max-height: 160px; overflow-y: auto; }
-  .mcc-card .pv-list { max-height: 300px; }
+  .mcc.wide .pv-list { max-height: 300px; }
   .pv-row { display: grid; grid-template-columns: 2.6rem 1fr 2.2rem 2.4rem; align-items: center; gap: 0.35rem; background: none; border: none; padding: 1px 0; cursor: pointer; }
   .pv-row:hover { background: rgba(255, 255, 255, 0.04); }
   .pv-name { font-size: 0.62rem; color: var(--muted); text-align: left; }
@@ -344,9 +342,7 @@
   .rank-k { font-size: 0.56rem; color: var(--dim); margin: 0.05rem 0 0; text-align: right; }
   .cover { font-size: 0.62rem; color: var(--dim); margin: 0; }
 
-  /* pop-out */
+  /* pop-out (inline "popped out" note; the window itself is PopoutWindow) */
   .mcc-popped { margin: 0; font-size: 0.72rem; color: var(--dim); }
   .mcc-link { background: none; border: none; padding: 0; font: inherit; color: var(--accent); cursor: pointer; }
-  .mcc-backdrop { position: fixed; inset: 0; z-index: 300; background: rgba(0, 0, 0, 0.55); display: flex; align-items: center; justify-content: center; }
-  .mcc-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.2rem; box-shadow: 0 16px 50px rgba(0, 0, 0, 0.5); width: 760px; max-width: 94vw; max-height: 90vh; overflow: auto; }
 </style>
