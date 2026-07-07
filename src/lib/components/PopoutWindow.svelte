@@ -10,6 +10,7 @@
 
   function down(e) {
     if (e.button != null && e.button !== 0) return; // left button / touch only
+    if (e.target.closest("button")) return; // don't start a drag on the ✕ (it would steal the click)
     const r = el.getBoundingClientRect();
     if (x == null) { x = r.left; y = r.top; } // pin the current (centered) position, then follow
     drag = { ox: e.clientX - x, oy: e.clientY - y };
