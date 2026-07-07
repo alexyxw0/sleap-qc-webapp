@@ -3,6 +3,7 @@
   // QC checker's per-frame verdict: a proportional Euler (Venn) of the two flagged sets, agreement
   // metrics, clickable category tabs that tile the frames in each bucket, and a ranking of which
   // detector best predicts the human-faulty labels (by F1).
+  import { onDestroy } from "svelte";
   import { qc } from "../qcStore.svelte.js";
   import { store } from "../labelsStore.svelte.js";
   import { parseManualCheck, metrics } from "../manualCheck.js";
@@ -79,6 +80,12 @@
       .sort((a, b) => b.f1 - a.f1 || b.precision - a.precision);
     return { rows, nFaulty };
   });
+
+  // While a category tab is open, arrow keys traverse just that bucket; revert when it closes.
+  $effect(() => {
+    store.setNavOverride(activeTab && cmp ? cmp.cats[activeTab].map((t) => t.i) : null);
+  });
+  onDestroy(() => store.setNavOverride(null));
 
   function goto(i) { store.setIndex(i); store.syncFrameImage?.(); }
   function tileTitle(t) {

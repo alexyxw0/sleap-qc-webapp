@@ -74,6 +74,12 @@ class LabelsStore {
   // --- reactive scalars ---
   rev = $state(0); // bump to signal model mutated -> redraw
   index = $state(0); // position within `frames`
+  // Which frames arrow-key nav (next/prev) steps through — a sorted list of `frames` indices, or
+  // null for the whole file. `base` follows the frames-grid filter (all/labeled/flagged); a
+  // drill-down (e.g. the manual-check tabs) can `override` it while active. So the arrows always
+  // traverse whatever subset the user is currently looking at.
+  navBase = $state.raw(null);
+  navOverride = $state.raw(null);
   status = $state("idle"); // idle | loading | needs-video | ready | error
   message = $state("");
   error = $state(null);
@@ -224,10 +230,31 @@ class LabelsStore {
     if (n === 0) return;
     this.index = Math.max(0, Math.min(n - 1, i));
   }
+  /** The active nav subset (sorted `frames` indices), or null = whole file. Override beats base. */
+  get navFrames() {
+    return this.navOverride ?? this.navBase;
+  }
+  setNavBase(list) {
+    this.navBase = list?.length ? list : null;
+  }
+  setNavOverride(list) {
+    this.navOverride = list?.length ? list : null;
+  }
   next() {
+    const list = this.navFrames;
+    if (list) {
+      const nx = list.find((i) => i > this.index); // next filtered frame after the current position
+      if (nx != null) this.setIndex(nx);
+      return;
+    }
     this.setIndex(this.index + 1);
   }
   prev() {
+    const list = this.navFrames;
+    if (list) {
+      for (let k = list.length - 1; k >= 0; k--) if (list[k] < this.index) { this.setIndex(list[k]); return; }
+      return;
+    }
     this.setIndex(this.index - 1);
   }
 

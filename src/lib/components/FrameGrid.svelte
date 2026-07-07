@@ -56,6 +56,11 @@
     else if (idxList && idxList.length === 0 && store.frameCount > 0) filter = "all";
   });
 
+  // Arrow-key nav (store.next/prev) steps through whatever this grid is filtered to.
+  $effect(() => {
+    store.setNavBase(idxList); // null for "all" -> whole file
+  });
+
   const count = $derived(idxList ? idxList.length : store.frameCount);
   const realIdx = (pos) => (idxList ? idxList[pos] : pos);
   const cols = $derived(Math.max(1, Math.floor((innerW + GAP) / PITCH)));
