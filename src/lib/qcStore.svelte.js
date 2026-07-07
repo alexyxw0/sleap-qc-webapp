@@ -558,6 +558,33 @@ class QCStore {
     const sets = [...byKey.values()].sort((a, b) => (ORDER.indexOf(a.id) + 1 || 99) - (ORDER.indexOf(b.id) + 1 || 99));
     return { total: frames.length, sets };
   }
+  /** Per-feature "impact" sets for the feature-vector detectors (Anomaly/GMM): frames where a
+   *  feature's max |z| over the frame's instances clears `threshold` (default 3σ). Lets the
+   *  manual-check comparison break Anomaly/GMM effectiveness down by feature. `set` = frame indices. */
+  featureImpactSets(threshold = 3) {
+    this.rev;
+    const a = this.#computed.anomaly;
+    if (!a?.det?.means || !a.featureNames) return [];
+    const names = a.featureNames;
+    const frames = store.frames ?? [];
+    const sets = names.map(() => new Set());
+    frames.forEach((item, fi) => {
+      const insts = item.lf?.instances ?? [];
+      const maxZ = new Array(names.length).fill(0);
+      for (let ii = 0; ii < insts.length; ii++) {
+        const c = this.contributionsFor(item, ii);
+        if (!c) continue;
+        for (let j = 0; j < names.length; j++) {
+          const raw = c[names[j]];
+          if (raw == null || !Number.isFinite(raw)) continue;
+          const z = Math.abs((raw - a.det.means[j]) / (a.det.stds[j] || 1e-6));
+          if (z > maxZ[j]) maxZ[j] = z;
+        }
+      }
+      for (let j = 0; j < names.length; j++) if (maxZ[j] >= threshold) sets[j].add(fi);
+    });
+    return names.map((name, j) => ({ feature: name, label: name.replace(/_zscore$/, ""), set: sets[j] }));
+  }
 
   /** Per-instance boolean array: is each instance flagged by ANY enabled check (instance- AND the
    *  per-instance-attributable frame-level checks)? Used to draw a bbox around flagged instances. */

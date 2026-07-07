@@ -54,6 +54,16 @@
     return { W, H: 116, cy, rA, rB, ax, bx, lens };
   });
 
+  // Score a flagged frame set (of store indices) against the matched/faulty sets.
+  function scoreSet(set, matched, faulty, nFaulty) {
+    let tp = 0, det = 0;
+    for (const i of set) if (matched.has(i)) { det++; if (faulty.has(i)) tp++; }
+    const precision = det ? tp / det : 0;
+    const recall = nFaulty ? tp / nFaulty : 0;
+    const f1 = precision + recall ? (2 * precision * recall) / (precision + recall) : 0;
+    return { tp, det, precision, recall, f1 };
+  }
+
   // Which detector best predicts the human-faulty labels? Per detector: precision/recall/F1 over
   // the matched frames. F1 balances "flags real faults" (recall) with "flags aren't noise" (precision).
   const ranking = $derived.by(() => {
@@ -69,16 +79,23 @@
     });
     const nFaulty = faulty.size;
     const rows = qc.detectorSets().sets
-      .map((s) => {
-        let tp = 0, det = 0;
-        for (const i of s.set) if (matched.has(i)) { det++; if (faulty.has(i)) tp++; }
-        const precision = det ? tp / det : 0;
-        const recall = nFaulty ? tp / nFaulty : 0;
-        const f1 = precision + recall ? (2 * precision * recall) / (precision + recall) : 0;
-        return { label: s.label, tp, det, precision, recall, f1 };
-      })
+      .map((s) => ({ id: s.id, label: s.label, expandable: s.id === "anomaly" || s.id === "gmm", ...scoreSet(s.set, matched, faulty, nFaulty) }))
       .sort((a, b) => b.f1 - a.f1 || b.precision - a.precision);
-    return { rows, nFaulty };
+    return { rows, nFaulty, matched, faulty };
+  });
+
+  // Feature-level breakdown for an expanded Anomaly/GMM row: how well each feature (its 3σ-outlier
+  // frames) predicts the human-faulty labels. Computed only while a row is expanded.
+  let expanded = $state(null); // detector id whose feature impact is shown
+  const featureRanking = $derived.by(() => {
+    void qc.rev;
+    if (!expanded || !ranking) return null;
+    const { matched, faulty, nFaulty } = ranking;
+    return qc
+      .featureImpactSets(3)
+      .map((s) => ({ label: s.label, ...scoreSet(s.set, matched, faulty, nFaulty) }))
+      .filter((r) => r.det > 0)
+      .sort((a, b) => b.f1 - a.f1 || b.precision - a.precision);
   });
 
   // While a category tab is open, arrow keys traverse just that bucket; revert when it closes.
@@ -161,15 +178,35 @@
     {#if ranking && ranking.rows.length}
       <div class="rank">
         <p class="rank-h">Detector effectiveness <span title="Ranked by F1 against the human-faulty labels — the balance of precision (flags aren't noise) and recall (catches real faults). Best for this imbalanced, {ranking.nFaulty}-faulty set.">vs manual · by F1</span></p>
-        {#each ranking.rows as r (r.label)}
+        {#each ranking.rows as r (r.id)}
           <div class="rrow" title="{r.label}: F1 {r.f1.toFixed(2)} · precision {pct(r.precision)} ({r.tp}/{r.det}) · recall {pct(r.recall)} ({r.tp}/{ranking.nFaulty})">
+            {#if r.expandable}
+              <button class="rexp" onclick={() => (expanded = expanded === r.id ? null : r.id)} title="Break down by feature">{expanded === r.id ? "▾" : "▸"}</button>
+            {:else}
+              <span class="rexp"></span>
+            {/if}
             <span class="rname">{r.label}</span>
             <span class="rbar"><i style:width={pct(r.f1)}></i></span>
             <span class="rf1">{r.f1.toFixed(2)}</span>
             <span class="rpr">{pct(r.precision)}<span class="rsep">/</span>{pct(r.recall)}</span>
           </div>
+          {#if expanded === r.id}
+            {#if featureRanking?.length}
+              {#each featureRanking as fr (fr.label)}
+                <div class="rrow sub" title="{fr.label}: F1 {fr.f1.toFixed(2)} · precision {pct(fr.precision)} ({fr.tp}/{fr.det}) · recall {pct(fr.recall)} ({fr.tp}/{ranking.nFaulty})">
+                  <span class="rexp"></span>
+                  <span class="rname sub">{fr.label}</span>
+                  <span class="rbar sub"><i style:width={pct(fr.f1)}></i></span>
+                  <span class="rf1">{fr.f1.toFixed(2)}</span>
+                  <span class="rpr">{pct(fr.precision)}<span class="rsep">/</span>{pct(fr.recall)}</span>
+                </div>
+              {/each}
+            {:else}
+              <p class="rank-k sub-note">no single feature clears 3σ on the reviewed frames</p>
+            {/if}
+          {/if}
         {/each}
-        <p class="rank-k">P / R = precision / recall</p>
+        <p class="rank-k">▸ expand Anomaly/GMM for per-feature impact · P/R = precision/recall</p>
       </div>
     {/if}
 
@@ -255,8 +292,14 @@
   .rank { display: flex; flex-direction: column; gap: 0.16rem; }
   .rank-h { font-size: 0.66rem; color: var(--muted); margin: 0.15rem 0 0.1rem; }
   .rank-h span { color: var(--accent); cursor: help; }
-  .rrow { display: grid; grid-template-columns: 4.6rem 1fr 2.2rem 3.4rem; align-items: center; gap: 0.35rem; font-size: 0.64rem; }
+  .rrow { display: grid; grid-template-columns: 0.9rem 3.9rem 1fr 2rem 3.2rem; align-items: center; gap: 0.3rem; font-size: 0.64rem; }
+  .rexp { width: 0.9rem; background: none; border: none; color: var(--dim); font-size: 0.55rem; cursor: pointer; padding: 0; text-align: left; }
+  button.rexp:hover { color: var(--accent); }
+  .rrow.sub { font-size: 0.6rem; }
+  .sub-note { padding-left: 1.2rem; margin: 0; }
   .rname { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rname.sub { color: var(--muted); }
+  .rbar.sub i { opacity: 0.7; }
   .rbar { height: 6px; background: rgba(255, 255, 255, 0.06); border-radius: 3px; overflow: hidden; }
   .rbar i { display: block; height: 100%; background: linear-gradient(90deg, #5fd9f2, #86efac); }
   .rf1 { font-variant-numeric: tabular-nums; color: var(--text); text-align: right; }
