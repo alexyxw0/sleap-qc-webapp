@@ -6,7 +6,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["src/lib/qc/**/*.test.js"],
+    include: ["src/lib/**/*.test.js"],
     testTimeout: 20000, // the corrections roundtrip loads/saves a real .slp via h5wasm
   },
 });

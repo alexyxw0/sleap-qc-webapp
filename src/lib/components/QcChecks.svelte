@@ -2,6 +2,7 @@
   import { qc } from "../qcStore.svelte.js";
   import { store } from "../labelsStore.svelte.js";
   import DetectorOverlap from "./DetectorOverlap.svelte";
+  import ManualCheckCompare from "./ManualCheckCompare.svelte";
 
   // Each detection technique the user can include in the flagged set. Pick the ones you want
   // BEFORE running QC — only selected techniques are computed, and each result is memoized so
@@ -98,6 +99,7 @@
   let dropHot = $state(false); // the custom drop zone is hovered during a drag
   let timingOpen = $state(false); // expand the per-step run-timing breakdown (auto-open while running)
   let overlapOpen = $state(false); // the detector-overlap viz overlay (chord / upset / euler prototypes)
+  let manualOpen = $state(false); // the manual-check CSV comparison panel
   let featTimeOpen = $state(false); // expand the feature-vector step into its per-metric breakdown
 
   // a check is hidden when it can't apply (confidence needs predicted instances)
@@ -470,6 +472,12 @@
       </button>
       {#if overlapOpen}
         <div class="ovl-inline"><DetectorOverlap /></div>
+      {/if}
+      <button class="export" onclick={() => (manualOpen = !manualOpen)} title="Upload a manual faulty/not-faulty review CSV and compare it against the QC checker">
+        ✓ Manual-check comparison {manualOpen ? "▴" : "▾"}
+      </button>
+      {#if manualOpen}
+        <div class="ovl-inline"><ManualCheckCompare /></div>
       {/if}
     {/if}
     {#if qc.canExportCsv}
