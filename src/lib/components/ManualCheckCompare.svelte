@@ -11,6 +11,7 @@
   let manual = $state(null); // { byKey, faulty, total } | { error }
   let fileName = $state("");
   let activeTab = $state(null); // "both" | "qcOnly" | "manualOnly" | null
+  let perVideoOpen = $state(false); // per-video area breakdown
 
   async function onFile(e) {
     const f = e.currentTarget.files?.[0];
@@ -29,15 +30,24 @@
     if (!manual || manual.error || !qc.hasResults) return null;
     const vidx = vidxMap();
     const cats = { both: [], qcOnly: [], manualOnly: [], neither: [] };
+    const perVid = new Map(); // videoIdx -> region counts + first matched frame
     store.frames.forEach((f, i) => {
       const m = manual.byKey.get(keyOf(f, vidx));
       if (!m) return; // frame wasn't in the manual review — excluded
       const qcFlag = qc.frameFlagged(f);
       const cat = qcFlag && m.faulty ? "both" : qcFlag ? "qcOnly" : m.faulty ? "manualOnly" : "neither";
       cats[cat].push({ i, note: m.notes });
+      const vi = vidx.get(f.video) ?? 0;
+      let pv = perVid.get(vi);
+      if (!pv) { pv = { videoIdx: vi, both: 0, qcOnly: 0, manualOnly: 0, neither: 0, n: 0, firstIdx: i }; perVid.set(vi, pv); }
+      pv[cat]++; pv.n++;
     });
     const m = metrics({ both: cats.both.length, qcOnly: cats.qcOnly.length, manualOnly: cats.manualOnly.length, neither: cats.neither.length });
-    return { cats, m, manualUnmatched: manual.total - m.n };
+    // Per-video breakdown, worst-first (highest human-faulty rate).
+    const perVideo = [...perVid.values()].sort(
+      (a, b) => (b.both + b.manualOnly) / b.n - (a.both + a.manualOnly) / a.n || a.videoIdx - b.videoIdx,
+    );
+    return { cats, m, manualUnmatched: manual.total - m.n, perVideo };
   });
 
   // Euler geometry: circle AREA ∝ set size; center distance ∝ how much of the smaller set overlaps.
@@ -175,6 +185,28 @@
       {#if cmp.cats[activeTab].length > 800}<p class="cover">showing first 800 of {cmp.cats[activeTab].length}</p>{/if}
     {/if}
 
+    {#if cmp.perVideo.length > 1}
+      <button class="pv-toggle" onclick={() => (perVideoOpen = !perVideoOpen)} title="Category-area breakdown per video in the CSV (worst first)">
+        {perVideoOpen ? "▾" : "▸"} Per-video areas · {cmp.perVideo.length} videos
+      </button>
+      {#if perVideoOpen}
+        <div class="pv-legend">
+          <span class="lg both">agree-faulty</span><span class="lg man">missed</span><span class="lg qc">QC-only</span><span class="lg neither">clean</span>
+        </div>
+        <div class="pv-list">
+          {#each cmp.perVideo as pv (pv.videoIdx)}
+            {@const faultyPct = Math.round((100 * (pv.both + pv.manualOnly)) / pv.n)}
+            <button class="pv-row" onclick={() => goto(pv.firstIdx)} title="video {pv.videoIdx} · {pv.n} frames · {faultyPct}% faulty (agree-faulty {pv.both}, missed {pv.manualOnly}, QC-only {pv.qcOnly}, clean {pv.neither}) — click to jump">
+              <span class="pv-name">vid {pv.videoIdx}</span>
+              <span class="pv-bar"><i class="s both" style:width="{(100 * pv.both) / pv.n}%"></i><i class="s man" style:width="{(100 * pv.manualOnly) / pv.n}%"></i><i class="s qc" style:width="{(100 * pv.qcOnly) / pv.n}%"></i><i class="s neither" style:width="{(100 * pv.neither) / pv.n}%"></i></span>
+              <span class="pv-pct" class:hot={faultyPct >= 20}>{faultyPct}%</span>
+              <span class="pv-n">{pv.n}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
+    {/if}
+
     {#if ranking && ranking.rows.length}
       <div class="rank">
         <p class="rank-h">Detector effectiveness <span title="Ranked by F1 against the human-faulty labels — the balance of precision (flags aren't noise) and recall (catches real faults). Best for this imbalanced, {ranking.nFaulty}-faulty set.">vs manual · by F1</span></p>
@@ -288,6 +320,29 @@
   .tile.noted { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35); }
   .tile.cur { outline: 2px solid #fff; outline-offset: 1px; }
   .tile:hover { filter: brightness(1.5); }
+
+  .pv-toggle { align-self: flex-start; background: none; border: none; color: var(--dim); font-size: 0.66rem; cursor: pointer; padding: 0; }
+  .pv-toggle:hover { color: var(--accent); }
+  .pv-legend { display: flex; flex-wrap: wrap; gap: 0.5rem; font-size: 0.56rem; color: var(--dim); }
+  .lg { display: inline-flex; align-items: center; gap: 0.2rem; }
+  .lg::before { content: ""; width: 8px; height: 8px; border-radius: 2px; }
+  .lg.both::before { background: #86efac; }
+  .lg.man::before { background: #fb926e; }
+  .lg.qc::before { background: #5fd9f2; }
+  .lg.neither::before { background: #39414f; }
+  .pv-list { display: flex; flex-direction: column; gap: 2px; max-height: 160px; overflow-y: auto; }
+  .pv-row { display: grid; grid-template-columns: 2.6rem 1fr 2.2rem 2.4rem; align-items: center; gap: 0.35rem; background: none; border: none; padding: 1px 0; cursor: pointer; }
+  .pv-row:hover { background: rgba(255, 255, 255, 0.04); }
+  .pv-name { font-size: 0.62rem; color: var(--muted); text-align: left; }
+  .pv-bar { display: flex; height: 9px; border-radius: 2px; overflow: hidden; }
+  .pv-bar .s { height: 100%; }
+  .pv-bar .s.both { background: #86efac; }
+  .pv-bar .s.man { background: #fb926e; }
+  .pv-bar .s.qc { background: #5fd9f2; }
+  .pv-bar .s.neither { background: #2a313d; }
+  .pv-pct { font-size: 0.62rem; font-variant-numeric: tabular-nums; color: var(--muted); text-align: right; }
+  .pv-pct.hot { color: #fca5a5; font-weight: 600; }
+  .pv-n { font-size: 0.58rem; color: var(--dim); text-align: right; }
 
   .rank { display: flex; flex-direction: column; gap: 0.16rem; }
   .rank-h { font-size: 0.66rem; color: var(--muted); margin: 0.15rem 0 0.1rem; }
