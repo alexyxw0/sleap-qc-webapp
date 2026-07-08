@@ -80,6 +80,14 @@ class EmbeddingStore {
     for (const z of this.#frameZ.values()) if (z >= this.threshold) n++;
     return n;
   }
+  /** Keys ("videoIdx:frameIdx") of frames flagged at the current threshold — so the QC store can
+   *  fold DINO into its union flagged-frame count (keys match qcStore's #fkey). */
+  flaggedFrameKeys() {
+    this.resultRev;
+    const out = [];
+    for (const [k, z] of this.#frameZ) if (z >= this.threshold) out.push(k);
+    return out;
+  }
 
   /** Records whose frame is `fi` (store index), with their outlier stats attached. */
   recordsForFrame(fi) {

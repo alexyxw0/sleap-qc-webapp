@@ -346,6 +346,9 @@ class QCStore {
         u.add(fk);
       }
     }
+    // DINO appearance check: its per-frame keys ("videoIdx:frameIdx") match #fkey, so fold them into
+    // the same union (reads embeddingStore.resultRev/threshold → recounts live on the z-slider).
+    if (c.dino && embeddingStore.hasResults) for (const fk of embeddingStore.flaggedFrameKeys()) u.add(fk);
     return u.size;
   }
 
