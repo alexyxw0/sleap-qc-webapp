@@ -4,6 +4,7 @@
 import { store } from "./labelsStore.svelte.js";
 import { ensureModel, embed, MODEL } from "./qc/embedding/dino.js";
 import { l2norm, knnOutlierScores, robustZ, pca2, nearestNeighbors } from "./qc/embedding/outlier.js";
+import { loadAll as loadCache, putMany as saveCache } from "./qc/embedding/embcache.js";
 
 // Padded square around the instance's placed nodes — image-INDEPENDENT (points only), so it can
 // key the embedding cache; clamping to the actual image happens at draw time.
@@ -62,10 +63,20 @@ class EmbeddingStore {
   // changes unless the crop does, so re-running the same file skips decode + inference for hits.
   #cache = new Map();
   #cacheLabels = null; // the labels the cache was built for (cleared when a new file loads)
+  #loadedFileId = null; // fileId the in-memory cache was hydrated from IndexedDB for (once per file)
   // Scoring cache: kNN+PCA are a pure function of the embedding set (O(N²)), independent of the
   // threshold, so an identical re-run reuses the result instead of recomputing.
   #scoreSig = null;
   #scoreRes = null;
+
+  // Stable identity for the loaded file — namespaces the persistent cache so crops from a different
+  // file can't be served for a matching (video,frame,bbox) key. Filename + frame count + each video's
+  // shape is distinctive without reading pixels.
+  #fileId() {
+    const L = store.labels;
+    const shapes = (L?.videos ?? []).map((v) => (Array.isArray(v?.shape) ? v.shape.join("x") : "?")).join(",");
+    return `${store.fileName || "?"}|${store.frames?.length ?? 0}|${shapes}`;
+  }
 
   get records() { this.rev; return this.#recs; }
   get results() { this.rev; return this.#res; }
@@ -117,12 +128,22 @@ class EmbeddingStore {
 
   async run() {
     if (this.status === "running" || this.status === "loading-model" || this.status === "scoring") return;
-    if (store.labels !== this.#cacheLabels) { this.#cache.clear(); this.#scoreSig = null; this.#scoreRes = null; this.#cacheLabels = store.labels; } // new file -> drop stale cache
+    if (store.labels !== this.#cacheLabels) { this.#cache.clear(); this.#scoreSig = null; this.#scoreRes = null; this.#cacheLabels = store.labels; this.#loadedFileId = null; } // new file -> drop stale cache
     this.#abort = false; this.#recs = []; this.#embs = []; this.#res = null; this.#frameZ = new Map(); this.rev++; this.resultRev++;
     this.status = "loading-model"; this.message = "Loading DINOv2 ViT-S…";
     try {
       this.modelInfo = await ensureModel((p) => { if (p?.status) this.message = `Loading model · ${p.status}${p.progress ? ` ${Math.round(p.progress)}%` : ""}`; });
     } catch (e) { this.status = "error"; this.message = `Model load failed — ${e.message}. (Needs network for the CDN + HF hub.)`; return; }
+
+    // Hydrate the in-memory cache from IndexedDB once per file, so a re-run after a page reload reuses
+    // embeddings instead of recomputing (the in-memory Map alone doesn't survive a reload).
+    const fileId = this.#fileId();
+    if (this.#loadedFileId !== fileId) {
+      this.message = "Loading cached embeddings…"; this.rev++;
+      const persisted = await loadCache(fileId);
+      for (const [k, v] of persisted) if (!this.#cache.has(k)) this.#cache.set(k, v);
+      this.#loadedFileId = fileId;
+    }
 
     const frames = store.frames ?? [];
     const items = [];
@@ -144,6 +165,7 @@ class EmbeddingStore {
     const thumb = document.createElement("canvas");
     thumb.width = thumb.height = 56;
     let hits = 0, embedded = 0;
+    const fresh = []; // [cropKey, { emb, thumb }] embedded this run — persisted to IndexedDB after
     const usedKeys = []; // crop keys in emit order — signs the embedding set for the scoring cache
     let lastYield = performance.now();
     const setMsg = () => { this.message = `Embedding ${list.length} crops…${hits ? ` · ${hits} reused from cache` : ""}`; };
@@ -168,6 +190,7 @@ class EmbeddingStore {
               drawCrop(thumb, img, sq);
               hit = { emb, thumb: thumb.toDataURL("image/jpeg", 0.7) };
               this.#cache.set(key, hit);
+              fresh.push([key, hit]);
               embedded++;
             } catch (e) { this.status = "error"; this.message = `Embedding failed — ${e.message}`; return; }
           }
@@ -180,6 +203,10 @@ class EmbeddingStore {
         if (now - lastYield > 40) { setMsg(); this.rev++; await new Promise((r) => requestAnimationFrame(r)); lastYield = now; }
       }
     }
+
+    // Persist crops embedded this run so a future run — even after a page reload — reuses them
+    // (fire-and-forget; failures are swallowed inside embcache).
+    if (fresh.length) saveCache(fileId, fresh);
 
     if (!this.#embs.length) { this.status = "error"; this.message = "No crops could be embedded (no frame images?)."; return; }
     // Reuse the cached score if the exact set of crops (in the same order) is unchanged — kNN is O(N²).
