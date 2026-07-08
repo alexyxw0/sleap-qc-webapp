@@ -38,9 +38,14 @@
 
   // Frame indices passing the active filter; null = identity ("all"), so the common
   // case never allocates a 180k-entry array.
+  // This scan is O(allFrames), so it must NOT re-run on a node-drag (store.rev bumps ~60/s). None of
+  // the filters depend on a node's POSITION: "labeled" changes only on instance add/remove
+  // (edit.structRev), "modified" on the modified-set (edit.dirtyRev), and "flagged" on qc.frameFlagged
+  // (which self-subscribes to qc.rev + the thresholds through the call below). File load re-runs it via
+  // the store.frames/frameCount reads. Depending on store.rev here reintroduced the drag lag.
   const idxList = $derived.by(() => {
-    void store.rev;
     void qc.rev;
+    void edit.structRev;
     void edit.dirtyRev;
     if (filter === "all") return null;
     const out = [];

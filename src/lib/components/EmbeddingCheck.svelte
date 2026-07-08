@@ -33,7 +33,9 @@
     return { bins, max: Math.max(...bins, 1), tx: ((es.threshold - lo) / (hi - lo)) * 100 };
   });
 
-  const cur = $derived.by(() => { void es.rev; void store.rev; return es.hasResults ? es.recordsForFrame(store.index) : []; });
+  // Records are keyed by frame index, not node position — so track store.index, NOT store.rev (a
+  // node-drag must not rescan the crop records ~60/s while this panel is open).
+  const cur = $derived.by(() => { void es.rev; return es.hasResults ? es.recordsForFrame(store.index) : []; });
 
   function go(fi) { store.setIndex(fi); store.syncFrameImage?.(); }
   function jumpNext() {
