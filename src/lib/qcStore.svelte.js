@@ -26,6 +26,7 @@ import { topIssue, confidence, withDirection, DIRECTIONAL_FEATURES, issueForFeat
 import { visibilityMask } from "./qc/checks/util.js";
 import { qcResultsCsv } from "./qc/csv.js";
 import { store } from "./labelsStore.svelte.js";
+import { embeddingStore } from "./embeddingStore.svelte.js";
 
 // A user-facing check maps to a computable unit. count/negative/duplicates share one frame unit.
 const UNIT_OF = {
@@ -98,7 +99,19 @@ class QCStore {
   // Which detection techniques to run / include. The flagged frames are the UNION of the
   // enabled-and-computed checks. Defaults ON: anomaly, chirality, gmm, duplicates. The frame /
   // structural checks (sparse, confidence, negative) default OFF — enable them as needed. count is on.
-  checks = $state({ anomaly: true, gmm: true, chirality: true, ordering: false, poseSplit: true, count: true, sparse: false, confidence: false, instConfidence: false, negative: false, duplicates: true });
+  checks = $state({ anomaly: true, gmm: true, chirality: true, ordering: false, poseSplit: true, count: true, sparse: false, confidence: false, instConfidence: false, negative: false, duplicates: true, dino: false });
+  // DINO appearance-outlier check: not a computed QC unit — it reads precomputed embeddings from the
+  // embeddingStore, so it's only "ready" once you've run the appearance panel.
+  #dinoZ(item) {
+    if (!this.checks.dino) return null;
+    void embeddingStore.resultRev;
+    if (!embeddingStore.hasResults) return null;
+    return embeddingStore.frameZByKey(this.#fkey(item)); // max embedding z for this frame, or null
+  }
+  #dinoFlagged(item) {
+    const z = this.#dinoZ(item);
+    return z != null && z >= embeddingStore.threshold;
+  }
 
   // User-built per-feature checks: drag a feature out of the GMM/anomaly vector to flag instances
   // where THAT single feature is an outlier (|z| >= its threshold). Each: { id, feature, threshold, on }.
@@ -192,11 +205,13 @@ class QCStore {
   /** Whether the unit backing a check has been computed (cached) for the current labels. */
   checkReady(name) {
     this.rev;
+    if (name === "dino") return embeddingStore.hasResults; // precomputed in the appearance panel, not by run()
     return this.#computed[UNIT_OF[name]] != null;
   }
   /** An enabled check whose unit hasn't been computed yet (waiting on a Run QC). */
   checkPending(name) {
     this.rev;
+    if (name === "dino") return false; // never blocks a Run QC — it needs the embedding precompute instead
     return this.checks[name] && !this.checkReady(name);
   }
   /** Number of enabled checks still needing computation. */
@@ -338,6 +353,7 @@ class QCStore {
   checkCount(name) {
     this.rev;
     if (!this.checkReady(name)) return 0;
+    if (name === "dino") return embeddingStore.flaggedFrameCount;
     if (name === "anomaly") {
       let n = 0;
       for (const s of this.#frameAnom.values()) if (s >= this.threshold) n++;
@@ -454,6 +470,7 @@ class QCStore {
     }
     const fm = this.#frameFeatureZ.get(fk);
     if (fm) for (const f of this.featureChecks) if (f.on && (fm[f.feature] ?? -1) >= f.threshold) return true;
+    if (this.#dinoFlagged(item)) return true;
     return hasFrameIssue(this.frameQC(item));
   }
 
@@ -496,6 +513,7 @@ class QCStore {
       if (c.negative && fq.isNegativeWithInstances) out.push({ key: "negative", label: "Negative", score: null });
       if (c.duplicates && (fq.duplicatePairs?.length ?? 0) > 0) out.push({ key: "duplicates", label: "Duplicate", score: null });
     }
+    if (this.#dinoFlagged(item)) out.push({ key: "dino", label: "Unusual appearance", score: this.#dinoZ(item) });
     return out;
   }
 
@@ -542,8 +560,8 @@ class QCStore {
   detectorSets() {
     this.rev;
     const frames = store.frames ?? [];
-    const LABEL = { anomaly: "Anomaly", gmm: "GMM", chirality: "Chirality", ordering: "Ordering", poseSplit: "Pose split", count: "Count", sparse: "Sparse", confidence: "Confidence", instConfidence: "Inst conf", negative: "Negative", duplicates: "Duplicates" };
-    const ORDER = ["anomaly", "gmm", "chirality", "ordering", "poseSplit", "count", "sparse", "confidence", "instConfidence", "negative", "duplicates"];
+    const LABEL = { anomaly: "Anomaly", gmm: "GMM", chirality: "Chirality", ordering: "Ordering", poseSplit: "Pose split", count: "Count", sparse: "Sparse", confidence: "Confidence", instConfidence: "Inst conf", negative: "Negative", duplicates: "Duplicates", dino: "DINO appearance" };
+    const ORDER = ["anomaly", "gmm", "chirality", "ordering", "poseSplit", "count", "sparse", "confidence", "instConfidence", "negative", "duplicates", "dino"];
     const byKey = new Map();
     for (let i = 0; i < frames.length; i++) {
       for (const f of this.frameFlaggingChecks(frames[i])) {
@@ -846,6 +864,7 @@ class QCStore {
       if (c.negative && fq.isNegativeWithInstances) bump(FRAME_SEVERITY.negative);
       if (c.duplicates && (fq.duplicatePairs?.length ?? 0) > 0) bump(FRAME_SEVERITY.duplicates);
     }
+    if (this.#dinoFlagged(item)) { const z = this.#dinoZ(item); bump(1 / (1 + Math.exp(-(z - embeddingStore.threshold)))); } // appearance z -> [0,1]
     return best;
   }
 
@@ -1288,6 +1307,10 @@ class QCStore {
       if (c.instConfidence) out.push({ key: "instConfidence", label: "Instance conf", score: fq.minInstScore, threshold: this.instConfidenceThreshold, flagged: fq.minInstScore < this.instConfidenceThreshold, lowerIsWorse: true });
       if (c.negative) out.push({ key: "negative", label: "Negative frame", flagged: fq.isNegativeWithInstances, detail: fq.isNegativeWithInstances ? "has instances" : "—" });
       if (c.duplicates) out.push({ key: "duplicates", label: "Duplicates", flagged: (fq.duplicatePairs?.length ?? 0) > 0, detail: `${fq.duplicatePairs?.length ?? 0} pair(s)` });
+    }
+    if (c.dino) {
+      const z = this.#dinoZ(item);
+      out.push({ key: "dino", label: "DINO appearance", score: z ?? 0, threshold: embeddingStore.threshold, flagged: z != null && z >= embeddingStore.threshold, unit: "σ" });
     }
     return out;
   }

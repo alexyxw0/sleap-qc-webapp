@@ -78,6 +78,12 @@
       hint: "Two instances overlapping / duplicated.",
       info: "Flags a frame where two instances overlap — either by bounding-box IoU (> 0.5) or by node-wise overlap (most shared-visible nodes within ~10 px of each other). Catches the same animal accidentally labeled twice. On by default.",
     },
+    {
+      key: "dino",
+      label: "Appearance (DINO)",
+      hint: "Instance whose IMAGE appearance is an outlier — occlusion / obstruction / mis-placement that geometry can't see. Needs precomputed embeddings.",
+      info: "Image-model check (not geometry). It embeds each instance's crop with DINOv2 ViT-S (self-supervised, 384-d) and flags instances whose appearance is unlike the rest of the file — occluded, obstructed, or mis-placed crops. Runs off the embeddings precomputed in the “Appearance outliers (DINO)” panel below, so it's only available once that has been run; the flag threshold is the z-slider in that panel. Off by default.",
+    },
   ];
 
   const CHECK_BY_KEY = Object.fromEntries(CHECKS.map((c) => [c.key, c]));
@@ -91,7 +97,10 @@
     { id: "geometric", label: "Geometric", hint: "Structural checks: L/R flip + chain ordering (scale-invariant hard rules) and split-pose / chimera.", keys: ["chirality", "ordering", "poseSplit"] },
     { id: "statistical", label: "Statistical", hint: "Outlier detectors that score each instance against the file's distribution (shared feature vector + baseline control). Only GMM is non-deterministic (EM fit); the z-score is deterministic.", keys: ["anomaly", "gmm"] },
     { id: "frame", label: "Frame-level", hint: "Whole-frame consistency: count, sparsity, keypoint/instance confidence, negative frames, duplicates.", keys: ["count", "sparse", "confidence", "instConfidence", "negative", "duplicates"] },
+    { id: "appearance", label: "Appearance", hint: "Image-embedding outlier (DINOv2 ViT-S) — catches occlusion / appearance errors geometry can't see. Precompute embeddings in the panel below to enable.", keys: ["dino"] },
   ];
+  // DINO can only run once its embeddings are precomputed (in the Appearance-outliers panel).
+  const dinoLocked = $derived(!qc.checkReady("dino"));
 
   let groupOpen = $state({ geometric: false, statistical: false, frame: false }); // per-group collapse (compact by default; each header shows "N on")
   let infoOpen = $state({}); // per-check key -> show the long-form description
@@ -194,14 +203,18 @@
               <input
                 type="checkbox"
                 checked={qc.checks[c.key]}
+                disabled={c.key === "dino" && dinoLocked}
                 onchange={() => qc.toggleCheck(c.key)}
                 oncontextmenu={(e) => { e.preventDefault(); qc.soloChecks([c.key]); }}
-                title="Right-click: solo (run only this check)"
+                title={c.key === "dino" && dinoLocked ? "Precompute embeddings first (Appearance-outliers panel below)" : "Right-click: solo (run only this check)"}
               />
             </label>
           </div>
           {#if infoOpen[c.key]}
             <p class="info">{c.info}</p>
+          {/if}
+          {#if c.key === "dino" && dinoLocked}
+            <p class="dino-lock">↓ Run the <b>Appearance outliers (DINO)</b> panel below to precompute embeddings, then this check activates.</p>
           {/if}
           {#if c.key === "anomaly" && qc.checks.anomaly}
             <!-- Anomaly flag threshold. Scores are cached, so dragging only re-derives the
@@ -381,6 +394,7 @@
               class="grp-check"
               checked={allOn}
               indeterminate={onCount > 0 && !allOn}
+              disabled={g.id === "appearance" && dinoLocked}
               onchange={() => qc.setChecks(visKeys, !allOn)}
               oncontextmenu={(e) => { e.preventDefault(); qc.soloChecks(visKeys); }}
               title="{allOn ? 'Disable' : 'Enable'} all {g.label.toLowerCase()} checks · right-click: solo this group"
@@ -860,6 +874,13 @@
     color: var(--muted);
     letter-spacing: 0.01em;
   }
+  .dino-lock {
+    margin: -0.1rem 0 0.4rem;
+    padding: 0 0.2rem 0 1.35rem;
+    font-size: 0.64rem;
+    color: var(--dim);
+  }
+  .dino-lock b { color: var(--accent); font-weight: 600; }
   /* anomaly flag-threshold slider, tucked under its check row */
   .thresh {
     display: flex;

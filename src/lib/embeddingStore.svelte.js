@@ -47,16 +47,27 @@ class EmbeddingStore {
   sampleCap = $state(1200);
   k = 6;
   rev = $state(0);
+  resultRev = $state(0); // bumps only when scored frame-flags change — cheap dep for the DINO QC check
 
   #recs = []; // { fi, ii, thumb }  (store-frame index, instance index, crop dataURL)
   #embs = []; // Float32Array (L2-normalized) per record, index-aligned with #recs
   #res = null; // { scores, z, coords }
+  #frameZ = new Map(); // "videoIdx:frameIdx" -> max embedding z over that frame's instances
   #abort = false;
 
   get records() { this.rev; return this.#recs; }
   get results() { this.rev; return this.#res; }
-  get hasResults() { this.rev; return !!this.#res; }
+  get hasResults() { this.resultRev; return !!this.#res; }
   get flaggedCount() { this.rev; return this.#res ? this.#res.z.reduce((a, z) => a + (z >= this.threshold), 0) : 0; }
+  /** Max embedding z for a frame, by "videoIdx:frameIdx" key (the DINO QC check reads this), or null. */
+  frameZByKey(key) { this.resultRev; return this.#frameZ.get(key) ?? null; }
+  /** Frames flagged at the current threshold (frame-level, for the check count). */
+  get flaggedFrameCount() {
+    this.resultRev;
+    let n = 0;
+    for (const z of this.#frameZ.values()) if (z >= this.threshold) n++;
+    return n;
+  }
 
   /** Records whose frame is `fi` (store index), with their outlier stats attached. */
   recordsForFrame(fi) {
@@ -86,7 +97,7 @@ class EmbeddingStore {
 
   async run() {
     if (this.status === "running" || this.status === "loading-model" || this.status === "scoring") return;
-    this.#abort = false; this.#recs = []; this.#embs = []; this.#res = null; this.rev++;
+    this.#abort = false; this.#recs = []; this.#embs = []; this.#res = null; this.#frameZ = new Map(); this.rev++; this.resultRev++;
     this.status = "loading-model"; this.message = "Loading DINOv2 ViT-S…";
     try {
       this.modelInfo = await ensureModel((p) => { if (p?.status) this.message = `Loading model · ${p.status}${p.progress ? ` ${Math.round(p.progress)}%` : ""}`; });
@@ -141,7 +152,16 @@ class EmbeddingStore {
     const z = robustZ(scores);
     const { coords } = pca2(this.#embs);
     this.#res = { scores: Array.from(scores), z, coords };
-    this.status = "done"; this.message = ""; this.rev++;
+    // Per-frame max z, keyed like qcStore's #fkey (videoIdx:frameIdx), so the DINO check can join.
+    const vidx = new Map((store.labels?.videos ?? []).map((v, i) => [v, i]));
+    this.#frameZ = new Map();
+    for (let r = 0; r < this.#recs.length; r++) {
+      const f = store.frames[this.#recs[r].fi];
+      if (!f) continue;
+      const key = `${vidx.get(f.video) ?? 0}:${f.frameIdx}`;
+      if (z[r] > (this.#frameZ.get(key) ?? -Infinity)) this.#frameZ.set(key, z[r]);
+    }
+    this.status = "done"; this.message = ""; this.rev++; this.resultRev++;
   }
 }
 
