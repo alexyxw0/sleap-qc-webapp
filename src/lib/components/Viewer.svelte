@@ -575,14 +575,15 @@
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
-    background: rgba(11, 13, 15, 0.82);
+    /* No backdrop-filter: the HUD chips sit over the canvas and are always visible, so a blur would
+       re-rasterize the backdrop on every redraw (drag/pan/zoom/nav). The 90%-opaque fill reads fine. */
+    background: rgba(11, 13, 15, 0.9);
     border: 1px solid var(--border);
     border-radius: var(--r-xs);
     padding: 0.24rem 0.6rem;
     font-size: 0.7rem;
     letter-spacing: 0.04em;
     color: var(--muted);
-    backdrop-filter: blur(8px);
   }
   /* keep the frame fraction tight as one unit; the chip gap only separates it
      from the instance count, so it reads "007/266 · 3 INST", not "007 /266". */

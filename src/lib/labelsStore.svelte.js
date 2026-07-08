@@ -64,6 +64,12 @@ class LabelsStore {
   #imgWant = null; // key of the frame the UI currently wants shown
   #imgHave = undefined; // key of the frame `frameImage` currently holds
   #imgPumping = false;
+  // LRU cache of DECODED frame images (keyed by #frameKey). Embedded .pkg.slp frames are large
+  // (~0.6 MB encoded) and cost ~50-100 ms to read+decode EACH — so without a cache every navigation
+  // (even revisiting a frame you just saw) re-decoded from scratch, which was the dominant per-input
+  // latency. Bounded to #imgCacheCap; cleared on file load. Eviction just drops the ref (GC reclaims).
+  #imgCache = new Map();
+  #imgCacheCap = 32;
 
   // --- model (non-reactive contents; reassigned wholesale on load) ---
   labels = $state.raw(null);
@@ -141,6 +147,7 @@ class LabelsStore {
       if (token !== this.#loadToken) return; // a newer load won; discard this result
 
       placeUnplacedNodes(labels); // give predicted instances' un-placed keypoints an in-frame position to edit
+      this.#imgCache.clear(); // a prior file's cached frames must not survive (keys could collide)
       this.labels = labels;
       this.hasEmbedded = (labels.videos ?? []).some((v) => v?.hasEmbeddedImages);
 
@@ -264,6 +271,7 @@ class LabelsStore {
     this.videoModel = null;
     this.frames = [];
     this.frameImage = null;
+    this.#imgCache.clear();
     this.#imgWant = null;
     this.#imgHave = undefined;
     this.index = 0;
@@ -327,19 +335,37 @@ class LabelsStore {
   async getFrameImage(item, signal) {
     if (!item) return null;
 
+    // Cache hit → return the decoded image immediately (skips the ~50-100 ms read+decode). Refresh
+    // LRU recency by re-inserting so hot frames survive eviction.
+    const key = this.#frameKey(item);
+    const hit = this.#imgCache.get(key);
+    if (hit) { this.#imgCache.delete(key); this.#imgCache.set(key, hit); return hit; }
+
+    let drawable = null;
     // An externally-uploaded video takes precedence (the plain-.slp workflow).
     if (this.videoModel) {
       const img = await this.#tryGetFrame(this.videoModel, item.frameIdx, signal);
-      if (img) return this.#toDrawable(img);
+      if (img) drawable = await this.#toDrawable(img);
     }
-
     // Otherwise use the embedded HDF5 backend (.pkg.slp).
-    const backend = item.video?.backend;
-    if (backend && item.video?.hasEmbeddedImages) {
-      const img = await this.#tryGetFrame(item.video, item.frameIdx, signal);
-      if (img) return this.#toDrawable(img);
+    if (!drawable) {
+      const backend = item.video?.backend;
+      if (backend && item.video?.hasEmbeddedImages) {
+        const img = await this.#tryGetFrame(item.video, item.frameIdx, signal);
+        if (img) drawable = await this.#toDrawable(img);
+      }
     }
-    return null;
+    if (drawable) this.#cachePut(key, drawable);
+    return drawable;
+  }
+
+  #cachePut(key, img) {
+    this.#imgCache.set(key, img);
+    // Evict least-recently-used (Map preserves insertion order; oldest key is first).
+    while (this.#imgCache.size > this.#imgCacheCap) {
+      const oldest = this.#imgCache.keys().next().value;
+      this.#imgCache.delete(oldest);
+    }
   }
 
   async #tryGetFrame(videoLike, frameIdx, signal) {
