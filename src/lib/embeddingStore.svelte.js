@@ -62,6 +62,10 @@ class EmbeddingStore {
   // changes unless the crop does, so re-running the same file skips decode + inference for hits.
   #cache = new Map();
   #cacheLabels = null; // the labels the cache was built for (cleared when a new file loads)
+  // Scoring cache: kNN+PCA are a pure function of the embedding set (O(N²)), independent of the
+  // threshold, so an identical re-run reuses the result instead of recomputing.
+  #scoreSig = null;
+  #scoreRes = null;
 
   get records() { this.rev; return this.#recs; }
   get results() { this.rev; return this.#res; }
@@ -105,7 +109,7 @@ class EmbeddingStore {
 
   async run() {
     if (this.status === "running" || this.status === "loading-model" || this.status === "scoring") return;
-    if (store.labels !== this.#cacheLabels) { this.#cache.clear(); this.#cacheLabels = store.labels; } // new file -> drop stale cache
+    if (store.labels !== this.#cacheLabels) { this.#cache.clear(); this.#scoreSig = null; this.#scoreRes = null; this.#cacheLabels = store.labels; } // new file -> drop stale cache
     this.#abort = false; this.#recs = []; this.#embs = []; this.#res = null; this.#frameZ = new Map(); this.rev++; this.resultRev++;
     this.status = "loading-model"; this.message = "Loading DINOv2 ViT-S…";
     try {
@@ -132,6 +136,8 @@ class EmbeddingStore {
     const thumb = document.createElement("canvas");
     thumb.width = thumb.height = 56;
     let hits = 0, embedded = 0;
+    const usedKeys = []; // crop keys in emit order — signs the embedding set for the scoring cache
+    let lastYield = performance.now();
     const setMsg = () => { this.message = `Embedding ${list.length} crops…${hits ? ` · ${hits} reused from cache` : ""}`; };
     setMsg();
 
@@ -157,20 +163,30 @@ class EmbeddingStore {
               embedded++;
             } catch (e) { this.status = "error"; this.message = `Embedding failed — ${e.message}`; return; }
           }
-          if (hit) { this.#recs.push({ fi, ii, thumb: hit.thumb }); this.#embs.push(hit.emb); }
+          if (hit) { this.#recs.push({ fi, ii, thumb: hit.thumb }); this.#embs.push(hit.emb); usedKeys.push(key); }
         }
         this.progress = { ...this.progress, done: this.progress.done + 1 };
-        if ((embedded + hits) % 8 === 0) { setMsg(); this.rev++; await new Promise((r) => requestAnimationFrame(r)); }
+        // Yield on a time budget, not a fixed count: a warm cache blasts through with a handful of
+        // yields, while a cold run (each embed blocks ~100ms) still repaints ~every frame.
+        const now = performance.now();
+        if (now - lastYield > 40) { setMsg(); this.rev++; await new Promise((r) => requestAnimationFrame(r)); lastYield = now; }
       }
     }
 
     if (!this.#embs.length) { this.status = "error"; this.message = "No crops could be embedded (no frame images?)."; return; }
-    this.status = "scoring"; this.message = `Scoring ${this.#embs.length} embeddings…`; this.rev++;
-    await new Promise((r) => setTimeout(r));
-    const scores = knnOutlierScores(this.#embs, this.k);
-    const z = robustZ(scores);
-    const { coords } = pca2(this.#embs);
-    this.#res = { scores: Array.from(scores), z, coords };
+    // Reuse the cached score if the exact set of crops (in the same order) is unchanged — kNN is O(N²).
+    const sig = `${this.k}|${usedKeys.join("|")}`;
+    if (this.#scoreSig === sig && this.#scoreRes) {
+      this.#res = this.#scoreRes;
+    } else {
+      this.status = "scoring"; this.message = `Scoring ${this.#embs.length} embeddings…`; this.rev++;
+      await new Promise((r) => setTimeout(r));
+      const scores = knnOutlierScores(this.#embs, this.k);
+      const z = robustZ(scores);
+      const { coords } = pca2(this.#embs);
+      this.#res = { scores: Array.from(scores), z, coords };
+      this.#scoreSig = sig; this.#scoreRes = this.#res;
+    }
     // Per-frame max z, keyed like qcStore's #fkey (videoIdx:frameIdx), so the DINO check can join.
     this.#frameZ = new Map();
     for (let r = 0; r < this.#recs.length; r++) {
