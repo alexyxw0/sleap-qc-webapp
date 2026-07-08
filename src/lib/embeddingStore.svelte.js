@@ -3,7 +3,7 @@
 // Kept fully inspectable — every crop, embedding neighbourhood, and score is exposed to the UI.
 import { store } from "./labelsStore.svelte.js";
 import { ensureModel, embed, MODEL } from "./qc/embedding/dino.js";
-import { l2norm, knnOutlierScores, robustZ, pca2, nearestNeighbors } from "./qc/embedding/outlier.js";
+import { l2norm, knnOutlierScores, robustZ, pca2, nearestNeighbors, buildFrameZ } from "./qc/embedding/outlier.js";
 import { loadAll as loadCache, putMany as saveCache } from "./qc/embedding/embcache.js";
 
 // Padded square around the instance's placed nodes — image-INDEPENDENT (points only), so it can
@@ -209,28 +209,29 @@ class EmbeddingStore {
     if (fresh.length) saveCache(fileId, fresh);
 
     if (!this.#embs.length) { this.status = "error"; this.message = "No crops could be embedded (no frame images?)."; return; }
-    // Reuse the cached score if the exact set of crops (in the same order) is unchanged — kNN is O(N²).
-    const sig = `${this.k}|${usedKeys.join("|")}`;
-    if (this.#scoreSig === sig && this.#scoreRes) {
-      this.#res = this.#scoreRes;
-    } else {
-      this.status = "scoring"; this.message = `Scoring ${this.#embs.length} embeddings…`; this.rev++;
-      await new Promise((r) => setTimeout(r));
-      const scores = knnOutlierScores(this.#embs, this.k);
-      const z = robustZ(scores);
-      const { coords } = pca2(this.#embs);
-      this.#res = { scores: Array.from(scores), z, coords };
-      this.#scoreSig = sig; this.#scoreRes = this.#res;
+    // Everything past here is wrapped so a throw can NEVER leave the panel wedged in "scoring" with a
+    // locked checkbox (the failure this replaced): on error we surface it and bump resultRev so the UI reacts.
+    try {
+      // Reuse the cached score if the exact set of crops (in the same order) is unchanged — kNN is O(N²).
+      const sig = `${this.k}|${usedKeys.join("|")}`;
+      if (this.#scoreSig === sig && this.#scoreRes) {
+        this.#res = this.#scoreRes;
+      } else {
+        this.status = "scoring"; this.message = `Scoring ${this.#embs.length} embeddings…`; this.rev++;
+        await new Promise((r) => setTimeout(r));
+        const scores = knnOutlierScores(this.#embs, this.k);
+        const z = robustZ(scores);
+        const { coords } = pca2(this.#embs);
+        this.#res = { scores: Array.from(scores), z, coords };
+        this.#scoreSig = sig; this.#scoreRes = this.#res;
+      }
+      // Per-frame max z, keyed like qcStore's #fkey (videoIdx:frameIdx), so the DINO check can join.
+      // z comes from #res (populated in BOTH score branches above); the join is a pure, tested helper.
+      this.#frameZ = buildFrameZ(this.#recs, this.#res.z, store.frames, vidx);
+      this.status = "done"; this.message = ""; this.rev++; this.resultRev++;
+    } catch (e) {
+      this.status = "error"; this.message = `Scoring failed — ${e?.message ?? e}`; this.rev++; this.resultRev++;
     }
-    // Per-frame max z, keyed like qcStore's #fkey (videoIdx:frameIdx), so the DINO check can join.
-    this.#frameZ = new Map();
-    for (let r = 0; r < this.#recs.length; r++) {
-      const f = store.frames[this.#recs[r].fi];
-      if (!f) continue;
-      const key = `${vidx.get(f.video) ?? 0}:${f.frameIdx}`;
-      if (z[r] > (this.#frameZ.get(key) ?? -Infinity)) this.#frameZ.set(key, z[r]);
-    }
-    this.status = "done"; this.message = ""; this.rev++; this.resultRev++;
   }
 }
 

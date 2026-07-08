@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { l2norm, knnOutlierScores, nearestNeighbors, robustZ, pca2 } from "./outlier.js";
+import { l2norm, knnOutlierScores, nearestNeighbors, robustZ, pca2, buildFrameZ } from "./outlier.js";
 
 // deterministic pseudo-random in [-1,1]
 function rng(seed) {
@@ -50,6 +50,26 @@ describe("robustZ", () => {
     const z = robustZ([1, 1, 1, 1, 1, 9]); // one clear outlier
     expect(z[0]).toBeCloseTo(0);
     expect(z[5]).toBeGreaterThan(3);
+  });
+});
+
+describe("buildFrameZ", () => {
+  it("takes the max z per (video,frame) and keys like #fkey (videoIdx:frameIdx)", () => {
+    const vA = {}, vB = {};
+    const frames = [{ video: vA, frameIdx: 5 }, { video: vA, frameIdx: 5 }, { video: vB, frameIdx: 2 }];
+    const vidx = new Map([[vA, 0], [vB, 1]]);
+    const recs = [{ fi: 0 }, { fi: 1 }, { fi: 2 }];
+    const z = [1.0, 4.2, 3.0];
+    const fz = buildFrameZ(recs, z, frames, vidx);
+    expect(fz.get("0:5")).toBe(4.2); // max over the two records sharing video0 / frame 5
+    expect(fz.get("1:2")).toBe(3.0);
+    expect(fz.size).toBe(2);
+  });
+  it("skips records whose frame is missing", () => {
+    const v = {};
+    const fz = buildFrameZ([{ fi: 0 }, { fi: 9 }], [2.0, 5.0], [{ video: v, frameIdx: 0 }], new Map([[v, 0]]));
+    expect(fz.size).toBe(1);
+    expect(fz.get("0:0")).toBe(2.0);
   });
 });
 

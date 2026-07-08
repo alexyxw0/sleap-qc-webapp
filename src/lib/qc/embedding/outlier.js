@@ -58,6 +58,21 @@ export function nearestNeighbors(embs, i, k = 5) {
   return arr.slice(0, k).map((x) => x[0]);
 }
 
+/** Per-frame max embedding z, keyed "videoIdx:frameIdx" (matches qcStore's #fkey so the DINO check
+ *  can join on it). `recs[r].fi` indexes into `frames`; `zArr[r]` is that record's z; `vidx` maps a
+ *  video object to its index. Kept a pure function with EXPLICIT params so the z-scores can never be
+ *  dropped by a scoping slip (the bug this replaced: `z` was block-scoped and undefined here). */
+export function buildFrameZ(recs, zArr, frames, vidx) {
+  const frameZ = new Map();
+  for (let r = 0; r < recs.length; r++) {
+    const f = frames[recs[r].fi];
+    if (!f) continue;
+    const key = `${vidx.get(f.video) ?? 0}:${f.frameIdx}`;
+    if (zArr[r] > (frameZ.get(key) ?? -Infinity)) frameZ.set(key, zArr[r]);
+  }
+  return frameZ;
+}
+
 /** Robust z-score (median / 1.4826·MAD) of an array — outlier cutoff without a Gaussian assumption. */
 export function robustZ(scores) {
   const med = (xs) => { const s = [...xs].sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
