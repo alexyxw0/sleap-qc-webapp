@@ -5,8 +5,9 @@ import { store } from "./labelsStore.svelte.js";
 import { ensureModel, embed, MODEL } from "./qc/embedding/dino.js";
 import { l2norm, knnOutlierScores, robustZ, pca2, nearestNeighbors } from "./qc/embedding/outlier.js";
 
-// Instance bounding box (placed nodes), padded + squared, clamped to the image.
-function instanceBox(item, ii, W, H) {
+// Padded square around the instance's placed nodes — image-INDEPENDENT (points only), so it can
+// key the embedding cache; clamping to the actual image happens at draw time.
+function squareBox(item, ii) {
   const pts = item?.lf?.instances?.[ii]?.points ?? [];
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, n = 0;
   for (const p of pts) {
@@ -16,19 +17,22 @@ function instanceBox(item, ii, W, H) {
     maxX = Math.max(maxX, xy[0]); maxY = Math.max(maxY, xy[1]); n++;
   }
   if (n < 2) return null;
-  const pad = Math.max(maxX - minX, maxY - minY) * 0.35 + 8;
-  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
-  const side = Math.max(maxX - minX, maxY - minY) + 2 * pad;
-  const x = Math.max(0, Math.min(W - 4, cx - side / 2));
-  const y = Math.max(0, Math.min(H - 4, cy - side / 2));
-  return { x, y, w: Math.min(side, W - x), h: Math.min(side, H - y) };
+  const side = Math.max(maxX - minX, maxY - minY) * 1.7 + 16;
+  return { x: (minX + maxX) / 2 - side / 2, y: (minY + maxY) / 2 - side / 2, side };
 }
 
-function drawCrop(canvas, img, box) {
+// A crop is fully determined by (video, frame, box) — so is its embedding. Round the box to keep
+// the key stable against sub-pixel jitter.
+const cropKey = (vi, frameIdx, sq) => `${vi}:${frameIdx}:${Math.round(sq.x)}:${Math.round(sq.y)}:${Math.round(sq.side)}`;
+
+function drawCrop(canvas, img, sq) {
   const ctx = canvas.getContext("2d");
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(img, box.x, box.y, box.w, box.h, 0, 0, canvas.width, canvas.height);
+  const W = img.width, H = img.height;
+  const x = Math.max(0, Math.min(W - 4, sq.x));
+  const y = Math.max(0, Math.min(H - 4, sq.y));
+  ctx.drawImage(img, x, y, Math.min(sq.side, W - x), Math.min(sq.side, H - y), 0, 0, canvas.width, canvas.height);
 }
 
 const evenSample = (arr, cap) => {
@@ -54,6 +58,10 @@ class EmbeddingStore {
   #res = null; // { scores, z, coords }
   #frameZ = new Map(); // "videoIdx:frameIdx" -> max embedding z over that frame's instances
   #abort = false;
+  // Embedding cache: cropKey -> { emb, thumb }. Persists across runs; a crop's DINO embedding never
+  // changes unless the crop does, so re-running the same file skips decode + inference for hits.
+  #cache = new Map();
+  #cacheLabels = null; // the labels the cache was built for (cleared when a new file loads)
 
   get records() { this.rev; return this.#recs; }
   get results() { this.rev; return this.#res; }
@@ -97,6 +105,7 @@ class EmbeddingStore {
 
   async run() {
     if (this.status === "running" || this.status === "loading-model" || this.status === "scoring") return;
+    if (store.labels !== this.#cacheLabels) { this.#cache.clear(); this.#cacheLabels = store.labels; } // new file -> drop stale cache
     this.#abort = false; this.#recs = []; this.#embs = []; this.#res = null; this.#frameZ = new Map(); this.rev++; this.resultRev++;
     this.status = "loading-model"; this.message = "Loading DINOv2 ViT-S…";
     try {
@@ -115,33 +124,43 @@ class EmbeddingStore {
     const byFrame = new Map();
     for (const it of list) { if (!byFrame.has(it.fi)) byFrame.set(it.fi, []); byFrame.get(it.fi).push(it.ii); }
 
+    const vidx = new Map((store.labels?.videos ?? []).map((v, i) => [v, i]));
     this.status = "running";
-    this.message = `Embedding ${list.length} crops…`;
     this.progress = { done: 0, total: list.length };
     const crop = document.createElement("canvas");
     crop.width = crop.height = MODEL.input;
     const thumb = document.createElement("canvas");
     thumb.width = thumb.height = 56;
+    let hits = 0, embedded = 0;
+    const setMsg = () => { this.message = `Embedding ${list.length} crops…${hits ? ` · ${hits} reused from cache` : ""}`; };
+    setMsg();
 
     for (const [fi, iis] of byFrame) {
       if (this.#abort) { this.status = "aborted"; this.message = "Stopped."; this.rev++; return; }
       const item = frames[fi];
+      const vi = vidx.get(item.video) ?? 0;
+      // Resolve each instance's box + cache key up front, so a fully-cached frame skips the decode.
+      const plan = iis.map((ii) => { const sq = squareBox(item, ii); return { ii, sq, key: sq ? cropKey(vi, item.frameIdx, sq) : null }; });
       let img = null;
-      try { img = await store.getFrameImage(item); } catch { /* skip */ }
-      if (!img?.width) { this.progress = { ...this.progress, done: this.progress.done + iis.length }; continue; }
-      for (const ii of iis) {
-        const box = instanceBox(item, ii, img.width, img.height);
-        if (box) {
-          drawCrop(crop, img, box);
-          try {
-            const emb = await embed(crop);
-            drawCrop(thumb, img, box);
-            this.#recs.push({ fi, ii, thumb: thumb.toDataURL("image/jpeg", 0.7) });
-            this.#embs.push(l2norm(emb));
-          } catch (e) { this.status = "error"; this.message = `Embedding failed — ${e.message}`; return; }
+      if (plan.some((p) => p.key && !this.#cache.has(p.key))) { try { img = await store.getFrameImage(item); } catch { /* skip */ } }
+      for (const { ii, sq, key } of plan) {
+        if (key) {
+          let hit = this.#cache.get(key);
+          if (hit) hits++;
+          else if (img?.width) {
+            try {
+              drawCrop(crop, img, sq);
+              const emb = l2norm(await embed(crop));
+              drawCrop(thumb, img, sq);
+              hit = { emb, thumb: thumb.toDataURL("image/jpeg", 0.7) };
+              this.#cache.set(key, hit);
+              embedded++;
+            } catch (e) { this.status = "error"; this.message = `Embedding failed — ${e.message}`; return; }
+          }
+          if (hit) { this.#recs.push({ fi, ii, thumb: hit.thumb }); this.#embs.push(hit.emb); }
         }
         this.progress = { ...this.progress, done: this.progress.done + 1 };
-        if (this.#recs.length % 6 === 0) { this.rev++; await new Promise((r) => requestAnimationFrame(r)); }
+        if ((embedded + hits) % 8 === 0) { setMsg(); this.rev++; await new Promise((r) => requestAnimationFrame(r)); }
       }
     }
 
@@ -153,7 +172,6 @@ class EmbeddingStore {
     const { coords } = pca2(this.#embs);
     this.#res = { scores: Array.from(scores), z, coords };
     // Per-frame max z, keyed like qcStore's #fkey (videoIdx:frameIdx), so the DINO check can join.
-    const vidx = new Map((store.labels?.videos ?? []).map((v, i) => [v, i]));
     this.#frameZ = new Map();
     for (let r = 0; r < this.#recs.length; r++) {
       const f = store.frames[this.#recs[r].fi];
