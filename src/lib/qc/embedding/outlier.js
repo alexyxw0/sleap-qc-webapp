@@ -12,19 +12,25 @@ export function l2norm(v) {
   return out;
 }
 
-/** Mean distance to the k nearest neighbours per row — a density/isolation outlier score. Rows
- *  must be L2-normalized. O(N²·D); fine for a one-time score of a sampled population. */
-export function knnOutlierScores(embs, k = 6) {
+/** Mean distance from EVERY row to its k nearest neighbours WITHIN a reference subset — a density/
+ *  isolation outlier score. Decoupling the reference (a subsample) from the scored set (all rows) is
+ *  what lets us score every instance against a smaller, decorrelated "normal" population: it avoids
+ *  near-duplicate video frames masking each other, and costs O(N·R·D) instead of O(N²·D). Rows must be
+ *  L2-normalized. `refIndices` = indices into `embs` forming the reference; a row is never compared to
+ *  itself even if it's in the reference. */
+export function knnOutlierScoresRef(embs, refIndices, k = 6) {
   const N = embs.length;
   const scores = new Float64Array(N);
-  if (N < 2) return scores;
-  const kk = Math.min(k, N - 1);
+  const R = refIndices.length;
+  if (N < 2 || R < 2) return scores;
   const D = embs[0].length;
+  const kk = Math.min(k, R - 1); // -1: a scored row may itself be in the reference (skipped below)
   const best = new Float64Array(kk); // kk smallest dist², kept sorted ascending
   for (let i = 0; i < N; i++) {
     best.fill(Infinity);
     const a = embs[i];
-    for (let j = 0; j < N; j++) {
+    for (let ri = 0; ri < R; ri++) {
+      const j = refIndices[ri];
       if (j === i) continue;
       const b = embs[j];
       let dot = 0;
@@ -41,6 +47,29 @@ export function knnOutlierScores(embs, k = 6) {
     scores[i] = s / kk;
   }
   return scores;
+}
+
+/** All-vs-all mean-kNN outlier score (the reference is every row). Thin wrapper over the ref version. */
+export function knnOutlierScores(embs, k = 6) {
+  return knnOutlierScoresRef(embs, embs.map((_, i) => i), k);
+}
+
+/** Choose a reference subsample STRATIFIED by group (video), so every group is represented — a global
+ *  subsample can skip a small video entirely, and since videos differ visually, instances from an
+ *  unrepresented video would have no same-domain neighbours and read as false outliers. Per group, take
+ *  an evenly-spaced `max(minPer, round(frac·n))` (all of it if the group is smaller). `keys[i]` is row
+ *  i's group id. Returns sorted row indices. */
+export function stratifiedReference(keys, frac, minPer) {
+  const groups = new Map();
+  for (let i = 0; i < keys.length; i++) { const g = keys[i]; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(i); }
+  const out = [];
+  for (const idxs of groups.values()) {
+    const n = idxs.length;
+    const take = Math.min(n, Math.max(minPer, Math.round(frac * n)));
+    if (take >= n) { for (const i of idxs) out.push(i); }
+    else { const step = n / take; for (let t = 0; t < take; t++) out.push(idxs[Math.floor(t * step)]); }
+  }
+  return out.sort((a, b) => a - b);
 }
 
 /** Indices of the k nearest neighbours of row `i` (nearest first). */

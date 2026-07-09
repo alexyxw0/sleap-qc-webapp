@@ -5,7 +5,7 @@
 import { store } from "./labelsStore.svelte.js";
 import * as dinoBackend from "./qc/embedding/dino.js";
 import * as classicalBackend from "./qc/embedding/classical.js";
-import { l2norm, knnOutlierScores, robustZ, pca2, nearestNeighbors, buildFrameZ } from "./qc/embedding/outlier.js";
+import { l2norm, knnOutlierScoresRef, stratifiedReference, robustZ, pca2, nearestNeighbors, buildFrameZ } from "./qc/embedding/outlier.js";
 import { loadAll as loadCache, putMany as saveCache } from "./qc/embedding/embcache.js";
 
 const BACKENDS = { classical: classicalBackend, dino: dinoBackend };
@@ -54,8 +54,10 @@ class EmbeddingStore {
   modelInfo = $state(null);
   backend = $state("classical"); // "classical" (fast pixel features, default) | "dino" (ViT — slow, semantic)
   threshold = $state(3.5); // robust-z cutoff for "outlier"
-  sampleCap = $state(null); // max crops to embed; null/0 => ALL instances (full coverage, no sampling gap)
+  sampleCap = $state(null); // max crops to EMBED; null/0 => ALL instances (full coverage, no sampling gap)
+  referenceFraction = $state(0.2); // fraction of embedded instances forming the kNN "normal" reference
   k = 6;
+  static REF_MIN_PER_VIDEO = 20; // per-video floor so every video has enough same-domain reference points
   rev = $state(0);
   resultRev = $state(0); // bumps only when scored frame-flags change — cheap dep for the DINO QC check
 
@@ -63,6 +65,7 @@ class EmbeddingStore {
   #embs = []; // Float32Array (L2-normalized) per record, index-aligned with #recs
   #res = null; // { scores, z, coords }
   #frameZ = new Map(); // "videoIdx:frameIdx" -> max embedding z over that frame's instances
+  #refCount = 0; // size of the kNN reference used for the current results
   #abort = false;
   // Embedding cache: cropKey -> { emb, thumb }. Persists across runs; a crop's DINO embedding never
   // changes unless the crop does, so re-running the same file skips decode + inference for hits.
@@ -105,6 +108,8 @@ class EmbeddingStore {
     for (const f of store.frames ?? []) n += f.lf?.instances?.length ?? 0;
     return n;
   }
+  /** Size of the kNN "normal" reference behind the current results (scored set is every embedding). */
+  get refCount() { this.rev; return this.#refCount; }
   get records() { this.rev; return this.#recs; }
   get results() { this.rev; return this.#res; }
   get hasResults() { this.resultRev; return !!this.#res; }
@@ -243,14 +248,21 @@ class EmbeddingStore {
     // Everything past here is wrapped so a throw can NEVER leave the panel wedged in "scoring" with a
     // locked checkbox (the failure this replaced): on error we surface it and bump resultRev so the UI reacts.
     try {
-      // Reuse the cached score if the exact set of crops (in the same order) is unchanged — kNN is O(N²).
-      const sig = `${this.k}|${usedKeys.join("|")}`;
+      // Reference = an even, per-VIDEO-stratified subsample of the embedded instances (so every video
+      // is represented — see stratifiedReference). Every instance is then SCORED against that reference,
+      // so nothing is skipped, while a smaller decorrelated reference avoids near-duplicate video frames
+      // masking each other. frac=1 reproduces all-vs-all.
+      const refKeys = this.#recs.map((rec) => vidx.get(store.frames[rec.fi]?.video) ?? 0);
+      const refIdx = stratifiedReference(refKeys, this.referenceFraction, EmbeddingStore.REF_MIN_PER_VIDEO);
+      this.#refCount = refIdx.length;
+      // Reuse the cached score only if the crop set AND the reference selection are unchanged.
+      const sig = `${this.k}|${this.referenceFraction}|${usedKeys.join("|")}`;
       if (this.#scoreSig === sig && this.#scoreRes) {
         this.#res = this.#scoreRes;
       } else {
-        this.status = "scoring"; this.message = `Scoring ${this.#embs.length} embeddings…`; this.rev++;
+        this.status = "scoring"; this.message = `Scoring ${this.#embs.length} vs ${refIdx.length} reference…`; this.rev++;
         await new Promise((r) => setTimeout(r));
-        const scores = knnOutlierScores(this.#embs, this.k);
+        const scores = knnOutlierScoresRef(this.#embs, refIdx, this.k);
         const z = robustZ(scores);
         const { coords } = pca2(this.#embs);
         this.#res = { scores: Array.from(scores), z, coords };

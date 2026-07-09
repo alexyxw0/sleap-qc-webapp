@@ -88,6 +88,9 @@
           <input type="number" min="100" max={es.instanceCount || 100000} step="100" value={capVal} oninput={(e) => setCapVal(+e.currentTarget.value)} disabled={running} />
         </label>
       {/if}
+      <label title="Every instance is SCORED, but the “normal” yardstick (the kNN reference) is an even, per-video subsample of this size — decorrelated so near-duplicate video frames don't mask each other. 100% = compare against everything.">ref
+        <input type="number" min="5" max="100" step="5" value={Math.round(es.referenceFraction * 100)} oninput={(e) => (es.referenceFraction = Math.min(1, Math.max(0.05, (+e.currentTarget.value || 20) / 100)))} disabled={running} />%
+      </label>
       {#if running}
         <button class="run stop" onclick={() => es.abort()}>Stop</button>
       {:else}
@@ -119,7 +122,7 @@
                 onclick={() => go(p.fi)} />
             {/each}
           </svg>
-          <p class="cap">PCA of {es.records.length} crop embeddings · color = outlier z · ⚪ = current frame</p>
+          <p class="cap">PCA of {es.records.length} crop embeddings · scored vs {es.refCount} per-video reference · color = outlier z · ⚪ = current frame</p>
           <div class="hist">
             {#each d.bins as b, i (i)}<i style:height="{(100 * b) / d.max}%" class:hot={((i + 0.5) / d.bins.length) * 100 >= d.tx}></i>{/each}
             <span class="thr" style:left="{d.tx}%"></span>

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { l2norm, knnOutlierScores, nearestNeighbors, robustZ, pca2, buildFrameZ } from "./outlier.js";
+import { l2norm, knnOutlierScores, knnOutlierScoresRef, stratifiedReference, nearestNeighbors, robustZ, pca2, buildFrameZ } from "./outlier.js";
 
 // deterministic pseudo-random in [-1,1]
 function rng(seed) {
@@ -30,6 +30,43 @@ describe("knnOutlierScores", () => {
     const ranked = [...scores.keys()].sort((a, b) => scores[b] - scores[a]);
     expect(new Set(ranked.slice(0, 3))).toEqual(new Set(outIdx)); // the 3 outliers rank top-3
     for (const o of outIdx) expect(scores[o]).toBeGreaterThan(scores[0]); // outlier >> a cluster point
+  });
+});
+
+describe("knnOutlierScoresRef", () => {
+  it("scores EVERY row (incl. non-reference) and flags the isolated one, using only the reference", () => {
+    const r = rng(11);
+    const D = 20;
+    const embs = [];
+    const base = Array.from({ length: D }, () => r());
+    for (let i = 0; i < 30; i++) embs.push(l2norm(Float32Array.from(base, (b) => b + 0.03 * r()))); // cluster
+    embs.push(l2norm(Float32Array.from({ length: D }, () => r()))); // 1 outlier at index 30
+    const ref = []; for (let i = 0; i < 30; i += 2) ref.push(i); // reference = half the cluster, NOT the outlier
+    const scores = knnOutlierScoresRef(embs, ref, 5);
+    expect(scores.length).toBe(31); // every row scored, even those not in the reference
+    for (let i = 0; i < 30; i++) expect(scores[30]).toBeGreaterThan(scores[i]); // outlier >> every cluster row
+  });
+  it("matches all-vs-all when the reference is every row", () => {
+    const r = rng(5); const D = 8; const embs = Array.from({ length: 12 }, () => l2norm(Float32Array.from({ length: D }, () => r())));
+    const all = knnOutlierScores(embs, 4);
+    const ref = knnOutlierScoresRef(embs, embs.map((_, i) => i), 4);
+    for (let i = 0; i < embs.length; i++) expect(ref[i]).toBeCloseTo(all[i], 10);
+  });
+});
+
+describe("stratifiedReference", () => {
+  it("represents every group, honours the per-group floor, and stays within group size", () => {
+    // 3 videos: big (100), medium (30), tiny (5). 20% with a floor of 10.
+    const keys = [];
+    for (let i = 0; i < 100; i++) keys.push("big");
+    for (let i = 0; i < 30; i++) keys.push("med");
+    for (let i = 0; i < 5; i++) keys.push("tiny");
+    const ref = stratifiedReference(keys, 0.2, 10);
+    const pick = (g) => ref.filter((i) => keys[i] === g).length;
+    expect(pick("big")).toBe(20); // 20% of 100
+    expect(pick("med")).toBe(10); // 20% of 30 = 6, floored up to 10
+    expect(pick("tiny")).toBe(5); // fewer than the floor -> take all
+    expect([...ref].every((i, k) => k === 0 || ref[k - 1] < i)).toBe(true); // sorted, unique
   });
 });
 
