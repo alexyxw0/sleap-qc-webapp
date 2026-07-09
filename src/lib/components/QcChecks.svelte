@@ -80,9 +80,9 @@
     },
     {
       key: "dino",
-      label: "Appearance (DINO)",
+      label: "Appearance",
       hint: "Instance whose IMAGE appearance is an outlier — occlusion / obstruction / mis-placement that geometry can't see. Needs precomputed embeddings.",
-      info: "Image-model check (not geometry). It embeds each instance's crop with DINOv2 ViT-S (self-supervised, 384-d) and flags instances whose appearance is unlike the rest of the file — occluded, obstructed, or mis-placed crops. Runs off the embeddings precomputed in the “Appearance outliers (DINO)” panel below, so it's only available once that has been run; the flag threshold is the z-slider in that panel. Off by default.",
+      info: "Image check (not geometry). It embeds each instance's crop and flags instances whose appearance is unlike the rest of the file — occluded, obstructed, or mis-placed crops. Two backends in the “Appearance outliers” panel below: Classical (fast grayscale pixel features, default) or DINO ViT (slower, semantic). Only available once that panel has been run; the flag threshold is the z-slider there. Off by default.",
     },
   ];
 
@@ -97,7 +97,7 @@
     { id: "geometric", label: "Geometric", hint: "Structural checks: L/R flip + chain ordering (scale-invariant hard rules) and split-pose / chimera.", keys: ["chirality", "ordering", "poseSplit"] },
     { id: "statistical", label: "Statistical", hint: "Outlier detectors that score each instance against the file's distribution (shared feature vector + baseline control). Only GMM is non-deterministic (EM fit); the z-score is deterministic.", keys: ["anomaly", "gmm"] },
     { id: "frame", label: "Frame-level", hint: "Whole-frame consistency: count, sparsity, keypoint/instance confidence, negative frames, duplicates.", keys: ["count", "sparse", "confidence", "instConfidence", "negative", "duplicates"] },
-    { id: "appearance", label: "Appearance", hint: "Image-embedding outlier (DINOv2 ViT-S) — catches occlusion / appearance errors geometry can't see. Precompute embeddings in the panel below to enable.", keys: ["dino"] },
+    { id: "appearance", label: "Appearance", hint: "Image-embedding outlier (Classical pixel features or DINO ViT) — catches occlusion / appearance errors geometry can't see. Precompute embeddings in the panel below to enable.", keys: ["dino"] },
   ];
   // DINO can only run once its embeddings are precomputed (in the Appearance-outliers panel).
   const dinoLocked = $derived(!qc.checkReady("dino"));
@@ -214,7 +214,7 @@
             <p class="info">{c.info}</p>
           {/if}
           {#if c.key === "dino" && dinoLocked}
-            <p class="dino-lock">↓ Run the <b>Appearance outliers (DINO)</b> panel below to precompute embeddings, then this check activates.</p>
+            <p class="dino-lock">↓ Run the <b>Appearance outliers</b> panel below to precompute embeddings, then this check activates.</p>
           {/if}
           {#if c.key === "anomaly" && qc.checks.anomaly}
             <!-- Anomaly flag threshold. Scores are cached, so dragging only re-derives the
@@ -497,8 +497,8 @@
       {/if}
     {/if}
     {#if store.ready}
-      <button class="export" onclick={() => (embOpen = !embOpen)} title="Run DINOv2 ViT-S in-browser on each instance crop — flags occlusion / appearance errors that geometry can't detect">
-        ⧉ Appearance outliers (DINO) {embOpen ? "▴" : "▾"}
+      <button class="export" onclick={() => (embOpen = !embOpen)} title="Embed each instance crop in-browser (Classical pixel features or DINO ViT) — flags occlusion / appearance errors that geometry can't detect">
+        ⧉ Appearance outliers {embOpen ? "▴" : "▾"}
       </button>
       {#if embOpen}
         <div class="ovl-inline"><EmbeddingCheck /></div>

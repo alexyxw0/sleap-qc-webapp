@@ -1,27 +1,30 @@
 import { describe, it, expect, vi } from "vitest";
 
-// RUNTIME test: actually executes embeddingStore.run() (a .svelte.js reactive store) end-to-end with
-// the DOM + DINO model mocked. This exercises the exact browser control flow that a production build
-// and the pure-math tests do NOT — it would have caught the "z is out of scope → run() throws → stuck
-// at scoring → checkbox never unlocks" bug, because that made run() never reach status "done".
+// RUNTIME test: actually executes embeddingStore.run() (a .svelte.js reactive store) end-to-end for
+// BOTH backends, with the DOM (and the DINO model) mocked. This exercises the exact browser control
+// flow that a production build and the pure-math tests do NOT — it would have caught the "z is out of
+// scope → run() throws → stuck at scoring → checkbox never unlocks" bug (run() never reached "done").
 
-// Minimal fakes for the few DOM APIs run() touches (we mock embed(), so pixels don't matter — the
-// canvas just has to not throw). No jsdom needed.
+// Minimal DOM fakes for the few APIs run()/embed() touch. getImageData returns a properly-sized buffer
+// (varying by a counter) so the real CLASSICAL backend produces valid, non-degenerate feature vectors.
+let px = 0;
 globalThis.document = {
   createElement: () => ({
     width: 0, height: 0,
-    getContext: () => ({ fillStyle: "", fillRect() {}, drawImage() {}, getImageData: () => ({ data: new Uint8ClampedArray(4), width: 1, height: 1 }) }),
+    getContext: () => ({
+      fillStyle: "", fillRect() {}, drawImage() {},
+      getImageData: (x, y, w, h) => { px++; const data = new Uint8ClampedArray(w * h * 4); for (let i = 0; i < data.length; i++) data[i] = (i * 7 + px * 31) % 256; return { data, width: w, height: h }; },
+    }),
     toDataURL: () => "data:image/jpeg;base64,AA==",
   }),
 };
 globalThis.requestAnimationFrame = (cb) => { cb(performance.now()); return 0; };
 
-// Mock the DINO model: no CDN, no network, no real inference. Distinct vector per call so the
-// embedding set isn't degenerate (varying by an internal counter).
+// Mock the DINO model: no CDN, no network, no real inference. Distinct vector per call.
 let embN = 0;
 vi.mock("./qc/embedding/dino.js", () => ({
-  MODEL: { id: "test", name: "test", dim: 384, patch: 14, input: 224 },
-  ensureModel: async () => ({ id: "test", dim: 384, input: 224 }),
+  MODEL: { id: "test", name: "DINO(test)", dim: 384, patch: 14, input: 224 },
+  ensureModel: async () => ({ id: "test", name: "DINO(test)", dim: 384, input: 224 }),
   embed: async () => { embN++; const v = new Float32Array(384); for (let i = 0; i < 384; i++) v[i] = Math.sin(i * 0.1 + embN); return v; },
   isLoaded: () => true,
 }));
@@ -40,17 +43,29 @@ vi.mock("./labelsStore.svelte.js", () => ({
 
 const { embeddingStore } = await import("./embeddingStore.svelte.js");
 
+// The regression guard for BOTH backends: a throw anywhere in run() (like the z-scope bug) leaves the
+// status stuck and hasResults false — the exact 'stuck at scoring / checkbox uncheckable' symptom.
+function assertCompleted(dim) {
+  expect(embeddingStore.status).toBe("done");
+  expect(embeddingStore.hasResults).toBe(true);
+  expect(embeddingStore.results.z.length).toBe(5); // 2 + 1 + 2 instances embedded
+  expect(embeddingStore.results.z.every(Number.isFinite)).toBe(true);
+  // frameZ must be keyed "videoIdx:frameIdx" so the appearance QC check can join on it.
+  expect(embeddingStore.frameZByKey("0:0")).not.toBeNull();
+  expect(embeddingStore.frameZByKey("0:2")).not.toBeNull();
+}
+
 describe("embeddingStore.run() — runtime", () => {
-  it("runs to completion: reaches 'done', exposes results, unlocks (hasResults), builds per-frame z", async () => {
+  it("classical backend (default) runs to completion with valid results", async () => {
+    embeddingStore.setBackend("classical");
     await embeddingStore.run();
-    // The regression guard: a throw anywhere in run() (like the z-scope bug) leaves status stuck and
-    // hasResults false — the exact 'stuck at scoring / checkbox uncheckable' symptom.
-    expect(embeddingStore.status).toBe("done");
-    expect(embeddingStore.hasResults).toBe(true);
-    expect(embeddingStore.results.z.length).toBe(5); // 2 + 1 + 2 instances embedded
-    // frameZ must be keyed "videoIdx:frameIdx" so the DINO QC check can join on it.
-    expect(embeddingStore.frameZByKey("0:0")).not.toBeNull();
-    expect(embeddingStore.frameZByKey("0:2")).not.toBeNull();
-    expect(embeddingStore.flaggedFrameKeys().length).toBeGreaterThanOrEqual(0);
+    assertCompleted();
+  });
+
+  it("dino backend runs to completion with valid results", async () => {
+    embeddingStore.setBackend("dino");
+    await embeddingStore.run();
+    assertCompleted();
+    expect(embeddingStore.results.coords.length).toBe(5);
   });
 });

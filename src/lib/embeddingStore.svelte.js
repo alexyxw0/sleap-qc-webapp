@@ -1,10 +1,14 @@
-// Appearance-outlier analysis: crop each instance, embed the crop with DINOv2 ViT-S, and flag
-// instances whose appearance is an outlier (occlusions / mis-placed nodes that geometry can't see).
-// Kept fully inspectable — every crop, embedding neighbourhood, and score is exposed to the UI.
+// Appearance-outlier analysis: crop each instance, embed the crop, and flag instances whose appearance
+// is an outlier (occlusions / mis-placed nodes that geometry can't see). Two interchangeable backends
+// feed the SAME kNN/robust-z/PCA pipeline: "classical" (fast pixel features, default) and "dino" (the
+// DINOv2 ViT semantic embedding). Kept fully inspectable — every crop, neighbourhood, and score is UI-visible.
 import { store } from "./labelsStore.svelte.js";
-import { ensureModel, embed, MODEL } from "./qc/embedding/dino.js";
+import * as dinoBackend from "./qc/embedding/dino.js";
+import * as classicalBackend from "./qc/embedding/classical.js";
 import { l2norm, knnOutlierScores, robustZ, pca2, nearestNeighbors, buildFrameZ } from "./qc/embedding/outlier.js";
 import { loadAll as loadCache, putMany as saveCache } from "./qc/embedding/embcache.js";
+
+const BACKENDS = { classical: classicalBackend, dino: dinoBackend };
 
 // Padded square around the instance's placed nodes — image-INDEPENDENT (points only), so it can
 // key the embedding cache; clamping to the actual image happens at draw time.
@@ -48,6 +52,7 @@ class EmbeddingStore {
   message = $state("");
   progress = $state({ done: 0, total: 0 });
   modelInfo = $state(null);
+  backend = $state("classical"); // "classical" (fast pixel features, default) | "dino" (ViT — slow, semantic)
   threshold = $state(3.5); // robust-z cutoff for "outlier"
   sampleCap = $state(null); // max crops to embed; null/0 => ALL instances (full coverage, no sampling gap)
   k = 6;
@@ -69,13 +74,28 @@ class EmbeddingStore {
   #scoreSig = null;
   #scoreRes = null;
 
-  // Stable identity for the loaded file — namespaces the persistent cache so crops from a different
-  // file can't be served for a matching (video,frame,bbox) key. Filename + frame count + each video's
-  // shape is distinctive without reading pixels.
+  /** The active backend module (classical | dino). */
+  #be() { return BACKENDS[this.backend] ?? classicalBackend; }
+
+  /** Switch backend: results/embeddings differ per backend (different vectors + dim), so reset the
+   *  result state and force a fresh run. The crop cache is kept — it's keyed by backend, so each
+   *  backend's cached vectors coexist and are reused. */
+  setBackend(b) {
+    if (b === this.backend || !BACKENDS[b]) return;
+    this.backend = b;
+    this.#recs = []; this.#embs = []; this.#res = null; this.#frameZ = new Map();
+    this.#scoreSig = null; this.#scoreRes = null;
+    this.status = "idle"; this.message = ""; this.modelInfo = null;
+    this.rev++; this.resultRev++;
+  }
+
+  // Stable identity for the loaded file (+ backend) — namespaces the persistent cache so crops from a
+  // different file OR a different backend can't be served for a matching (video,frame,bbox) key.
+  // Filename + frame count + each video's shape is distinctive without reading pixels.
   #fileId() {
     const L = store.labels;
     const shapes = (L?.videos ?? []).map((v) => (Array.isArray(v?.shape) ? v.shape.join("x") : "?")).join(",");
-    return `${store.fileName || "?"}|${store.frames?.length ?? 0}|${shapes}`;
+    return `${this.backend}|${store.fileName || "?"}|${store.frames?.length ?? 0}|${shapes}`;
   }
 
   /** Total embeddable instances in the loaded file — the ceiling for full-coverage embedding. Reads
@@ -137,10 +157,11 @@ class EmbeddingStore {
     if (this.status === "running" || this.status === "loading-model" || this.status === "scoring") return;
     if (store.labels !== this.#cacheLabels) { this.#cache.clear(); this.#scoreSig = null; this.#scoreRes = null; this.#cacheLabels = store.labels; this.#loadedFileId = null; } // new file -> drop stale cache
     this.#abort = false; this.#recs = []; this.#embs = []; this.#res = null; this.#frameZ = new Map(); this.rev++; this.resultRev++;
-    this.status = "loading-model"; this.message = "Loading DINOv2 ViT-S…";
+    const be = this.#be();
+    this.status = "loading-model"; this.message = `Loading ${be.MODEL.name}…`;
     try {
-      this.modelInfo = await ensureModel((p) => { if (p?.status) this.message = `Loading model · ${p.status}${p.progress ? ` ${Math.round(p.progress)}%` : ""}`; });
-    } catch (e) { this.status = "error"; this.message = `Model load failed — ${e.message}. (Needs network for the CDN + HF hub.)`; return; }
+      this.modelInfo = await be.ensureModel((p) => { if (p?.status) this.message = `Loading model · ${p.status}${p.progress ? ` ${Math.round(p.progress)}%` : ""}`; });
+    } catch (e) { this.status = "error"; this.message = `Model load failed — ${e.message}. (The DINO backend needs the network for the CDN + HF hub.)`; return; }
 
     // Hydrate the in-memory cache from IndexedDB once per file, so a re-run after a page reload reuses
     // embeddings instead of recomputing (the in-memory Map alone doesn't survive a reload).
@@ -170,7 +191,7 @@ class EmbeddingStore {
     this.status = "running";
     this.progress = { done: 0, total: list.length };
     const crop = document.createElement("canvas");
-    crop.width = crop.height = MODEL.input;
+    crop.width = crop.height = be.MODEL.input;
     const thumb = document.createElement("canvas");
     thumb.width = thumb.height = 56;
     let hits = 0, embedded = 0;
@@ -185,7 +206,8 @@ class EmbeddingStore {
       const item = frames[fi];
       const vi = vidx.get(item.video) ?? 0;
       // Resolve each instance's box + cache key up front, so a fully-cached frame skips the decode.
-      const plan = iis.map((ii) => { const sq = squareBox(item, ii); return { ii, sq, key: sq ? cropKey(vi, item.frameIdx, sq) : null }; });
+      // Key is prefixed by backend so classical vs dino vectors never collide in the in-memory cache.
+      const plan = iis.map((ii) => { const sq = squareBox(item, ii); return { ii, sq, key: sq ? `${this.backend}:${cropKey(vi, item.frameIdx, sq)}` : null }; });
       let img = null;
       if (plan.some((p) => p.key && !this.#cache.has(p.key))) { try { img = await store.getFrameImage(item); } catch { /* skip */ } }
       for (const { ii, sq, key } of plan) {
@@ -195,7 +217,7 @@ class EmbeddingStore {
           else if (img?.width) {
             try {
               drawCrop(crop, img, sq);
-              const emb = l2norm(await embed(crop));
+              const emb = l2norm(await be.embed(crop));
               drawCrop(thumb, img, sq);
               hit = { emb, thumb: thumb.toDataURL("image/jpeg", 0.7) };
               this.#cache.set(key, hit);

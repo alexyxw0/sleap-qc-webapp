@@ -53,16 +53,29 @@
     jumpPos = (jumpPos + 1) % outs.length;
   }
   const zColor = (z) => (z >= es.threshold ? "#fb926e" : `hsl(190 70% ${Math.max(32, 60 - z * 7)}%)`);
+
+  // Backend chooser: classical pixel features (fast, default) vs the DINO ViT (slow, semantic).
+  const BACKEND_INFO = {
+    classical: { label: "Classical", tag: "fast", sub: "grayscale pixel features · no download", desc: "Plain pixel features — tiny-image (silhouette) + gradient/HOG (edges, occluding clutter) + intensity histogram (dark occluder / background). No model download, sub-millisecond per crop, so it embeds EVERY instance in seconds and never contends with the UI. Catches gross occlusion / obstruction / nodes-on-background. More literal than DINO (weaker on subtle semantics)." },
+    dino: { label: "DINO ViT-S", tag: "slow", sub: "DINOv2 self-supervised 384-d embedding", desc: "DINOv2 vision transformer — a 384-d semantic appearance embedding, strongest on subtle differences. But a ~90 MB download and a ~4.5-GFLOP forward pass per crop on the CPU: minutes at full coverage, and it briefly janks the UI while running." },
+  };
+  const bi = $derived(BACKEND_INFO[es.backend] ?? BACKEND_INFO.classical);
 </script>
 
 {#snippet body()}
   <div class="emb" class:wide={popped}>
     <div class="head">
-      <span class="ttl">Appearance outliers · DINOv2 ViT-S</span>
+      <span class="ttl">Appearance outliers · {bi.label}</span>
       <button class="pop" onclick={() => (popped = !popped)} title={popped ? "Dock back" : "Pop out"}>{popped ? "⤡" : "⤢"}</button>
     </div>
-    <p class="card" title="DINOv2 is a self-supervised vision transformer — it learns to embed image appearance with NO keypoint labels. We embed each instance's crop into a 384-d vector; instances whose appearance is unlike the rest (occlusions, obstructed or mis-placed nodes, odd crops) are flagged — the class geometry can't detect.">
-      {es.modelInfo ? `${es.modelInfo.name} · ${es.modelInfo.dim}-d · patch ${es.modelInfo.patch}${es.modelInfo.backend ? ` · ${es.modelInfo.backend}` : ""}` : "DINOv2 ViT-S/14 · 384-d self-supervised appearance embedding"} <span class="q">ⓘ</span>
+
+    <div class="backend" role="group" aria-label="Embedding backend">
+      <button class:sel={es.backend === "classical"} disabled={running} onclick={() => es.setBackend("classical")} title={BACKEND_INFO.classical.desc}>Classical <small>fast</small></button>
+      <button class:sel={es.backend === "dino"} disabled={running} onclick={() => es.setBackend("dino")} title={BACKEND_INFO.dino.desc}>DINO <small>slow</small></button>
+    </div>
+
+    <p class="card" title={bi.desc}>
+      {es.modelInfo ? `${es.modelInfo.name} · ${es.modelInfo.dim}-d${es.modelInfo.backend ? ` · ${es.modelInfo.backend}` : ""}` : bi.sub} <span class="q">ⓘ</span>
     </p>
 
     <div class="ctl">
@@ -164,6 +177,14 @@
   .card .q { color: var(--accent); }
   .err { font-size: 0.68rem; color: #fca5a5; margin: 0; }
   .hint { font-size: 0.66rem; color: var(--dim); margin: 0; }
+
+  .backend { display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-xs); overflow: hidden; }
+  .backend button { font-size: 0.64rem; color: var(--muted); background: transparent; border: none; border-right: 1px solid var(--border); padding: 0.2rem 0.5rem; cursor: pointer; display: inline-flex; align-items: baseline; gap: 0.3rem; }
+  .backend button:last-child { border-right: none; }
+  .backend button small { font-size: 0.52rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.04em; }
+  .backend button.sel { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+  .backend button.sel small { color: color-mix(in srgb, var(--accent) 70%, var(--dim)); }
+  .backend button:disabled { cursor: default; opacity: 0.55; }
 
   .ctl { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
   .ctl label { font-size: 0.66rem; color: var(--muted); display: inline-flex; align-items: center; gap: 0.3rem; }
