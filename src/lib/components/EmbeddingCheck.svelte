@@ -62,7 +62,7 @@
       <button class="pop" onclick={() => (popped = !popped)} title={popped ? "Dock back" : "Pop out"}>{popped ? "⤡" : "⤢"}</button>
     </div>
     <p class="card" title="DINOv2 is a self-supervised vision transformer — it learns to embed image appearance with NO keypoint labels. We embed each instance's crop into a 384-d vector; instances whose appearance is unlike the rest (occlusions, obstructed or mis-placed nodes, odd crops) are flagged — the class geometry can't detect.">
-      {es.modelInfo ? `${es.modelInfo.name} · ${es.modelInfo.dim}-d · patch ${es.modelInfo.patch}` : "DINOv2 ViT-S/14 · 384-d self-supervised appearance embedding"} <span class="q">ⓘ</span>
+      {es.modelInfo ? `${es.modelInfo.name} · ${es.modelInfo.dim}-d · patch ${es.modelInfo.patch}${es.modelInfo.backend ? ` · ${es.modelInfo.backend}` : ""}` : "DINOv2 ViT-S/14 · 384-d self-supervised appearance embedding"} <span class="q">ⓘ</span>
     </p>
 
     <div class="ctl">
