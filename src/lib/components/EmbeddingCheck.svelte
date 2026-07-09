@@ -10,6 +10,14 @@
 
   const running = $derived(es.status === "loading-model" || es.status === "running" || es.status === "scoring");
 
+  // Coverage control: default is ALL instances (sampleCap null) so no frame is skipped — the sampling
+  // gap is exactly why a genuine appearance outlier could go unscored. Uncheck "all" to subsample for
+  // speed on very large files. capVal remembers the last numeric cap across toggles.
+  let capOn = $state(es.sampleCap != null && es.sampleCap > 0);
+  let capVal = $state(es.sampleCap && es.sampleCap > 0 ? es.sampleCap : 2000);
+  function setCapOn(on) { capOn = on; es.sampleCap = on ? capVal : null; }
+  function setCapVal(v) { capVal = Math.max(100, Math.round(v) || 100); es.sampleCap = capVal; }
+
   // 2-D PCA scatter of every embedding (the learned appearance space).
   const scatter = $derived.by(() => {
     void es.rev;
@@ -58,9 +66,15 @@
     </p>
 
     <div class="ctl">
-      <label title="Instances are evenly sampled to this many crops (embedding is heavy)">sample
-        <input type="number" min="100" max="6000" step="100" bind:value={es.sampleCap} disabled={running} />
+      <label class="allcap" title="Embed EVERY instance — full coverage, so no frame is skipped (embeddings are cached, so this is a one-time cost per file). Uncheck to evenly subsample for speed on very large files.">
+        <input type="checkbox" checked={!capOn} onchange={(e) => setCapOn(!e.currentTarget.checked)} disabled={running} />
+        all{es.instanceCount ? ` (${es.instanceCount})` : ""}
       </label>
+      {#if capOn}
+        <label title="Evenly sample this many crops instead of embedding all of them">cap
+          <input type="number" min="100" max={es.instanceCount || 100000} step="100" value={capVal} oninput={(e) => setCapVal(+e.currentTarget.value)} disabled={running} />
+        </label>
+      {/if}
       {#if running}
         <button class="run stop" onclick={() => es.abort()}>Stop</button>
       {:else}

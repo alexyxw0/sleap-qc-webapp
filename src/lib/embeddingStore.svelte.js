@@ -49,7 +49,7 @@ class EmbeddingStore {
   progress = $state({ done: 0, total: 0 });
   modelInfo = $state(null);
   threshold = $state(3.5); // robust-z cutoff for "outlier"
-  sampleCap = $state(1200);
+  sampleCap = $state(null); // max crops to embed; null/0 => ALL instances (full coverage, no sampling gap)
   k = 6;
   rev = $state(0);
   resultRev = $state(0); // bumps only when scored frame-flags change — cheap dep for the DINO QC check
@@ -78,6 +78,13 @@ class EmbeddingStore {
     return `${store.fileName || "?"}|${store.frames?.length ?? 0}|${shapes}`;
   }
 
+  /** Total embeddable instances in the loaded file — the ceiling for full-coverage embedding. Reads
+   *  store.frames (recomputes on file load), NOT store.rev, so it's not a node-drag hot path. */
+  get instanceCount() {
+    let n = 0;
+    for (const f of store.frames ?? []) n += f.lf?.instances?.length ?? 0;
+    return n;
+  }
   get records() { this.rev; return this.#recs; }
   get results() { this.rev; return this.#res; }
   get hasResults() { this.resultRev; return !!this.#res; }
@@ -151,7 +158,9 @@ class EmbeddingStore {
       const insts = frames[fi].lf?.instances ?? [];
       for (let ii = 0; ii < insts.length; ii++) items.push({ fi, ii });
     }
-    const list = evenSample(items, this.sampleCap);
+    // null/0/≥total => embed ALL instances (no sampling gap); a positive cap < total evenly subsamples.
+    const cap = this.sampleCap && this.sampleCap > 0 ? this.sampleCap : items.length;
+    const list = evenSample(items, cap);
     if (!list.length) { this.status = "error"; this.message = "No instances to embed."; return; }
 
     const byFrame = new Map();
