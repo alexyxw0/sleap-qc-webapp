@@ -24,11 +24,13 @@ let _processor = null;
 let _ready = null;
 
 /** Load transformers.js + the DINOv2 model (once). `onProgress` gets transformers.js download events.
- *  A ViT-S forward pass is ~4.5 GFLOPs, so the BACKEND decides whether each crop is ~50ms or ~500ms.
- *  We try, in order: WebGPU (GPU — typically 5-20× faster than CPU), a quantized WASM build (~2-4×
- *  faster than fp32), then plain fp32 WASM (always works). Each candidate is warmed up with one dummy
- *  inference so a backend that LOADS but can't actually run (e.g. an op WebGPU lacks) is rejected
- *  before we commit to it. First that runs wins; the choice is recorded in MODEL.backend. */
+ *  A ViT-S forward pass is ~4.5 GFLOPs, so the BACKEND decides whether each crop is ~150ms or ~500ms.
+ *  We embed ONE crop at a time (batch 1) on a SMALL model — the regime where CPU beats GPU: WebGPU's
+ *  per-call upload→dispatch→readback overhead exceeds its compute win at batch 1, AND it saturates the
+ *  same GPU the browser composites the UI on, so it's both slower here and makes the whole app stutter.
+ *  So we stay on WASM and just pick the fastest weights: quantized int8 (~2-4× faster than fp32 on CPU
+ *  via SIMD), falling back to fp32. Each is warmed up with a dummy inference to reject a broken build.
+ *  (WebGPU would only pay off with real batching — a future option, not the batch-1 default.) */
 export async function ensureModel(onProgress) {
   if (_model) return MODEL;
   if (!_ready) {
@@ -38,11 +40,9 @@ export async function ensureModel(onProgress) {
       _tf.env.useBrowserCache = true; // keep the weights across runs
       _processor = await _tf.AutoProcessor.from_pretrained(MODEL.id);
 
-      const hasGPU = typeof navigator !== "undefined" && !!navigator.gpu;
       const attempts = [
-        ...(hasGPU ? [{ device: "webgpu", dtype: "fp32", label: "WebGPU" }] : []),
-        { device: "wasm", dtype: "q8", label: "WASM (q8)" },
-        { device: "wasm", dtype: "fp32", label: "WASM (fp32)" }, // ≈ the previous default — guaranteed to load
+        { device: "wasm", dtype: "q8", label: "WASM (q8)" }, // int8 — ~2-4× faster than fp32 on CPU
+        { device: "wasm", dtype: "fp32", label: "WASM (fp32)" }, // ≈ the original default — guaranteed to load
       ];
       const dummy = new _tf.RawImage(new Uint8ClampedArray(MODEL.input * MODEL.input * 4), MODEL.input, MODEL.input, 4);
       let lastErr = null;
