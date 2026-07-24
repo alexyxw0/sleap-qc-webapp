@@ -2,6 +2,7 @@
   // Per-detector flag-% + overlaps, two ways. Data: qc.detectorSets() → { total, sets } over EVERY
   // enabled check (frame-based). Chord = proportional arcs + overlap ribbons; UpSet = bars + combos.
   import { qc } from "../qcStore.svelte.js";
+  import PopoutWindow from "./PopoutWindow.svelte";
 
   let mode = $state("chord"); // chord | upset
   let popped = $state(false); // render in a larger pop-out window instead of inline
@@ -163,11 +164,7 @@
 
 {#if popped}
   <p class="ov-popped">Popped out · <button type="button" class="ov-link" onclick={() => (popped = false)}>show inline</button></p>
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="ov-pop-backdrop" onclick={(e) => { if (e.target === e.currentTarget) popped = false; }}>
-    <div class="ov-pop-card">{@render body()}</div>
-  </div>
+  <PopoutWindow title="Detector overlap" width="600px" onclose={() => (popped = false)}>{@render body()}</PopoutWindow>
 {:else}
   {@render body()}
 {/if}
@@ -347,25 +344,5 @@
     font: inherit;
     color: var(--accent);
     cursor: pointer;
-  }
-  .ov-pop-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 300;
-    background: rgba(0, 0, 0, 0.55);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .ov-pop-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 1rem 1.2rem;
-    box-shadow: 0 16px 50px rgba(0, 0, 0, 0.5);
-    width: 600px;
-    max-width: 92vw;
-    max-height: 90vh;
-    overflow: auto;
   }
 </style>

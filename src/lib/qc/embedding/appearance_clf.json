@@ -1,0 +1,25 @@
+{
+  "kind": "rbf-svm",
+  "dim": 384,
+  "n_sv": 2741,
+  "gamma": 0.002604166665582801,
+  "intercept": -1.0843126673850625,
+  "threshold": -0.6714153105464722,
+  "classes": [
+    "clean",
+    "faulty"
+  ],
+  "positive_is": "faulty",
+  "embed_model": "facebook/dinov2-small",
+  "dataset": "center_no_gily",
+  "granularity": "instance",
+  "cv_roc": 0.8162092127183719,
+  "cv_pr": 0.38352007821509715,
+  "layout": [
+    "mean:dim",
+    "scale:dim",
+    "dual_coef:n_sv",
+    "support_vectors:n_sv*dim"
+  ],
+  "note": "Float32 little-endian. decision = \u03a3 dual\u00b7exp(-gamma\u00b7||std(x)-SV||^2) + intercept; flag if >= threshold."
+}

@@ -103,25 +103,35 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
   // bold weight + a thin soft outline instead of a heavy black border.
   const LABEL_VISIBLE = "#39e87a"; // strong green
   const LABEL_HIDDEN = "#b6bfca"; // legible gray
-  const label = (name, px, py, alpha, color) => {
-    if (!name) return;
-    const m = ctx.getTransform();
-    const k = m.a; // device px per image unit
-    const dpr = s * k; // device px per CSS px
-    const dx = Math.round(m.a * px + m.e + labelOff * k);
-    const dy = Math.round(m.d * py + m.f - labelOff * k);
+  // The canvas transform + dpr are constant for the whole call (drawScene sets them once before this),
+  // so the label geometry + font are loop-invariant. Compute them ONCE and just queue each label's
+  // position/color; flushLabels() below draws them all in a single native-resolution pass. (Was:
+  // getTransform + font-string rebuild + save/setTransform/restore PER label — run per visible node on
+  // every redraw, i.e. ~60/s while dragging a node.)
+  const m = ctx.getTransform();
+  const k = m.a; // device px per image unit
+  const dpr = s * k; // device px per CSS px
+  const labelFont = `600 ${Math.round(11 * dpr)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+  const labelQueue = []; // { name, px, py, alpha, color }
+  const label = (name, px, py, alpha, color) => { if (name) labelQueue.push({ name, px, py, alpha, color }); };
+  const flushLabels = () => {
+    if (!labelQueue.length) return;
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0); // native device pixels -> crisp glyphs
-    ctx.globalAlpha = alpha;
-    ctx.font = `600 ${Math.round(11 * dpr)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+    ctx.font = labelFont;
     ctx.textBaseline = "middle";
     ctx.textAlign = "left";
     ctx.lineJoin = "round";
     ctx.lineWidth = 1.6 * dpr; // thin, soft outline
     ctx.strokeStyle = "rgba(0,0,0,0.45)";
-    ctx.strokeText(name, dx, dy);
-    ctx.fillStyle = color ?? "#eaf0f7";
-    ctx.fillText(name, dx, dy);
+    for (const { name, px, py, alpha, color } of labelQueue) {
+      const dx = Math.round(m.a * px + m.e + labelOff * k);
+      const dy = Math.round(m.d * py + m.f - labelOff * k);
+      ctx.globalAlpha = alpha;
+      ctx.strokeText(name, dx, dy);
+      ctx.fillStyle = color ?? "#eaf0f7";
+      ctx.fillText(name, dx, dy);
+    }
     ctx.restore();
   };
 
@@ -245,12 +255,13 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
     });
   });
 
-  // Focused node's label, opaque and on top of everything.
+  // Focused node's label, opaque and on top of everything — queued LAST so it draws over the rest.
   if (selInstance >= 0 && selNode >= 0) {
     const p = instances[selInstance]?.points?.[selNode];
     if (placed(p)) label(names[selNode], p.xy[0], p.xy[1], 1, p.visible ? LABEL_VISIBLE : LABEL_HIDDEN);
   }
 
+  flushLabels(); // one native-resolution pass for every queued label
   ctx.globalAlpha = 1;
 }
 

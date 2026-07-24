@@ -8,3 +8,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .venv/
+
+# regenerable precomputed artifacts (rebuilt by dino_probe exporters)
+precomputed/
+public/nose_models/

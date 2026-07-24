@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>appearance-check E2E</title>
+    <!--
+      Dev-only end-to-end smoke for the appearance check under cross-origin isolation: loads a real
+      sample file through the full stack (h5wasm CDN worker → frame decode → embedding backend) and
+      runs the embedding store to completion. Results land in window.__RESULT.
+
+        /bench/e2e.html?file=pkg                    minimal_instance.pkg.slp (embedded frames)
+        /bench/e2e.html?file=flies&cap=12           demo-flies13 .slp + .mp4 (WebCodecs decode)
+        &backend=dino|classical (default dino)
+    -->
+  </head>
+  <body style="font: 12px/1.4 monospace; white-space: pre;">
+    <script type="module">
+      const q = new URLSearchParams(location.search);
+      const out = (o) => { window.__RESULT = o; document.body.textContent = JSON.stringify(o, null, 2); };
+      const until = async (pred, ms, what) => {
+        const t0 = performance.now();
+        while (!pred()) {
+          if (performance.now() - t0 > ms) throw new Error(`timeout waiting for ${what}`);
+          await new Promise((r) => setTimeout(r, 150));
+        }
+      };
+      const asFile = async (path) => {
+        const r = await fetch(path);
+        if (!r.ok) throw new Error(`fetch ${path}: ${r.status}`);
+        return new File([await r.blob()], path.split("/").pop());
+      };
+      try {
+        document.body.textContent = "running…";
+        const { store } = await import("/src/lib/labelsStore.svelte.js");
+        // One store per backend since the two-check split; pick the one under test.
+        const { embeddingStores } = await import("/src/lib/embeddingStore.svelte.js");
+        const embeddingStore = embeddingStores[q.get("backend") || "dino"] ?? embeddingStores.dino;
+
+        if ((q.get("file") || "pkg") === "flies") {
+          await store.loadSlpFile(await asFile("/samples/demo-flies13-preds.slp"));
+          await until(() => store.status === "needs-video" || store.status === "error", 60000, "slp load");
+          if (store.status !== "error") {
+            await store.loadVideoFile(await asFile("/samples/demo-flies13-preds.mp4"));
+            await until(() => store.status === "ready" || store.error, 60000, "video attach");
+          }
+        } else {
+          await store.loadSlpFile(await asFile("/samples/minimal_instance.pkg.slp"));
+          await until(() => store.status === "ready" || store.status === "error", 60000, "pkg load");
+        }
+        if (store.status !== "ready") throw new Error(`load failed: ${store.status} ${store.error ?? store.message}`);
+
+        const cap = +q.get("cap") || 0;
+        embeddingStore.sampleCap = cap > 0 ? cap : null;
+        const t0 = performance.now();
+        const runP = embeddingStore.run();
+        await until(() => ["done", "error", "aborted"].includes(embeddingStore.status), 900000, "embedding run");
+        await runP;
+        const n = embeddingStore.records.length;
+        out({
+          file: q.get("file") || "pkg",
+          frames: store.frames.length,
+          backend: embeddingStore.modelInfo?.backend ?? null,
+          status: embeddingStore.status,
+          message: embeddingStore.message || null,
+          embedded: n,
+          flagged: embeddingStore.flaggedCount,
+          msPerCrop: n ? +((performance.now() - t0) / n).toFixed(1) : null,
+          coi: crossOriginIsolated,
+        });
+      } catch (e) {
+        out({ error: e?.message ?? String(e) });
+      }
+    </script>
+  </body>
+</html>

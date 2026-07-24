@@ -66,6 +66,11 @@
   // (not via CSS), so node markers and labels re-rasterize crisply at any zoom. Redraw
   // is one drawImage + a few shapes — cheap enough to run on every zoom/pan/edit frame.
   $effect(() => {
+    // While the review modal is open it fully occludes this canvas, yet its in-modal node edits bump
+    // store.rev/qc.rev ~60/s — redrawing this hidden canvas (+ rebuilding the QC ring/flag arrays and
+    // their GMM caches) for nothing. Skip it; reading ui.reviewOpen makes the effect re-run + repaint
+    // the moment review closes (same guard as the selection-sync effect below).
+    if (ui.reviewOpen) return;
     void store.rev;
     void qc.rev;
     const selI = edit.selInstance;
@@ -575,14 +580,15 @@
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
-    background: rgba(11, 13, 15, 0.82);
+    /* No backdrop-filter: the HUD chips sit over the canvas and are always visible, so a blur would
+       re-rasterize the backdrop on every redraw (drag/pan/zoom/nav). The 90%-opaque fill reads fine. */
+    background: rgba(11, 13, 15, 0.9);
     border: 1px solid var(--border);
     border-radius: var(--r-xs);
     padding: 0.24rem 0.6rem;
     font-size: 0.7rem;
     letter-spacing: 0.04em;
     color: var(--muted);
-    backdrop-filter: blur(8px);
   }
   /* keep the frame fraction tight as one unit; the chip gap only separates it
      from the instance count, so it reads "007/266 · 3 INST", not "007 /266". */

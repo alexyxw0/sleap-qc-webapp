@@ -1,0 +1,31 @@
+{
+  "kind": "rbf-svm-platt",
+  "keypoint": "nose",
+  "dim": 384,
+  "n_sv": 1006,
+  "gamma": 0.0026041666707646333,
+  "intercept": -0.6388602999181568,
+  "platt_a": 4.592605586903449,
+  "platt_b": 3.719171861881117,
+  "threshold": 0.44654804593455655,
+  "decision_threshold": -0.8565507600782328,
+  "classes": [
+    "clean",
+    "faulty"
+  ],
+  "positive_is": "faulty",
+  "embed_model": "facebook/dinov2-small",
+  "dataset": "gily_only",
+  "node_min": 48,
+  "node_frac": 0.3,
+  "confidence": "solid",
+  "cv_roc": 0.9490453123265623,
+  "cv_pr": 0.6316271823889527,
+  "layout": [
+    "mean:dim",
+    "scale:dim",
+    "dual_coef:n_sv",
+    "support_vectors:n_sv*dim"
+  ],
+  "note": "decision = \u03a3 dual\u00b7exp(-gamma\u00b7||std(x)-SV||^2) + intercept; prob = sigmoid(platt_a\u00b7decision + platt_b); flag if prob >= threshold."
+}

@@ -58,10 +58,11 @@
       let labeled = false;
       let score = null;
       let flagged = false;
+      const has = qc.hasResults; // hoist: this getter allocates (Object.keys) — don't re-call it per frame
       for (let i = lo; i <= hi; i++) {
         const f = frames[i];
         if ((f?.lf?.instances?.length ?? 0) > 0) labeled = true;
-        if (qc.hasResults) {
+        if (has) {
           const s = qc.frameScore(f);
           if (s != null && (score == null || s > score)) score = s;
           if (qc.frameFlagged(f)) flagged = true; // reads the thresholds -> redraws on slider drag
