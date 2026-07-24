@@ -20,12 +20,13 @@ globalThis.document = {
 };
 globalThis.requestAnimationFrame = (cb) => { cb(performance.now()); return 0; };
 
-// Mock the DINO model: no CDN, no network, no real inference. Distinct vector per call.
+// Mock the DINO backend (the worker-client module): no CDN, no network, no real inference. The store
+// hands it BATCHES of raw RGBA crops; return a distinct vector per crop.
 let embN = 0;
-vi.mock("./qc/embedding/dino.js", () => ({
-  MODEL: { id: "test", name: "DINO(test)", dim: 384, patch: 14, input: 224 },
+vi.mock("./qc/embedding/dinoRemote.js", () => ({
+  MODEL: { id: "test", name: "DINO(test)", dim: 384, patch: 14, input: 224, batch: 8 },
   ensureModel: async () => ({ id: "test", name: "DINO(test)", dim: 384, input: 224 }),
-  embed: async () => { embN++; const v = new Float32Array(384); for (let i = 0; i < 384; i++) v[i] = Math.sin(i * 0.1 + embN); return v; },
+  embedBatch: async (images) => images.map(() => { embN++; const v = new Float32Array(384); for (let i = 0; i < 384; i++) v[i] = Math.sin(i * 0.1 + embN); return v; }),
   isLoaded: () => true,
 }));
 
@@ -41,31 +42,31 @@ vi.mock("./labelsStore.svelte.js", () => ({
   store: { labels: { videos: [vA] }, frames: fakeFrames, fileName: "test.pkg.slp", getFrameImage: async () => ({ width: 100, height: 100 }) },
 }));
 
-const { embeddingStore } = await import("./embeddingStore.svelte.js");
+const { embeddingStores } = await import("./embeddingStore.svelte.js");
 
 // The regression guard for BOTH backends: a throw anywhere in run() (like the z-scope bug) leaves the
 // status stuck and hasResults false — the exact 'stuck at scoring / checkbox uncheckable' symptom.
-function assertCompleted(dim) {
-  expect(embeddingStore.status).toBe("done");
-  expect(embeddingStore.hasResults).toBe(true);
-  expect(embeddingStore.results.z.length).toBe(5); // 2 + 1 + 2 instances embedded
-  expect(embeddingStore.results.z.every(Number.isFinite)).toBe(true);
+function assertCompleted(es) {
+  expect(es.status).toBe("done");
+  expect(es.hasResults).toBe(true);
+  expect(es.results.z.length).toBe(5); // 2 + 1 + 2 instances embedded
+  expect(es.results.z.every(Number.isFinite)).toBe(true);
   // frameZ must be keyed "videoIdx:frameIdx" so the appearance QC check can join on it.
-  expect(embeddingStore.frameZByKey("0:0")).not.toBeNull();
-  expect(embeddingStore.frameZByKey("0:2")).not.toBeNull();
+  expect(es.frameZByKey("0:0")).not.toBeNull();
+  expect(es.frameZByKey("0:2")).not.toBeNull();
 }
 
 describe("embeddingStore.run() — runtime", () => {
-  it("classical backend (default) runs to completion with valid results", async () => {
-    embeddingStore.setBackend("classical");
-    await embeddingStore.run();
-    assertCompleted();
+  it("classical backend runs to completion with valid results", async () => {
+    await embeddingStores.classical.run();
+    assertCompleted(embeddingStores.classical);
   });
 
-  it("dino backend runs to completion with valid results", async () => {
-    embeddingStore.setBackend("dino");
-    await embeddingStore.run();
-    assertCompleted();
-    expect(embeddingStore.results.coords.length).toBe(5);
+  it("dino backend runs to completion with valid results, without clobbering the classical store", async () => {
+    await embeddingStores.dino.run();
+    assertCompleted(embeddingStores.dino);
+    expect(embeddingStores.dino.results.coords.length).toBe(5);
+    // Both stores coexist: running DINO must not wipe the classical results (they're separate checks).
+    assertCompleted(embeddingStores.classical);
   });
 });

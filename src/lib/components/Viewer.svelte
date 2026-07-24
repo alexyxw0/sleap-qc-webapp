@@ -66,6 +66,11 @@
   // (not via CSS), so node markers and labels re-rasterize crisply at any zoom. Redraw
   // is one drawImage + a few shapes — cheap enough to run on every zoom/pan/edit frame.
   $effect(() => {
+    // While the review modal is open it fully occludes this canvas, yet its in-modal node edits bump
+    // store.rev/qc.rev ~60/s — redrawing this hidden canvas (+ rebuilding the QC ring/flag arrays and
+    // their GMM caches) for nothing. Skip it; reading ui.reviewOpen makes the effect re-run + repaint
+    // the moment review closes (same guard as the selection-sync effect below).
+    if (ui.reviewOpen) return;
     void store.rev;
     void qc.rev;
     const selI = edit.selInstance;

@@ -162,6 +162,11 @@ class LabelsStore {
       // scrambling navigation across videos.
       const vOrder = new Map((labels.videos ?? []).map((v, i) => [v, i]));
       frames.sort((a, b) => (vOrder.get(a.video) ?? 0) - (vOrder.get(b.video) ?? 0) || a.frameIdx - b.frameIdx);
+      // Stamp the stable "videoIdx:frameIdx" key once. qcStore keys every per-frame lookup by this
+      // (and reads it up to frames×consumers times per threshold-slider tick) — computing it here
+      // kills a per-call videos.indexOf + string alloc on that hot path. Same value qcStore/embedding
+      // stores derive from labels.videos order, so all their per-frame keys stay consistent.
+      for (const f of frames) f.fkey = `${vOrder.get(f.video) ?? 0}:${f.frameIdx}`;
 
       this.frames = frames;
       this.index = 0;

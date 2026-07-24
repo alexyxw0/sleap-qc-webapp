@@ -26,7 +26,24 @@ import { topIssue, confidence, withDirection, DIRECTIONAL_FEATURES, issueForFeat
 import { visibilityMask } from "./qc/checks/util.js";
 import { qcResultsCsv } from "./qc/csv.js";
 import { store } from "./labelsStore.svelte.js";
-import { embeddingStore } from "./embeddingStore.svelte.js";
+import { embeddingStores } from "./embeddingStore.svelte.js";
+import { nodeEmbeddingStores } from "./nodeEmbeddingStore.svelte.js";
+import { noseEmbedding } from "./noseEmbeddingStore.svelte.js";
+
+// Appearance-outlier checks: one per embedding store, each reading its OWN precomputed store.
+// Two granularities × two backends: the INSTANCE-level crop (classical / dino) catches gross
+// whole-animal problems; the PER-NODE patch (nodeClassical / nodeDino) catches a single mis-placed /
+// occluded keypoint. Each is independently selectable and only "ready" once its backend has been run
+// in the matching panel; all fold into the same flagged union via per-frame keys ("videoIdx:frameIdx").
+const APPEARANCE_CHECKS = [
+  { key: "classical", store: embeddingStores.classical, label: "Classical appearance", chip: "Unusual appearance · pixels" },
+  { key: "dino", store: embeddingStores.dino, label: "DINO appearance", chip: "Unusual appearance · DINO" },
+  { key: "nodeClassical", store: nodeEmbeddingStores.classical, label: "Per-node appearance (Classical)", chip: "Unusual keypoint · pixels" },
+  { key: "nodeDino", store: nodeEmbeddingStores.dino, label: "Per-node appearance (DINO)", chip: "Unusual keypoint · DINO" },
+  { key: "noseAppearance", store: noseEmbedding, label: "Nose keypoint (trained)", chip: "Mislabeled nose · DINO" },
+];
+const APPEARANCE_BY_KEY = Object.fromEntries(APPEARANCE_CHECKS.map((a) => [a.key, a]));
+const isAppearanceCheck = (name) => name in APPEARANCE_BY_KEY;
 
 // A user-facing check maps to a computable unit. count/negative/duplicates share one frame unit.
 const UNIT_OF = {
@@ -79,6 +96,11 @@ const FRAME_SEVERITY = {
   duplicates: 0.4, // overlapping / duplicated instances
 };
 
+// Display label + stable ordering for the detector-overlap viz. Module-scope constants (were rebuilt
+// on every detectorSets() call — i.e. per rev bump while the overlap/manual panels are open).
+const DETECTOR_LABELS = { anomaly: "Anomaly", gmm: "GMM", chirality: "Chirality", ordering: "Ordering", poseSplit: "Pose split", count: "Count", sparse: "Sparse", confidence: "Confidence", instConfidence: "Inst conf", negative: "Negative", duplicates: "Duplicates", classical: "Classical appearance", dino: "DINO appearance", nodeClassical: "Per-node (Classical)", nodeDino: "Per-node (DINO)", noseAppearance: "Nose (trained)" };
+const DETECTOR_ORDER = ["anomaly", "gmm", "chirality", "ordering", "poseSplit", "count", "sparse", "confidence", "instConfidence", "negative", "duplicates", "classical", "dino", "nodeClassical", "nodeDino", "noseAppearance"];
+
 class QCStore {
   status = $state("idle"); // idle | running | done | error
   error = $state(null);
@@ -99,18 +121,24 @@ class QCStore {
   // Which detection techniques to run / include. The flagged frames are the UNION of the
   // enabled-and-computed checks. Defaults ON: anomaly, chirality, gmm, duplicates. The frame /
   // structural checks (count, sparse, confidence, negative) default OFF — enable them as needed.
-  checks = $state({ anomaly: true, gmm: true, chirality: true, ordering: false, poseSplit: true, count: false, sparse: false, confidence: false, instConfidence: false, negative: false, duplicates: true, dino: false });
-  // DINO appearance-outlier check: not a computed QC unit — it reads precomputed embeddings from the
-  // embeddingStore, so it's only "ready" once you've run the appearance panel.
-  #dinoZ(item) {
-    if (!this.checks.dino) return null;
-    void embeddingStore.resultRev;
-    if (!embeddingStore.hasResults) return null;
-    return embeddingStore.frameZByKey(this.#fkey(item)); // max embedding z for this frame, or null
+  checks = $state({ anomaly: true, gmm: true, chirality: true, ordering: false, poseSplit: true, count: false, sparse: false, confidence: false, instConfidence: false, negative: false, duplicates: true, classical: false, dino: false, nodeClassical: false, nodeDino: false, noseAppearance: false });
+  // Appearance-outlier checks (classical / dino): NOT computed QC units — each reads precomputed
+  // embeddings from its own embeddingStore, so a check is only "ready" once its backend has been run
+  // in the appearance panel. #appZ respects the enabled flag; #appFlagged uses that store's own z-cutoff.
+  #appZ(item, key) {
+    if (!this.checks[key]) return null;
+    const es = APPEARANCE_BY_KEY[key].store;
+    void es.resultRev;
+    if (!es.hasResults) return null;
+    return es.frameZByKey(this.#fkey(item)); // max embedding z for this frame, or null
   }
-  #dinoFlagged(item) {
-    const z = this.#dinoZ(item);
-    return z != null && z >= embeddingStore.threshold;
+  #appFlagged(item, key) {
+    if (!this.checks[key]) return false;
+    const es = APPEARANCE_BY_KEY[key].store;
+    void es.resultRev;
+    if (!es.hasResults) return false;
+    const z = es.frameZByKey(this.#fkey(item));
+    return z != null && z >= es.threshold;
   }
 
   // User-built per-feature checks: drag a feature out of the GMM/anomaly vector to flag instances
@@ -153,9 +181,35 @@ class QCStore {
   #poseSplitBridge = new Map(); // "v:f:i" -> the over-stretched bridge edge [a,b], or null
   #framePoseSplit = new Map(); // "v:f" -> max split score
 
+  // The union of frame-keys flagged by every enabled+computed check — built ONCE per invalidation
+  // (rev / checks / thresholds / feature-checks / appearance results) instead of re-scanned per call.
+  // frameFlagged() and flaggedFrameCount both read it, so HeatTimeline's per-frame scan and the grid
+  // tiles share one O(frames) pass during a threshold-slider drag instead of each rebuilding the set.
+  #flaggedKeys = $derived.by(() => {
+    this.rev; // recompute after each run (#derive bumps rev); thresholds/checks tracked below
+    const c = this.checks;
+    const u = new Set();
+    if (c.anomaly) for (const [fk, s] of this.#frameAnom) if (s >= this.threshold) u.add(fk);
+    if (c.gmm) for (const [fk, s] of this.#frameGmm) if (s >= this.gmmThreshold) u.add(fk);
+    if (c.chirality) for (const [fk, s] of this.#frameChir) if (s >= this.chiralityThreshold) u.add(fk);
+    if (c.ordering) for (const [fk, s] of this.#frameOrdering) if (s >= this.orderingThreshold) u.add(fk);
+    if (c.poseSplit) for (const [fk, s] of this.#framePoseSplit) if (s >= this.poseSplitThreshold) u.add(fk);
+    for (const f of this.featureChecks) if (f.on) for (const [fk, fm] of this.#frameFeatureZ) if ((fm[f.feature] ?? -1) >= f.threshold) u.add(fk);
+    for (const [fk, fq] of this.#frameResults) if (this.#frameHasEnabledIssue(fq)) u.add(fk);
+    for (const a of APPEARANCE_CHECKS) if (c[a.key] && a.store.hasResults) for (const fk of a.store.flaggedFrameKeys()) u.add(fk);
+    return u;
+  });
+
   get hasResults() {
     this.rev;
     return Object.keys(this.#computed).length > 0;
+  }
+  /** Any QC verdict available to compare/flag against — a computed unit (Run QC) OR a ready appearance
+   *  check (precomputed / uploaded). The manual-comparison needs this, not just #computed. */
+  get hasAnyResults() {
+    this.rev;
+    if (Object.keys(this.#computed).length > 0) return true;
+    return APPEARANCE_CHECKS.some((a) => this.checks[a.key] && a.store.hasResults);
   }
   /** Whether the loaded labels contain any predicted instances (enables the confidence check). */
   get hasPredictions() {
@@ -205,13 +259,13 @@ class QCStore {
   /** Whether the unit backing a check has been computed (cached) for the current labels. */
   checkReady(name) {
     this.rev;
-    if (name === "dino") return embeddingStore.hasResults; // precomputed in the appearance panel, not by run()
+    if (isAppearanceCheck(name)) return APPEARANCE_BY_KEY[name].store.hasResults; // precomputed in the appearance panel, not by run()
     return this.#computed[UNIT_OF[name]] != null;
   }
   /** An enabled check whose unit hasn't been computed yet (waiting on a Run QC). */
   checkPending(name) {
     this.rev;
-    if (name === "dino") return false; // never blocks a Run QC — it needs the embedding precompute instead
+    if (isAppearanceCheck(name)) return false; // never blocks a Run QC — it needs the embedding precompute instead
     return this.checks[name] && !this.checkReady(name);
   }
   /** Number of enabled checks still needing computation. */
@@ -238,9 +292,16 @@ class QCStore {
     }
   }
 
+  /** A not-yet-precomputed appearance check can't be meaningfully enabled — bulk toggles (group
+   *  enable-all / solo) must not pre-arm it into a checked-but-inert state (its per-row checkbox is
+   *  locked, so the user couldn't turn it back off individually). Non-appearance checks are always OK. */
+  #canEnable(name) {
+    return !isAppearanceCheck(name) || APPEARANCE_BY_KEY[name].store.hasResults;
+  }
+
   /** Enable/disable a set of checks at once (a category toggle) — one rev bump => one re-run. */
   setChecks(names, value) {
-    for (const n of names) if (n in this.checks) this.checks[n] = value;
+    for (const n of names) if (n in this.checks) this.checks[n] = value && this.#canEnable(n);
     this.rev++;
   }
 
@@ -266,7 +327,7 @@ class QCStore {
   /** Right-click "solo": enable ONLY these built-in checks; disable every other check + feature check. */
   soloChecks(names) {
     const keep = new Set(names);
-    for (const k of Object.keys(this.checks)) this.checks[k] = keep.has(k);
+    for (const k of Object.keys(this.checks)) this.checks[k] = keep.has(k) && this.#canEnable(k);
     let featOff = false;
     for (const f of this.featureChecks) if (f.on) { f.on = false; featOff = true; }
     this.rev++;
@@ -325,38 +386,14 @@ class QCStore {
 
   /** Number of frames flagged by the UNION of the currently-enabled (and computed) checks. */
   get flaggedFrameCount() {
-    this.rev;
-    const c = this.checks;
-    const u = new Set();
-    if (c.anomaly) for (const [fk, s] of this.#frameAnom) if (s >= this.threshold) u.add(fk);
-    if (c.gmm) for (const [fk, s] of this.#frameGmm) if (s >= this.gmmThreshold) u.add(fk);
-    if (c.chirality) for (const [fk, s] of this.#frameChir) if (s >= this.chiralityThreshold) u.add(fk);
-    if (c.ordering) for (const [fk, s] of this.#frameOrdering) if (s >= this.orderingThreshold) u.add(fk);
-    if (c.poseSplit) for (const [fk, s] of this.#framePoseSplit) if (s >= this.poseSplitThreshold) u.add(fk);
-    for (const f of this.featureChecks) if (f.on) for (const [fk, fm] of this.#frameFeatureZ) if ((fm[f.feature] ?? -1) >= f.threshold) u.add(fk);
-    for (const [fk, fq] of this.#frameResults) {
-      if (
-        (c.count && fq.isWrongCount) ||
-        (c.sparse && fq.minVisibleNodeCount < this.sparseThreshold) ||
-        (c.confidence && this.#kpConf(fq) < this.confidenceThreshold) ||
-        (c.instConfidence && fq.minInstScore < this.instConfidenceThreshold) ||
-        (c.negative && fq.isNegativeWithInstances) ||
-        (c.duplicates && (fq.duplicatePairs?.length ?? 0) > 0)
-      ) {
-        u.add(fk);
-      }
-    }
-    // DINO appearance check: its per-frame keys ("videoIdx:frameIdx") match #fkey, so fold them into
-    // the same union (reads embeddingStore.resultRev/threshold → recounts live on the z-slider).
-    if (c.dino && embeddingStore.hasResults) for (const fk of embeddingStore.flaggedFrameKeys()) u.add(fk);
-    return u.size;
+    return this.#flaggedKeys.size;
   }
 
   /** How many frames a single check flags (0 if its unit isn't computed). */
   checkCount(name) {
     this.rev;
     if (!this.checkReady(name)) return 0;
-    if (name === "dino") return embeddingStore.flaggedFrameCount;
+    if (isAppearanceCheck(name)) return APPEARANCE_BY_KEY[name].store.flaggedFrameCount;
     if (name === "anomaly") {
       let n = 0;
       for (const s of this.#frameAnom.values()) if (s >= this.threshold) n++;
@@ -402,7 +439,20 @@ class QCStore {
     return store.labels?.videos?.indexOf(video) ?? 0;
   }
   #fkey(item) {
-    return `${this.#videoIdx(item.video)}:${item.frameIdx}`;
+    return item.fkey ?? `${this.#videoIdx(item.video)}:${item.frameIdx}`; // stamped at load (labelsStore); fallback for un-stamped items
+  }
+  /** No-alloc test of the enabled frame-level (structural) checks against a raw FrameQC — the exact
+   *  predicate frameQC() + hasFrameIssue() computes, but without spreading a ~25-field copy per call. */
+  #frameHasEnabledIssue(fq) {
+    const c = this.checks;
+    return !!(
+      (c.count && fq.isWrongCount) ||
+      (c.sparse && fq.minVisibleNodeCount < this.sparseThreshold) ||
+      (c.confidence && this.#kpConf(fq) < this.confidenceThreshold) ||
+      (c.instConfidence && fq.minInstScore < this.instConfidenceThreshold) ||
+      (c.negative && fq.isNegativeWithInstances) ||
+      (c.duplicates && (fq.duplicatePairs?.length ?? 0) > 0)
+    );
   }
 
   /** Per-frame heat: max over the enabled score-based checks (anomaly, gmm), or null. */
@@ -445,36 +495,11 @@ class QCStore {
       duplicateReasons: c.duplicates ? fq.duplicateReasons : [],
     };
   }
-  /** Whether a frame is flagged by any ENABLED check (the union). */
+  /** Whether a frame is flagged by any ENABLED check (the union). Membership in the memoized set —
+   *  one shared O(frames) build per invalidation, not a per-call re-scan + FrameQC spread. */
   frameFlagged(item) {
-    this.rev;
     if (!item) return false;
-    const fk = this.#fkey(item);
-    const c = this.checks;
-    if (c.anomaly) {
-      const s = this.#frameAnom.get(fk);
-      if (s != null && s >= this.threshold) return true;
-    }
-    if (c.gmm) {
-      const s = this.#frameGmm.get(fk);
-      if (s != null && s >= this.gmmThreshold) return true;
-    }
-    if (c.chirality) {
-      const s = this.#frameChir.get(fk);
-      if (s != null && s >= this.chiralityThreshold) return true;
-    }
-    if (c.ordering) {
-      const s = this.#frameOrdering.get(fk);
-      if (s != null && s >= this.orderingThreshold) return true;
-    }
-    if (c.poseSplit) {
-      const s = this.#framePoseSplit.get(fk);
-      if (s != null && s >= this.poseSplitThreshold) return true;
-    }
-    const fm = this.#frameFeatureZ.get(fk);
-    if (fm) for (const f of this.featureChecks) if (f.on && (fm[f.feature] ?? -1) >= f.threshold) return true;
-    if (this.#dinoFlagged(item)) return true;
-    return hasFrameIssue(this.frameQC(item));
+    return this.#flaggedKeys.has(this.#fkey(item));
   }
 
   /**
@@ -516,7 +541,7 @@ class QCStore {
       if (c.negative && fq.isNegativeWithInstances) out.push({ key: "negative", label: "Negative", score: null });
       if (c.duplicates && (fq.duplicatePairs?.length ?? 0) > 0) out.push({ key: "duplicates", label: "Duplicate", score: null });
     }
-    if (this.#dinoFlagged(item)) out.push({ key: "dino", label: "Unusual appearance", score: this.#dinoZ(item) });
+    for (const a of APPEARANCE_CHECKS) if (this.#appFlagged(item, a.key)) out.push({ key: a.key, label: a.chip, score: this.#appZ(item, a.key) });
     return out;
   }
 
@@ -554,7 +579,29 @@ class QCStore {
     }
     const zs = this.#instFeatureZ.get(key);
     if (zs) for (const f of this.featureChecks) if (f.on && (zs[f.feature] ?? -1) >= f.threshold) return true;
+    if (this.#appInstFaultyNode(item, instIdx) >= 0) return true; // per-keypoint appearance check flagged it
     return false;
+  }
+
+  // Per-keypoint appearance checks (nose trained / per-node live) attribute a fault to a SPECIFIC keypoint;
+  // return that node index for `item`'s instance `instIdx` (to ring it), or -1 if none flags it.
+  #appInstFaultyNode(item, instIdx) {
+    if (!item) return -1;
+    if (this.checks.noseAppearance && noseEmbedding.hasResults) {
+      const p = noseEmbedding.instProbByKey(`${this.#fkey(item)}:${instIdx}`);
+      if (p != null && p >= noseEmbedding.threshold) {
+        const ni = store.skeleton?.nodeNames?.indexOf("nose") ?? -1;
+        if (ni >= 0) return ni;
+      }
+    }
+    for (const nk of ["nodeDino", "nodeClassical"]) {
+      if (this.checks[nk] && APPEARANCE_BY_KEY[nk].store.hasResults) {
+        const es = APPEARANCE_BY_KEY[nk].store;
+        const w = es.worstNodeFor(store.frames.indexOf(item), instIdx);
+        if (w && w.node >= 0 && w.z >= es.threshold) return w.node;
+      }
+    }
+    return -1;
   }
 
   /** Per-detector flagged-FRAME sets over EVERY enabled check (instance-level reduced to frames +
@@ -563,20 +610,18 @@ class QCStore {
   detectorSets() {
     this.rev;
     const frames = store.frames ?? [];
-    const LABEL = { anomaly: "Anomaly", gmm: "GMM", chirality: "Chirality", ordering: "Ordering", poseSplit: "Pose split", count: "Count", sparse: "Sparse", confidence: "Confidence", instConfidence: "Inst conf", negative: "Negative", duplicates: "Duplicates", dino: "DINO appearance" };
-    const ORDER = ["anomaly", "gmm", "chirality", "ordering", "poseSplit", "count", "sparse", "confidence", "instConfidence", "negative", "duplicates", "dino"];
     const byKey = new Map();
     for (let i = 0; i < frames.length; i++) {
       for (const f of this.frameFlaggingChecks(frames[i])) {
         let e = byKey.get(f.key);
         if (!e) {
-          e = { id: f.key, label: f.key.startsWith("feat:") ? f.label : LABEL[f.key] ?? f.key, set: new Set() };
+          e = { id: f.key, label: f.key.startsWith("feat:") ? f.label : DETECTOR_LABELS[f.key] ?? f.key, set: new Set() };
           byKey.set(f.key, e);
         }
         e.set.add(i);
       }
     }
-    const sets = [...byKey.values()].sort((a, b) => (ORDER.indexOf(a.id) + 1 || 99) - (ORDER.indexOf(b.id) + 1 || 99));
+    const sets = [...byKey.values()].sort((a, b) => (DETECTOR_ORDER.indexOf(a.id) + 1 || 99) - (DETECTOR_ORDER.indexOf(b.id) + 1 || 99));
     return { total: frames.length, sets };
   }
   /** Per-feature "impact" sets for the feature-vector detectors (Anomaly/GMM): frames where a
@@ -778,6 +823,8 @@ class QCStore {
       }
     }
     if (this.#gmmFlagged(key)) return this.gmmWorstNode(item, instIdx);
+    const an = this.#appInstFaultyNode(item, instIdx); // per-keypoint appearance check → ring that keypoint
+    if (an >= 0) return an;
     return -1;
   }
   /** The other node in `n`'s symmetric L/R pair (from the fitted chirality model), or -1. */
@@ -867,7 +914,7 @@ class QCStore {
       if (c.negative && fq.isNegativeWithInstances) bump(FRAME_SEVERITY.negative);
       if (c.duplicates && (fq.duplicatePairs?.length ?? 0) > 0) bump(FRAME_SEVERITY.duplicates);
     }
-    if (this.#dinoFlagged(item)) { const z = this.#dinoZ(item); bump(1 / (1 + Math.exp(-(z - embeddingStore.threshold)))); } // appearance z -> [0,1]
+    for (const a of APPEARANCE_CHECKS) if (this.#appFlagged(item, a.key)) { const z = this.#appZ(item, a.key); bump(1 / (1 + Math.exp(-(z - a.store.threshold)))); } // appearance z -> [0,1]
     return best;
   }
 
@@ -904,7 +951,8 @@ class QCStore {
     const fx = this.#computed.anomaly?.fx ?? this.#computed.gmm?.fx;
     const pose = item.lf?.instances?.[instIdx]?.numpy?.({ invisibleAsNaN: true });
     if (!fx || !pose) return;
-    const key = `${this.#fkey(item)}:${instIdx}`;
+    const fk = this.#fkey(item);
+    const key = `${fk}:${instIdx}`;
     const raw = fx.extractFeatures(pose);
     const clean = raw.map((f) => (Number.isNaN(f) ? 0 : f === Infinity ? 10 : f === -Infinity ? -10 : f));
 
@@ -937,7 +985,7 @@ class QCStore {
       this.#computed.poseSplit.poseSplitWorst.set(key, r.worstNode);
       this.#computed.poseSplit.poseSplitBridge?.set(key, r.bridge);
     }
-    this.#derive(); // rebuild frame-max maps + clear the lazy attribution caches for this key
+    this.#deriveFrame(fk, key, item.lf?.instances?.length ?? 0); // incremental: only this frame's max + this instance's caches
     this.rev++;
   }
 
@@ -1136,6 +1184,28 @@ class QCStore {
     this.#deriveFeatureChecks(); // per-feature |z| maps for the user feature-checks
   }
 
+  /** Incremental re-derive after a SINGLE-instance rescore (the review edit loop): recompute only the
+   *  edited frame's per-frame max over its own instances, and drop only the edited instance's lazy
+   *  caches — instead of #derive()'s full O(all instances) frameMax rebuild + total cache wipe. The
+   *  score maps are mutated in place by rescoreInstance, so the map references are already current;
+   *  only the frame-max reductions + the edited instance's attribution caches need refreshing. */
+  #deriveFrame(fk, key, nInsts) {
+    const remax = (src, dst) => {
+      let mx = -Infinity;
+      for (let i = 0; i < nInsts; i++) { const v = src.get(`${fk}:${i}`); if (v != null && v > mx) mx = v; }
+      if (mx > -Infinity) dst.set(fk, mx); else dst.delete(fk); // match #derive: absent when no instance scores
+    };
+    remax(this.#instanceScores, this.#frameAnom);
+    remax(this.#gmmScores, this.#frameGmm);
+    remax(this.#chiralityScores, this.#frameChir);
+    remax(this.#orderingScores, this.#frameOrdering);
+    remax(this.#poseSplitScores, this.#framePoseSplit);
+    this.#gmmWorst.delete(key); // attribution is per-instance — only the edited one is stale
+    this.#gmmWorstFeat.delete(key);
+    this.#anomalyAttr.delete(key);
+    if (this.featureCheckActive) this.#deriveFeatureChecks(); // feature-z maps are global; only when custom checks exist
+  }
+
   /** Run the enabled checks that aren't already computed (incremental + memoized). */
   async run() {
     if (!store.labels || this.status === "running") return;
@@ -1147,7 +1217,9 @@ class QCStore {
     // OR a baseline-source switch. Otherwise reuse the memoized context + already-computed units.
     const rebuild = store.labels !== this.#ctxLabels || store.rev !== this.#ctxRev || this.baselineSource !== this.#ctxBaselineSource;
     const need = new Set();
-    for (const [name, on] of Object.entries(this.checks)) if (on) need.add(UNIT_OF[name]);
+    // Appearance checks (classical/dino) have NO computable unit — they read precomputed embeddings —
+    // so they must not map through UNIT_OF (undefined) into the run's unit set.
+    for (const [name, on] of Object.entries(this.checks)) if (on && !isAppearanceCheck(name)) need.add(UNIT_OF[name]);
     if (this.featureCheckActive) need.add("anomaly"); // feature-checks reuse the anomaly ZScore fit
     const units = [...need].filter((u) => rebuild || !this.#computed[u]); // (rebuild clears #computed below)
     const usesFeatures = units.includes("anomaly") || units.includes("gmm"); // shared 18-feature build
@@ -1311,9 +1383,10 @@ class QCStore {
       if (c.negative) out.push({ key: "negative", label: "Negative frame", flagged: fq.isNegativeWithInstances, detail: fq.isNegativeWithInstances ? "has instances" : "—" });
       if (c.duplicates) out.push({ key: "duplicates", label: "Duplicates", flagged: (fq.duplicatePairs?.length ?? 0) > 0, detail: `${fq.duplicatePairs?.length ?? 0} pair(s)` });
     }
-    if (c.dino) {
-      const z = this.#dinoZ(item);
-      out.push({ key: "dino", label: "DINO appearance", score: z ?? 0, threshold: embeddingStore.threshold, flagged: z != null && z >= embeddingStore.threshold, unit: "σ" });
+    for (const a of APPEARANCE_CHECKS) {
+      if (!c[a.key] || !a.store.hasResults) continue; // enabled but not-yet-precomputed -> no phantom row
+      const z = this.#appZ(item, a.key);
+      out.push({ key: a.key, label: a.label, score: z ?? 0, threshold: a.store.threshold, flagged: z != null && z >= a.store.threshold, unit: "σ" });
     }
     return out;
   }

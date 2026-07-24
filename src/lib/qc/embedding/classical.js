@@ -25,6 +25,7 @@ export const MODEL = {
   patch: null,
   input: S,
   backend: "CPU · pixels",
+  batch: 16, // sub-ms/crop synchronous math — batches only bound work between UI yields
   note: "tiny-image + HOG + intensity histogram · no model download, sub-ms/crop",
 };
 
@@ -141,9 +142,8 @@ export function featuresFromGray(g, side) {
   return out;
 }
 
-/** Embed a square canvas crop → the classical feature vector (Float32Array, length DIM). */
-export function embed(canvas) {
-  const ctx = canvas.getContext("2d");
-  const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  return featuresFromGray(toGray(data, canvas.width), canvas.width);
+/** Embed a batch of RGBA crops ({ data, width, height } — e.g. an ImageData) → one feature vector per
+ *  crop (Float32Array, length DIM). Same signature as the DINO backend so the store treats them alike. */
+export async function embedBatch(images) {
+  return images.map((im) => featuresFromGray(toGray(im.data, im.width), im.width));
 }

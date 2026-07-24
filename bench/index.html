@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>DINO backend bench</title>
+    <!--
+      Dev-only micro-benchmark for the DINO appearance backend (served by `npm run dev` at /bench/).
+      Results land in window.__RESULT (and on the page) for scripted runs.
+
+        /bench/                          real app path: dinoRemote worker + configured threads/batch
+        /bench/?batch=1&n=24             real app path, batch size override
+        /bench/?mode=engine&threads=1&batch=1   raw transformers.js/ORT A-B — ORT's WASM flags freeze
+                                          after first init, so each engine config needs a fresh page.
+    -->
+  </head>
+  <body style="font: 12px/1.4 monospace; white-space: pre;">
+    <script type="module">
+      const q = new URLSearchParams(location.search);
+      const N = +q.get("n") || 24; // crops to time (after warmup)
+      const out = (o) => { window.__RESULT = o; document.body.textContent = JSON.stringify(o, null, 2); };
+      const mkImages = (k) =>
+        Array.from({ length: k }, (_, i) => {
+          const d = new Uint8ClampedArray(224 * 224 * 4);
+          for (let p = 0; p < d.length; p += 4) { d[p] = (p * 7 + i * 31) % 256; d[p + 1] = (p * 13 + i * 17) % 256; d[p + 2] = (p * 3 + i * 7) % 256; d[p + 3] = 255; }
+          return { data: d, width: 224, height: 224 };
+        });
+      try {
+        document.body.textContent = "running…";
+        if (q.get("mode") === "engine") {
+          const device = q.get("device") || "wasm"; // wasm | webgpu
+          let gpu = null;
+          if (device === "webgpu") {
+            const a = await navigator.gpu?.requestAdapter();
+            gpu = a ? `${a.info?.vendor ?? "?"} ${a.info?.architecture ?? ""}`.trim() : "NO ADAPTER";
+          }
+          const tf = await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3/+esm");
+          tf.env.allowLocalModels = false;
+          tf.env.useBrowserCache = true;
+          tf.env.backends.onnx.wasm.numThreads = +q.get("threads") || 1;
+          const proc = await tf.AutoProcessor.from_pretrained("Xenova/dinov2-small");
+          const model = await tf.AutoModel.from_pretrained("Xenova/dinov2-small", { device, dtype: q.get("dtype") || "q8" });
+          const B = +q.get("batch") || 1;
+          const raws = mkImages(B).map((im) => new tf.RawImage(im.data, im.width, im.height, 4));
+          const inp = await proc(B === 1 ? raws[0] : raws);
+          await model(inp); // warmup (webgpu: includes shader compilation)
+          await model(inp); // second warmup so timing excludes any lazy pipeline setup
+          const t0 = performance.now();
+          let done = 0;
+          while (done < N) { await model(inp); done += B; }
+          out({
+            mode: "engine", coi: crossOriginIsolated, device, gpu, dtype: q.get("dtype") || "q8",
+            threadsRequested: +q.get("threads") || 1, threadsEffective: tf.env.backends.onnx.wasm.numThreads,
+            batch: B, msPerCrop: +((performance.now() - t0) / done).toFixed(1),
+          });
+        } else {
+          const be = await import("/src/lib/qc/embedding/dinoRemote.js");
+          await be.ensureModel(() => {});
+          const B = +q.get("batch") || be.MODEL.batch || 1;
+          await be.embedBatch(mkImages(B)); // warmup the exact call path
+          const t0 = performance.now();
+          let done = 0;
+          while (done < N) { await be.embedBatch(mkImages(B)); done += B; } // fresh buffers each call — they get transferred
+          out({ mode: "app", coi: crossOriginIsolated, backend: be.MODEL.backend, batch: B, msPerCrop: +((performance.now() - t0) / done).toFixed(1) });
+        }
+      } catch (e) {
+        out({ error: e?.message ?? String(e) });
+      }
+    </script>
+  </body>
+</html>

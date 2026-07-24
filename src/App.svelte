@@ -12,6 +12,7 @@
   import QcReview from "./lib/components/QcReview.svelte";
   import Toasts from "./lib/components/Toasts.svelte";
   import { ui } from "./lib/uiStore.svelte.js";
+  import { manualCheck } from "./lib/manualCheckStore.svelte.js";
 
   // Reset edit history + view whenever a different labels object is loaded (or closed).
   let lastLabels = null;
@@ -22,6 +23,7 @@
       view.reset();
       qc.reset();
       ui.closeAll();
+      manualCheck.reset(); // else a stale CSV would score against the new file's frames
     }
   });
 

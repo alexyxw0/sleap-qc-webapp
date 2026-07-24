@@ -4,11 +4,28 @@ import { fileURLToPath } from "node:url";
 
 const emptyStub = fileURLToPath(new URL("./src/stubs/empty.js", import.meta.url));
 
+// Cross-origin isolation: gives the page SharedArrayBuffer, which onnxruntime-web (the DINO
+// appearance backend) requires for its WASM thread pool — without these two headers it silently
+// falls back to ONE thread (~3-4× slower inference, only a console warning). Safe with our
+// cross-origin deps: jsDelivr sends `Cross-Origin-Resource-Policy: cross-origin` + `ACAO: *`, the
+// HF hub echoes the request Origin (CORS), and the h5wasm/DINO workers are same-origin blob/module
+// workers that inherit the policy. A production host must send the same two headers to keep
+// multi-threaded inference (the app still works without them, just single-threaded).
+const coi = {
+  "Cross-Origin-Opener-Policy": "same-origin",
+  "Cross-Origin-Embedder-Policy": "require-corp",
+};
+
 // Pure client-side SPA. sleap-io.js runs only in the browser (WASM h5wasm via a
 // CDN-loaded Web Worker, WebCodecs for video). No SSR, so there is nothing to
 // special-case for the server; we only nudge dep-optimization for the wasm/large deps.
 export default defineConfig({
   plugins: [svelte()],
+  server: { headers: coi },
+  preview: { headers: coi },
+  worker: {
+    format: "es", // the DINO embed worker dynamic-imports transformers.js from the CDN — needs ESM output
+  },
   resolve: {
     alias: {
       // Node-only optional deps that sleap-io.js dynamically imports for server-side

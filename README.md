@@ -144,6 +144,13 @@ multi-instance copy/interpolate. The data model supports these; they're UI work.
 ## Notes / known edges
 - Pure client-side SPA — no server. Production: `@sveltejs/adapter-static` under SvelteKit
   or this plain Vite build behind any static host.
+- The host should send `Cross-Origin-Opener-Policy: same-origin` +
+  `Cross-Origin-Embedder-Policy: require-corp` (the dev/preview servers already do — see
+  `vite.config.js`): cross-origin isolation is what lets the DINO appearance backend run
+  multi-threaded WASM (~2× on typical machines). Without the headers everything still works,
+  just single-threaded — the appearance panel's backend label tells you which you got.
+  On a host that can't set headers (e.g. GitHub Pages), the `coi-serviceworker` shim is the
+  usual workaround. Perf harness: `/bench/` and `/bench/e2e.html` under `npm run dev`.
 - Needs network at runtime: the h5wasm WASM is pulled from jsDelivr by the streaming
   worker. (Can be self-hosted later via `h5wasmUrl`.)
 - External-video decode uses WebCodecs (modern browsers).

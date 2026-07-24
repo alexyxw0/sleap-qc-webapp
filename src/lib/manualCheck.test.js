@@ -29,6 +29,26 @@ describe("parseManualCheck", () => {
     expect(r.byKey.get("0:6").faulty).toBe(false);
   });
 
+  it("treats every frame in the per-keypoint schema as faulty (the file lists only faulty frames)", () => {
+    // faulty_keypoints.csv lists ONE ROW PER INSTANCE for reviewed-FAULTY frames only. A clean-instance
+    // row (n_bad_keypoints=0) still belongs to a faulty frame, so presence ⇒ frame faulty.
+    const csv = [
+      "frame_index,frame_idx,video,instance,type,track,score,n_bad_keypoints,bad_keypoints,note,file",
+      "92,651,1,0,user,0,0.0,1,nose,nose too far back,f.slp", // frame 1:651 (nose flagged)
+      "20,8700,0,1,user,0,0.0,0,,,f.slp", // frame 0:8700 — no keypoint marked, but still a faulty frame
+      "45,10472,0,1,user,0,0.0,3,neck;ear_r;body_1,,f.slp", // frame 0:10472
+      "46,10472,0,0,user,0,0.0,0,,,f.slp", // same frame, a clean instance -> frame still counted once
+    ].join("\n");
+    const r = parseManualCheck(csv);
+    expect(r.error).toBeUndefined();
+    expect(r.total).toBe(3); // 3 unique frames
+    expect(r.faulty).toBe(3); // ALL present frames are faulty (incl. 0:8700 with no bad keypoint)
+    expect(r.byKey.get("1:651").faulty).toBe(true);
+    expect(r.byKey.get("0:8700").faulty).toBe(true);
+    expect(r.byKey.get("0:10472").faulty).toBe(true);
+    expect(r.byKey.get("1:651").notes).toBe("nose too far back");
+  });
+
   it("errors without a frame_idx column", () => {
     expect(parseManualCheck("a,b\n1,2").error).toMatch(/frame_idx/);
   });

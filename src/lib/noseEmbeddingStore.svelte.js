@@ -1,0 +1,209 @@
+// Per-keypoint NOSE appearance QC check (the validated dino_probe detector: CV ROC ~0.92 / PR ~0.62).
+//
+// In-browser DINO is too slow, so this scores PRECOMPUTED nose embeddings with a ported calibrated RBF-SVM
+// (RBF + Platt). EMBEDDINGS and MODEL are loaded SEPARATELY so you can score one project's embeddings with
+// ANOTHER project's model — a transfer test:
+//   EMBEDDINGS  precomputed/nose_emb_<ds>__p<N>.bin   (uploaded — ~9 MB)   header: dataset,dim,n,video/frame_idx/inst
+//   MODEL       public/nose_models/nose_model_<ds>__p<N>.bin (fetched from a dropdown) header: model params
+// Both are produced by dino_probe/export_nose.py --split. The legacy self-contained welded bundle
+// (nose_bundle_<ds>.bin) still loads via loadPrecomputed(). Duck-types the appearance-store interface qcStore
+// expects (see APPEARANCE_CHECKS).
+//
+// file layout (all): [uint32 LE hlen][utf8 json header, 4B-padded][f32 payload]
+//   model payload:  mean|scale|dual|support_vectors      emb payload: n*dim embeddings
+import { parseClassifier, rbfProbability } from "./qc/embedding/svm.js";
+
+function readHeader(buf) {
+  const hlen = new DataView(buf).getUint32(0, true);
+  const header = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hlen)));
+  return { header, f32Start: 4 + hlen };
+}
+
+class NoseEmbeddingStore {
+  threshold = $state(0.5);   // probability cutoff; set from the model's operating point on load
+  resultRev = $state(0);     // bumps when scored frame-flags change — the cheap reactive dep
+  status = $state("idle");   // idle | loading | done | error
+  message = $state("");
+  #frameZ = new Map();        // "videoIdx:frameIdx" -> max nose fault-probability over the frame's instances
+  #instProb = new Map();      // "videoIdx:frameIdx:inst" -> nose fault-probability (per-instance attribution)
+  #embHeader = $state(null);  // loaded embeddings header (dataset, dim, n, video/frame_idx/inst)
+  #modelInfo = $state(null);  // loaded model header (dataset, dim, cv_roc, threshold, …)
+  #embs = null;               // Array<Float32Array(dim)> — the patches to score
+  #clf = null;                // parsed RBF-SVM
+  #n = 0;
+
+  get hasResults() { this.resultRev; return this.#frameZ.size > 0; }
+  get count() { this.resultRev; return this.#n; }
+
+  /** Combined state for the UI: which embeddings + which model, and whether that's a transfer pairing. */
+  get info() {
+    this.resultRev;
+    const e = this.#embHeader, m = this.#modelInfo;
+    if (!e && !m) return null;
+    return {
+      dataset: e?.dataset ?? null,               // embeddings project (what NoseCheck's sub line reads)
+      model_dataset: m?.dataset ?? null,         // model project
+      transfer: !!(e && m && e.dataset !== m.dataset),
+      cv_roc: m?.cv_roc ?? null, cv_pr: m?.cv_pr ?? null, confidence: m?.confidence ?? null,
+      dim: e?.dim ?? m?.dim ?? null, node_min: e?.node_min ?? m?.node_min ?? null,
+      hasEmb: !!e, hasModel: !!m,
+    };
+  }
+  get embDataset() { this.resultRev; return this.#embHeader?.dataset ?? null; }
+  get modelDataset() { this.resultRev; return this.#modelInfo?.dataset ?? null; }
+
+  frameZByKey(key) { this.resultRev; return this.#frameZ.get(key) ?? null; }
+  instProbByKey(key) { this.resultRev; return this.#instProb.get(key) ?? null; }
+
+  get flaggedFrameCount() {
+    this.resultRev;
+    let n = 0;
+    for (const z of this.#frameZ.values()) if (z >= this.threshold) n++;
+    return n;
+  }
+  flaggedFrameKeys() {
+    this.resultRev;
+    const out = [];
+    for (const [k, z] of this.#frameZ) if (z >= this.threshold) out.push(k);
+    return out;
+  }
+  get flaggedCount() {
+    this.resultRev;
+    let n = 0;
+    for (const z of this.#instProb.values()) if (z >= this.threshold) n++;
+    return n;
+  }
+
+  reset() {
+    this.#frameZ = new Map();
+    this.#instProb = new Map();
+    this.#embHeader = null;
+    this.#modelInfo = null;
+    this.#embs = null;
+    this.#clf = null;
+    this.#n = 0;
+    this.status = "idle";
+    this.message = "";
+    this.resultRev++;
+  }
+
+  // ---- EMBEDDINGS (uploaded) ----
+  async loadEmbeddings(file) {
+    this.status = "loading";
+    this.message = "Reading embeddings…";
+    this.resultRev++;
+    try {
+      const buf = await file.arrayBuffer();
+      const { header, f32Start } = readHeader(buf);
+      const { dim, n } = header;
+      const flat = new Float32Array(buf, f32Start, n * dim);
+      const embs = new Array(n);
+      for (let i = 0; i < n; i++) embs[i] = flat.subarray(i * dim, i * dim + dim);
+      this.#embs = embs;
+      this.#embHeader = header;
+      this.#n = n;
+      this.#score();
+    } catch (e) {
+      this.status = "error";
+      this.message = `Embeddings load failed — ${e?.message ?? e}`;
+      this.resultRev++;
+    }
+  }
+
+  // ---- MODEL (fetched from the served dropdown, or uploaded) ----
+  async loadModelFromUrl(url) {
+    this.status = "loading";
+    this.message = "Loading model…";
+    this.resultRev++;
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      this.#ingestModel(await resp.arrayBuffer());
+    } catch (e) {
+      this.status = "error";
+      this.message = `Model load failed — ${e?.message ?? e}`;
+      this.resultRev++;
+    }
+  }
+
+  async loadModelFile(file) {
+    this.status = "loading";
+    this.message = "Reading model…";
+    this.resultRev++;
+    try {
+      this.#ingestModel(await file.arrayBuffer());
+    } catch (e) {
+      this.status = "error";
+      this.message = `Model load failed — ${e?.message ?? e}`;
+      this.resultRev++;
+    }
+  }
+
+  #ingestModel(buf) {
+    const { header, f32Start } = readHeader(buf);
+    const modelFloats = header.dim + header.dim + header.n_sv + header.n_sv * header.dim; // mean|scale|dual|sv
+    this.#clf = parseClassifier(header, buf.slice(f32Start, f32Start + modelFloats * 4));
+    this.#modelInfo = header;
+    if (header.threshold != null) this.threshold = header.threshold;
+    this.#score();
+  }
+
+  /** Score once both EMBEDDINGS and MODEL are present (guards a dim mismatch). */
+  #score() {
+    const e = this.#embHeader, m = this.#modelInfo;
+    if (!this.#embs || !this.#clf) {
+      this.status = "idle";
+      this.message = !e ? "Load embeddings (.bin) to begin." : "Pick a model to score these embeddings.";
+      this.resultRev++;
+      return;
+    }
+    if (e.dim !== m.dim) {
+      this.status = "error";
+      this.message = `Dim mismatch: embeddings ${e.dim} vs model ${m.dim} — use matching embed model/patch size.`;
+      this.resultRev++;
+      return;
+    }
+    const prob = rbfProbability(this.#embs, this.#clf); // calibrated fault probabilities
+    const fz = new Map();
+    const iz = new Map();
+    for (let i = 0; i < this.#n; i++) {
+      const fkey = `${e.video[i]}:${e.frame_idx[i]}`;    // matches store.frames fkey (videoIdx:frameIdx)
+      if (prob[i] > (fz.get(fkey) ?? -Infinity)) fz.set(fkey, prob[i]);
+      iz.set(`${fkey}:${e.inst[i]}`, prob[i]);
+    }
+    this.#frameZ = fz;
+    this.#instProb = iz;
+    this.status = "done";
+    const how = e.dataset === m.dataset ? "own model" : `model ← ${m.dataset} (transfer)`;
+    this.message = `${e.dataset} · ${how}: ${this.#n} nose patches · ${fz.size} frames · ${this.flaggedFrameCount} flagged`;
+    this.resultRev++;
+  }
+
+  // ---- LEGACY: self-contained welded bundle (model + embeddings in one file) ----
+  async loadPrecomputed(file) {
+    this.status = "loading";
+    this.message = "Reading bundle…";
+    this.resultRev++;
+    try {
+      const buf = await file.arrayBuffer();
+      const { header, f32Start } = readHeader(buf);
+      const { dim, n_sv: nSv, n } = header;
+      const modelFloats = dim + dim + nSv + nSv * dim;
+      this.#clf = parseClassifier(header, buf.slice(f32Start, f32Start + modelFloats * 4));
+      const embFlat = new Float32Array(buf, f32Start + modelFloats * 4, n * dim);
+      const embs = new Array(n);
+      for (let i = 0; i < n; i++) embs[i] = embFlat.subarray(i * dim, i * dim + dim);
+      this.#embs = embs;
+      this.#embHeader = header;    // welded header carries the emb index (video/frame_idx/inst)
+      this.#modelInfo = header;    // …and the model params
+      this.#n = n;
+      this.#score();
+    } catch (e) {
+      this.status = "error";
+      this.message = `Load failed — ${e?.message ?? e}`;
+      this.resultRev++;
+    }
+  }
+}
+
+export const noseEmbedding = new NoseEmbeddingStore();

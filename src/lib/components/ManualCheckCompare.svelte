@@ -6,11 +6,15 @@
   import { onDestroy } from "svelte";
   import { qc } from "../qcStore.svelte.js";
   import { store } from "../labelsStore.svelte.js";
+  import { view } from "../viewStore.svelte.js";
   import { parseManualCheck, metrics } from "../manualCheck.js";
+  import { manualCheck } from "../manualCheckStore.svelte.js";
   import PopoutWindow from "./PopoutWindow.svelte";
 
-  let manual = $state(null); // { byKey, faulty, total } | { error }
-  let fileName = $state("");
+  // Upload lives in a store, not component-local state, so it survives the panel being collapsed
+  // (the collapsible unmounts this component).
+  const manual = $derived(manualCheck.manual); // { byKey, faulty, total } | { error } | null
+  const fileName = $derived(manualCheck.fileName);
   let activeTab = $state(null); // "both" | "qcOnly" | "manualOnly" | null
   let expanded = $state(null); // detector id whose feature impact is shown
   let perVideoOpen = $state(false);
@@ -19,8 +23,8 @@
   async function onFile(e) {
     const f = e.currentTarget.files?.[0];
     if (!f) return;
-    fileName = f.name;
-    manual = parseManualCheck(await f.text());
+    manualCheck.fileName = f.name;
+    manualCheck.manual = parseManualCheck(await f.text());
     activeTab = null;
   }
 
@@ -30,16 +34,22 @@
   // Match store frames to manual rows by "<videoIdx>:<frameIdx>", classify vs qc.frameFlagged.
   const cmp = $derived.by(() => {
     void qc.rev;
-    if (!manual || manual.error || !qc.hasResults) return null;
+    if (!manual || manual.error || !qc.hasAnyResults) return null;
     const vidx = vidxMap();
     const cats = { both: [], qcOnly: [], manualOnly: [], neither: [] };
     const perVid = new Map();
+    // A faulty-only CSV (faulty_keypoints.csv) lists every faulty frame, so unmatched frames are
+    // reviewed-clean and belong in the comparison. An all-frames CSV (status/n_faulty) lists both, so
+    // frames it doesn't mention were never reviewed → skip them.
+    let matchedManual = 0;
     store.frames.forEach((f, i) => {
       const m = manual.byKey.get(keyOf(f, vidx));
-      if (!m) return;
+      if (!m && !manual.faultyOnly) return;
+      if (m) matchedManual++;
+      const manualFaulty = m ? m.faulty : false;
       const qcFlag = qc.frameFlagged(f);
-      const cat = qcFlag && m.faulty ? "both" : qcFlag ? "qcOnly" : m.faulty ? "manualOnly" : "neither";
-      cats[cat].push({ i, note: m.notes });
+      const cat = qcFlag && manualFaulty ? "both" : qcFlag ? "qcOnly" : manualFaulty ? "manualOnly" : "neither";
+      cats[cat].push({ i, note: m?.notes });
       const vi = vidx.get(f.video) ?? 0;
       let pv = perVid.get(vi);
       if (!pv) { pv = { videoIdx: vi, both: 0, qcOnly: 0, manualOnly: 0, neither: 0, n: 0, firstIdx: i }; perVid.set(vi, pv); }
@@ -47,7 +57,7 @@
     });
     const m = metrics({ both: cats.both.length, qcOnly: cats.qcOnly.length, manualOnly: cats.manualOnly.length, neither: cats.neither.length });
     const perVideo = [...perVid.values()].sort((a, b) => (b.both + b.manualOnly) / b.n - (a.both + a.manualOnly) / a.n || a.videoIdx - b.videoIdx);
-    return { cats, m, manualUnmatched: manual.total - m.n, perVideo };
+    return { cats, m, manualUnmatched: manual.total - matchedManual, perVideo };
   });
 
   // Venn: circle AREA ∝ set size, with a fixed comfortable overlap so the intersection label always
@@ -85,9 +95,9 @@
     const matched = new Set(), faulty = new Set();
     store.frames.forEach((f, i) => {
       const m = manual.byKey.get(keyOf(f, vidx));
-      if (!m) return;
+      if (!m && !manual.faultyOnly) return; // faulty-only file: unmatched frames are reviewed-clean
       matched.add(i);
-      if (m.faulty) faulty.add(i);
+      if (m?.faulty) faulty.add(i);
     });
     const nFaulty = faulty.size;
     const rows = qc.detectorSets().sets
@@ -111,7 +121,14 @@
   $effect(() => { store.setNavOverride(activeTab && cmp ? cmp.cats[activeTab].map((t) => t.i) : null); });
   onDestroy(() => store.setNavOverride(null));
 
-  function goto(i) { store.setIndex(i); store.syncFrameImage?.(); }
+  function goto(i) {
+    store.setIndex(i); store.syncFrameImage?.();
+    // Zoom the main view to the frame's flagged instance (its faulty node / bbox), if QC flags one.
+    const item = store.frames[i];
+    const wi = qc.frameWorstInstance(item);
+    const t = wi >= 0 ? qc.faultyTarget(item, wi) : null;
+    if (t) view.requestFocus(t.box);
+  }
   function tileTitle(t) {
     const f = store.frames[t.i];
     return `frame ${t.i + 1}${f ? ` · idx ${f.frameIdx}` : ""}${t.note ? ` · ${t.note}` : ""}`;

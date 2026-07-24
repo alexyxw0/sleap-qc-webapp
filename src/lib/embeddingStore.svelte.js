@@ -1,11 +1,14 @@
 // Appearance-outlier analysis: crop each instance, embed the crop, and flag instances whose appearance
 // is an outlier (occlusions / mis-placed nodes that geometry can't see). Two interchangeable backends
 // feed the SAME kNN/robust-z/PCA pipeline: "classical" (fast pixel features, default) and "dino" (the
-// DINOv2 ViT semantic embedding). Kept fully inspectable — every crop, neighbourhood, and score is UI-visible.
+// DINOv2 ViT semantic embedding, batched in a worker). Kept fully inspectable — every crop,
+// neighbourhood, and score is UI-visible.
 import { store } from "./labelsStore.svelte.js";
-import * as dinoBackend from "./qc/embedding/dino.js";
+import * as dinoBackend from "./qc/embedding/dinoRemote.js";
 import * as classicalBackend from "./qc/embedding/classical.js";
-import { l2norm, knnOutlierScoresRef, stratifiedReference, robustZ, pca2, nearestNeighbors, buildFrameZ } from "./qc/embedding/outlier.js";
+import { l2norm, stratifiedReference, nearestNeighbors, buildFrameZ, pca2 } from "./qc/embedding/outlier.js";
+import { scoreEmbeddings } from "./qc/embedding/scoreRemote.js";
+import { classifyDecisions, classifierInfo } from "./qc/embedding/appearanceClf.js";
 import { loadAll as loadCache, putMany as saveCache } from "./qc/embedding/embcache.js";
 
 const BACKENDS = { classical: classicalBackend, dino: dinoBackend };
@@ -31,7 +34,9 @@ function squareBox(item, ii) {
 const cropKey = (vi, frameIdx, sq) => `${vi}:${frameIdx}:${Math.round(sq.x)}:${Math.round(sq.y)}:${Math.round(sq.side)}`;
 
 function drawCrop(canvas, img, sq) {
-  const ctx = canvas.getContext("2d");
+  // willReadFrequently keeps the canvas CPU-backed: run() reads pixels straight back out of it for
+  // every fresh crop, and a GPU-backed readback would dominate the per-crop cost.
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   const W = img.width, H = img.height;
@@ -52,8 +57,12 @@ class EmbeddingStore {
   message = $state("");
   progress = $state({ done: 0, total: 0 });
   modelInfo = $state(null);
-  backend = $state("classical"); // "classical" (fast pixel features, default) | "dino" (ViT — slow, semantic)
-  threshold = $state(3.5); // robust-z cutoff for "outlier"
+  backend; // pinned at construction: "classical" (fast pixel features) | "dino" (ViT — slow, semantic)
+  // Scoring method: "knn" = unsupervised kNN-outlier (robust-z); "trained" = the RBF-SVM ported from the
+  // dino_probe (supervised, ~0.82 ROC, DINO-ViT-S-only). threshold's meaning follows the method (robust-z
+  // for knn, SVM decision value for trained), so the flag logic (z >= threshold) is unchanged.
+  method = $state("knn");
+  threshold = $state(3.5); // knn: robust-z cutoff · trained: SVM decision cutoff (set on setMethod)
   sampleCap = $state(null); // max crops to EMBED; null/0 => ALL instances (full coverage, no sampling gap)
   referenceFraction = $state(0.2); // fraction of embedded instances forming the kNN "normal" reference
   k = 6;
@@ -77,20 +86,12 @@ class EmbeddingStore {
   #scoreSig = null;
   #scoreRes = null;
 
+  /** Each store instance is pinned to ONE backend so classical + DINO can run and be scored
+   *  side-by-side (their vectors, dims, thresholds, and caches are all backend-namespaced). */
+  constructor(backend = "classical") { this.backend = BACKENDS[backend] ? backend : "classical"; }
+
   /** The active backend module (classical | dino). */
   #be() { return BACKENDS[this.backend] ?? classicalBackend; }
-
-  /** Switch backend: results/embeddings differ per backend (different vectors + dim), so reset the
-   *  result state and force a fresh run. The crop cache is kept — it's keyed by backend, so each
-   *  backend's cached vectors coexist and are reused. */
-  setBackend(b) {
-    if (b === this.backend || !BACKENDS[b]) return;
-    this.backend = b;
-    this.#recs = []; this.#embs = []; this.#res = null; this.#frameZ = new Map();
-    this.#scoreSig = null; this.#scoreRes = null;
-    this.status = "idle"; this.message = ""; this.modelInfo = null;
-    this.rev++; this.resultRev++;
-  }
 
   // Stable identity for the loaded file (+ backend) — namespaces the persistent cache so crops from a
   // different file OR a different backend can't be served for a matching (video,frame,bbox) key.
@@ -197,47 +198,88 @@ class EmbeddingStore {
     this.progress = { done: 0, total: list.length };
     const crop = document.createElement("canvas");
     crop.width = crop.height = be.MODEL.input;
+    const cropCtx = crop.getContext("2d", { willReadFrequently: true });
     const thumb = document.createElement("canvas");
     thumb.width = thumb.height = 56;
+    const thumbCtx = thumb.getContext("2d");
     let hits = 0, embedded = 0;
     const fresh = []; // [cropKey, { emb, thumb }] embedded this run — persisted to IndexedDB after
-    const usedKeys = []; // crop keys in emit order — signs the embedding set for the scoring cache
+    const usedKeys = []; // crop keys, index-aligned with #recs — signs the embedding set for the scoring cache
     let lastYield = performance.now();
     const setMsg = () => { this.message = `Embedding ${list.length} crops…${hits ? ` · ${hits} reused from cache` : ""}`; };
     setMsg();
 
+    // Resolve every frame's crop boxes + cache keys up front (pure point math): fully-cached frames
+    // skip the decode entirely, and the NEXT frame's decode can start while the current one embeds.
+    // Keys are prefixed by backend so classical vs dino vectors never collide in the in-memory cache.
+    const jobs = [];
     for (const [fi, iis] of byFrame) {
-      if (this.#abort) { this.status = "aborted"; this.message = "Stopped."; this.rev++; return; }
       const item = frames[fi];
       const vi = vidx.get(item.video) ?? 0;
-      // Resolve each instance's box + cache key up front, so a fully-cached frame skips the decode.
-      // Key is prefixed by backend so classical vs dino vectors never collide in the in-memory cache.
       const plan = iis.map((ii) => { const sq = squareBox(item, ii); return { ii, sq, key: sq ? `${this.backend}:${cropKey(vi, item.frameIdx, sq)}` : null }; });
-      let img = null;
-      if (plan.some((p) => p.key && !this.#cache.has(p.key))) { try { img = await store.getFrameImage(item); } catch { /* skip */ } }
+      jobs.push({ fi, item, plan, needsImg: plan.some((p) => p.key && !this.#cache.has(p.key)) });
+    }
+    const decode = (j) => (j < jobs.length && jobs[j].needsImg ? store.getFrameImage(jobs[j].item).catch(() => null) : null);
+
+    // Fresh crops are embedded in batches: ONE forward pass per BATCH crops (the DINO worker path
+    // amortizes the postMessage + JS↔WASM round-trip and keeps the WASM thread pool fed between
+    // layers). Each queued crop reserves its #recs/#embs slot at plan time, so record order stays
+    // exactly the plan order no matter when its batch flushes; flush() fills the vector in.
+    const BATCH = Math.max(1, be.MODEL.batch || 1);
+    let queue = []; // { r, key, img: {data,width,height} } — r = reserved index into #recs/#embs
+    const flush = async () => {
+      if (!queue.length) return;
+      const batch = queue; queue = [];
+      const embs = await be.embedBatch(batch.map((b) => b.img)); // buffers may be transferred — consumed
+      for (let i = 0; i < batch.length; i++) {
+        const { r, key } = batch[i];
+        const emb = l2norm(embs[i]);
+        this.#embs[r] = emb;
+        const hit = { emb, thumb: this.#recs[r].thumb };
+        this.#cache.set(key, hit);
+        fresh.push([key, hit]);
+        embedded++;
+      }
+      this.progress.done += batch.length; // in-place: progress is a deep $state proxy, so this is reactive without a per-flush object alloc
+    };
+
+    let imgP = decode(0);
+    for (let j = 0; j < jobs.length && !this.#abort; j++) {
+      const { fi, plan } = jobs[j];
+      const img = await imgP;
+      imgP = decode(j + 1); // kick off the next frame's decode now — it overlaps this frame's embedding
       for (const { ii, sq, key } of plan) {
-        if (key) {
-          let hit = this.#cache.get(key);
-          if (hit) hits++;
-          else if (img?.width) {
-            try {
-              drawCrop(crop, img, sq);
-              const emb = l2norm(await be.embed(crop));
-              drawCrop(thumb, img, sq);
-              hit = { emb, thumb: thumb.toDataURL("image/jpeg", 0.7) };
-              this.#cache.set(key, hit);
-              fresh.push([key, hit]);
-              embedded++;
-            } catch (e) { this.status = "error"; this.message = `Embedding failed — ${e.message}`; return; }
+        if (key && this.#cache.has(key)) {
+          const hit = this.#cache.get(key);
+          hits++;
+          this.#recs.push({ fi, ii, thumb: hit.thumb }); this.#embs.push(hit.emb); usedKeys.push(key);
+          this.progress.done += 1;
+        } else if (key && img?.width) {
+          drawCrop(crop, img, sq);
+          const id = cropCtx.getImageData(0, 0, crop.width, crop.height);
+          thumbCtx.drawImage(crop, 0, 0, thumb.width, thumb.height); // thumb from the cropped canvas — one source sample, not two
+          const r = this.#recs.length;
+          this.#recs.push({ fi, ii, thumb: thumb.toDataURL("image/jpeg", 0.7) });
+          this.#embs.push(null); usedKeys.push(key); // reserved — filled by flush()
+          queue.push({ r, key, img: { data: id.data, width: id.width, height: id.height } });
+          if (queue.length >= BATCH) {
+            try { await flush(); } catch (e) { this.status = "error"; this.message = `Embedding failed — ${e.message}`; return; }
           }
-          if (hit) { this.#recs.push({ fi, ii, thumb: hit.thumb }); this.#embs.push(hit.emb); usedKeys.push(key); }
+        } else {
+          this.progress.done += 1; // no box / no decodable image
         }
-        this.progress = { ...this.progress, done: this.progress.done + 1 };
         // Yield on a time budget, not a fixed count: a warm cache blasts through with a handful of
-        // yields, while a cold run (each embed blocks ~100ms) still repaints ~every frame.
+        // yields, while a cold run still repaints steadily (the embed itself no longer blocks paint —
+        // the DINO forward pass runs in a worker).
         const now = performance.now();
         if (now - lastYield > 40) { setMsg(); this.rev++; await new Promise((r) => requestAnimationFrame(r)); lastYield = now; }
       }
+    }
+    try { if (!this.#abort) await flush(); } catch (e) { this.status = "error"; this.message = `Embedding failed — ${e.message}`; return; }
+    if (this.#abort) {
+      // Drop reservations whose batch never ran; the filled records remain valid partial output.
+      for (let r = this.#recs.length - 1; r >= 0; r--) if (!this.#embs[r]) { this.#recs.splice(r, 1); this.#embs.splice(r, 1); usedKeys.splice(r, 1); }
+      this.status = "aborted"; this.message = "Stopped."; this.rev++; return;
     }
 
     // Persist crops embedded this run so a future run — even after a page reload — reuses them
@@ -248,34 +290,81 @@ class EmbeddingStore {
     // Everything past here is wrapped so a throw can NEVER leave the panel wedged in "scoring" with a
     // locked checkbox (the failure this replaced): on error we surface it and bump resultRev so the UI reacts.
     try {
-      // Reference = an even, per-VIDEO-stratified subsample of the embedded instances (so every video
-      // is represented — see stratifiedReference). Every instance is then SCORED against that reference,
-      // so nothing is skipped, while a smaller decorrelated reference avoids near-duplicate video frames
-      // masking each other. frac=1 reproduces all-vs-all.
-      const refKeys = this.#recs.map((rec) => vidx.get(store.frames[rec.fi]?.video) ?? 0);
-      const refIdx = stratifiedReference(refKeys, this.referenceFraction, EmbeddingStore.REF_MIN_PER_VIDEO);
-      this.#refCount = refIdx.length;
-      // Reuse the cached score only if the crop set AND the reference selection are unchanged.
-      const sig = `${this.k}|${this.referenceFraction}|${usedKeys.join("|")}`;
+      // Reuse the cached score only if the METHOD, crop set, and reference selection are unchanged.
+      const sig = `${this.method}|${this.k}|${this.referenceFraction}|${usedKeys.join("|")}`;
       if (this.#scoreSig === sig && this.#scoreRes) {
         this.#res = this.#scoreRes;
       } else {
-        this.status = "scoring"; this.message = `Scoring ${this.#embs.length} vs ${refIdx.length} reference…`; this.rev++;
+        this.status = "scoring";
+        this.message = this.method === "trained" ? `Scoring ${this.#embs.length} with the trained classifier…`
+                                                 : `Scoring ${this.#embs.length} vs reference…`;
+        this.rev++;
         await new Promise((r) => setTimeout(r));
-        const scores = knnOutlierScoresRef(this.#embs, refIdx, this.k);
-        const z = robustZ(scores);
-        const { coords } = pca2(this.#embs);
-        this.#res = { scores: Array.from(scores), z, coords };
+        this.#res = await this.#computeRes(vidx); // knn (off-thread) OR trained SVM (off-thread)
         this.#scoreSig = sig; this.#scoreRes = this.#res;
       }
-      // Per-frame max z, keyed like qcStore's #fkey (videoIdx:frameIdx), so the DINO check can join.
-      // z comes from #res (populated in BOTH score branches above); the join is a pure, tested helper.
+      // Per-frame max z, keyed like qcStore's #fkey (videoIdx:frameIdx), so the appearance check can join.
       this.#frameZ = buildFrameZ(this.#recs, this.#res.z, store.frames, vidx);
       this.status = "done"; this.message = ""; this.rev++; this.resultRev++;
     } catch (e) {
       this.status = "error"; this.message = `Scoring failed — ${e?.message ?? e}`; this.rev++; this.resultRev++;
     }
   }
+
+  /** Compute results for the CURRENT method from the embedded set (no re-embed). "trained" = the ported
+   *  RBF-SVM decision (DINO-ViT-S only); otherwise the unsupervised kNN-outlier vs a per-video reference.
+   *  Both return { scores, z, coords }; higher z = more faulty, so `z >= threshold` flags either way. */
+  async #computeRes(vidx) {
+    if (this.method === "trained" && this.backend === "dino") {
+      const dec = await classifyDecisions(this.#embs); // SVM decision value per instance
+      const { coords } = pca2(this.#embs); // 2-D map is method-independent (just PCA of the embeddings)
+      this.#refCount = 0;
+      return { scores: Array.from(dec), z: Array.from(dec), coords };
+    }
+    // Reference = an even, per-video-stratified subsample; every instance is scored against it.
+    const refKeys = this.#recs.map((rec) => vidx.get(store.frames[rec.fi]?.video) ?? 0);
+    const refIdx = stratifiedReference(refKeys, this.referenceFraction, EmbeddingStore.REF_MIN_PER_VIDEO);
+    this.#refCount = refIdx.length;
+    return await scoreEmbeddings(this.#embs, refIdx, this.k);
+  }
+
+  /** Re-score the already-embedded set for the current method (used on a method switch — no re-embed). */
+  async #rescore() {
+    if (!this.#embs.length) return;
+    const vidx = new Map((store.labels?.videos ?? []).map((v, i) => [v, i]));
+    this.status = "scoring"; this.message = "Re-scoring…"; this.rev++;
+    await new Promise((r) => requestAnimationFrame(r));
+    try {
+      this.#res = await this.#computeRes(vidx);
+      this.#scoreSig = null; this.#scoreRes = this.#res;
+      this.#frameZ = buildFrameZ(this.#recs, this.#res.z, store.frames, vidx);
+      this.status = "done"; this.message = ""; this.rev++; this.resultRev++;
+    } catch (e) {
+      this.status = "error"; this.message = `Scoring failed — ${e?.message ?? e}`; this.rev++; this.resultRev++;
+    }
+  }
+
+  /** Switch scoring method. "trained" is DINO-ViT-S-only (the classifier's feature space). Resets the
+   *  threshold to the method's default and re-scores the cached embeddings in place if we have them. */
+  setMethod(m) {
+    if (m === this.method || (m !== "knn" && m !== "trained")) return;
+    if (m === "trained" && this.backend !== "dino") return; // classifier is DINO-specific
+    this.method = m;
+    this.threshold = m === "trained" ? (classifierInfo()?.threshold ?? -0.67) : 3.5;
+    this.#scoreSig = null;
+    if (this.#embs.length && (this.status === "done" || this.status === "aborted")) this.#rescore();
+    else { this.rev++; }
+  }
+
+  /** Whether the trained classifier applies to this store (DINO backend only). */
+  get canUseTrained() { return this.backend === "dino"; }
 }
 
-export const embeddingStore = new EmbeddingStore();
+// One store PER backend, so both can be embedded, scored, and enabled as independent checks at the
+// same time (each holds its own results + threshold; caches are namespaced by backend).
+export const embeddingStores = {
+  classical: new EmbeddingStore("classical"),
+  dino: new EmbeddingStore("dino"),
+};
+// Back-compat default (the classical store): existing single-backend callers keep working.
+export const embeddingStore = embeddingStores.classical;

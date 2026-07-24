@@ -1,21 +1,36 @@
 <script>
-  // Appearance-outlier check (DINOv2 ViT-S). Fully inspectable: the 2-D embedding map, the crop it
-  // embedded, its nearest neighbours (what the model thinks it looks like), and every score.
+  // Appearance-outlier check. Two INDEPENDENT backends — Classical (fast grayscale pixel features) and
+  // DINOv2 ViT-S (slower, semantic) — each embedded + scored in its own store, so both can be enabled
+  // as separate detection checks under Appearance. This panel inspects one backend at a time (the
+  // "view"); switching never discards the other backend's results. Fully inspectable: the 2-D
+  // embedding map, the crop it embedded, its nearest neighbours, and every score.
   import { store } from "../labelsStore.svelte.js";
-  import { embeddingStore as es } from "../embeddingStore.svelte.js";
+  import { view as viewport } from "../viewStore.svelte.js";
+  import { embeddingStores } from "../embeddingStore.svelte.js";
+  import { instancePointsBox } from "../qc/focusBox.js";
+  import { classifierInfo } from "../qc/embedding/appearanceClf.js";
   import PopoutWindow from "./PopoutWindow.svelte";
+
+  const clf = classifierInfo(); // trained appearance-SVM header (DINO-ViT-S), for the method toggle
 
   let popped = $state(false);
   let jumpPos = $state(0);
+  let view = $state("classical"); // which backend's results this panel currently inspects
+  const es = $derived(embeddingStores[view]); // the viewed store (results/threshold/status are per-backend)
 
-  const running = $derived(es.status === "loading-model" || es.status === "running" || es.status === "scoring");
+  const isRunning = (s) => s.status === "loading-model" || s.status === "running" || s.status === "scoring";
+  const running = $derived(isRunning(es));
+  // Any backend running: the view switch is locked while one runs (so we never start two embed loops at
+  // once), which keeps the viewed store === the running store — the rest of the panel keys off `running`.
+  const anyRunning = $derived(isRunning(embeddingStores.classical) || isRunning(embeddingStores.dino));
 
   // Coverage control: default is ALL instances (sampleCap null) so no frame is skipped — the sampling
   // gap is exactly why a genuine appearance outlier could go unscored. Uncheck "all" to subsample for
-  // speed on very large files. capVal remembers the last numeric cap across toggles.
-  let capOn = $state(es.sampleCap != null && es.sampleCap > 0);
-  let capVal = $state(es.sampleCap && es.sampleCap > 0 ? es.sampleCap : 2000);
-  function setCapOn(on) { capOn = on; es.sampleCap = on ? capVal : null; }
+  // speed. capOn mirrors the VIEWED store's sampleCap (follows the backend switch); capVal remembers
+  // the last numeric cap across toggles.
+  const capOn = $derived(es.sampleCap != null && es.sampleCap > 0);
+  let capVal = $state(2000);
+  function setCapOn(on) { es.sampleCap = on ? capVal : null; }
   function setCapVal(v) { capVal = Math.max(100, Math.round(v) || 100); es.sampleCap = capVal; }
 
   // 2-D PCA scatter of every embedding (the learned appearance space).
@@ -27,7 +42,7 @@
     let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
     for (const [x, y] of res.coords) { if (x < minx) minx = x; if (x > maxx) maxx = x; if (y < miny) miny = y; if (y > maxy) maxy = y; }
     const sx = maxx - minx || 1, sy = maxy - miny || 1;
-    const pts = res.coords.map((c, i) => ({ cx: pad + ((c[0] - minx) / sx) * (W - 2 * pad), cy: pad + ((c[1] - miny) / sy) * (H - 2 * pad), z: res.z[i], fi: es.records[i].fi, i }));
+    const pts = res.coords.map((c, i) => ({ cx: pad + ((c[0] - minx) / sx) * (W - 2 * pad), cy: pad + ((c[1] - miny) / sy) * (H - 2 * pad), z: res.z[i], fi: es.records[i].fi, ii: es.records[i].ii, i }));
     return { W, H, pts };
   });
 
@@ -45,11 +60,18 @@
   // node-drag must not rescan the crop records ~60/s while this panel is open).
   const cur = $derived.by(() => { void es.rev; return es.hasResults ? es.recordsForFrame(store.index) : []; });
 
-  function go(fi) { store.setIndex(fi); store.syncFrameImage?.(); }
+  function go(fi, ii) {
+    store.setIndex(fi); store.syncFrameImage?.();
+    // Zoom the main view to the outlier instance's bbox (frame-nav alone keeps the prior zoom).
+    if (ii == null) return;
+    const box = instancePointsBox(store.frames[fi]?.lf?.instances?.[ii]?.points);
+    if (box) viewport.requestFocus(box);
+  }
   function jumpNext() {
     const outs = es.outlierRecords().filter((r) => r.z >= es.threshold);
     if (!outs.length) return;
-    go(outs[jumpPos % outs.length].fi);
+    const o = outs[jumpPos % outs.length];
+    go(o.fi, o.ii);
     jumpPos = (jumpPos + 1) % outs.length;
   }
   const zColor = (z) => (z >= es.threshold ? "#fb926e" : `hsl(190 70% ${Math.max(32, 60 - z * 7)}%)`);
@@ -57,9 +79,9 @@
   // Backend chooser: classical pixel features (fast, default) vs the DINO ViT (slow, semantic).
   const BACKEND_INFO = {
     classical: { label: "Classical", tag: "fast", sub: "grayscale pixel features · no download", desc: "Plain pixel features — tiny-image (silhouette) + gradient/HOG (edges, occluding clutter) + intensity histogram (dark occluder / background). No model download, sub-millisecond per crop, so it embeds EVERY instance in seconds and never contends with the UI. Catches gross occlusion / obstruction / nodes-on-background. More literal than DINO (weaker on subtle semantics)." },
-    dino: { label: "DINO ViT-S", tag: "slow", sub: "DINOv2 self-supervised 384-d embedding", desc: "DINOv2 vision transformer — a 384-d semantic appearance embedding, strongest on subtle differences. But a ~90 MB download and a ~4.5-GFLOP forward pass per crop on the CPU: minutes at full coverage, and it briefly janks the UI while running." },
+    dino: { label: "DINO ViT-S", tag: "slow", sub: "DINOv2 self-supervised 384-d embedding", desc: "DINOv2 vision transformer — a 384-d semantic appearance embedding, strongest on subtle differences. A one-time model download, then batched WASM inference in a background worker (multi-threaded when the host sends COOP/COEP — the label above shows what it actually got). Still ~4.5 GFLOPs per crop: expect minutes, not seconds, at full coverage." },
   };
-  const bi = $derived(BACKEND_INFO[es.backend] ?? BACKEND_INFO.classical);
+  const bi = $derived(BACKEND_INFO[view] ?? BACKEND_INFO.classical);
 </script>
 
 {#snippet body()}
@@ -69,10 +91,27 @@
       <button class="pop" onclick={() => (popped = !popped)} title={popped ? "Dock back" : "Pop out"}>{popped ? "⤡" : "⤢"}</button>
     </div>
 
-    <div class="backend" role="group" aria-label="Embedding backend">
-      <button class:sel={es.backend === "classical"} disabled={running} onclick={() => es.setBackend("classical")} title={BACKEND_INFO.classical.desc}>Classical <small>fast</small></button>
-      <button class:sel={es.backend === "dino"} disabled={running} onclick={() => es.setBackend("dino")} title={BACKEND_INFO.dino.desc}>DINO <small>slow</small></button>
+    <div class="backend" role="group" aria-label="Appearance backend to inspect">
+      {#each [["classical", "Classical", "fast"], ["dino", "DINO", "slow"]] as [k, lbl, tag] (k)}
+        <button class:sel={view === k} disabled={anyRunning} onclick={() => (view = k)} title={BACKEND_INFO[k].desc}>
+          {lbl} <small>{tag}</small>
+          {#if embeddingStores[k].hasResults}<span class="rdy" title="{embeddingStores[k].flaggedCount} flagged · computed — its check is available">✓</span>{/if}
+        </button>
+      {/each}
     </div>
+    <p class="be-note">Each backend is its own <b>Appearance</b> check. Switching just changes which you inspect.</p>
+
+    {#if view === "dino"}
+      <div class="method" role="group" aria-label="Scoring method">
+        <button class:sel={es.method === "knn"} disabled={running} onclick={() => es.setMethod("knn")}
+          title="Unsupervised — mean distance to k nearest neighbours (robust-z). No labels. ≈chance on these faults.">kNN <small>unsup</small></button>
+        <button class:sel={es.method === "trained"} disabled={running} onclick={() => es.setMethod("trained")}
+          title="Supervised RBF-SVM trained on the proofread labels (ported from the dino_probe). CV ROC {clf.cv_roc.toFixed(3)}.">Trained SVM <small>{clf.cv_roc.toFixed(2)} roc</small></button>
+      </div>
+      {#if es.method === "trained"}
+        <p class="be-note">RBF-SVM trained on <b>{clf.dataset}</b> ({clf.granularity}) — CV ROC {clf.cv_roc.toFixed(3)} / PR {clf.cv_pr.toFixed(3)}. Flags by SVM decision (0 = boundary); the unsupervised kNN is ≈chance on these faults.</p>
+      {/if}
+    {/if}
 
     <p class="card" title={bi.desc}>
       {es.modelInfo ? `${es.modelInfo.name} · ${es.modelInfo.dim}-d${es.modelInfo.backend ? ` · ${es.modelInfo.backend}` : ""}` : bi.sub} <span class="q">ⓘ</span>
@@ -119,16 +158,18 @@
               <circle cx={p.cx} cy={p.cy} r={p.fi === store.index ? 3.4 : 1.9} fill={zColor(p.z)}
                 stroke={p.fi === store.index ? "#fff" : "none"} stroke-width="1"
                 class="pt" role="button" tabindex="-1" title="frame {p.fi + 1} · z {p.z.toFixed(1)}"
-                onclick={() => go(p.fi)} />
+                onclick={() => go(p.fi, p.ii)} />
             {/each}
           </svg>
-          <p class="cap">PCA of {es.records.length} crop embeddings · scored vs {es.refCount} per-video reference · color = outlier z · ⚪ = current frame</p>
+          <p class="cap">{es.records.length} crops{es.method === "trained" ? " · trained SVM" : ` · vs ${es.refCount} ref`} · color = {es.method === "trained" ? "decision" : "z"} · ⚪ = current</p>
           <div class="hist">
             {#each d.bins as b, i (i)}<i style:height="{(100 * b) / d.max}%" class:hot={((i + 0.5) / d.bins.length) * 100 >= d.tx}></i>{/each}
             <span class="thr" style:left="{d.tx}%"></span>
           </div>
-          <label class="thr-ctl" title="Flag instances whose appearance robust-z is at or above this">
-            z ≥ <input type="range" min="1.5" max="8" step="0.1" bind:value={es.threshold} /> <b>{es.threshold.toFixed(1)}</b>
+          <label class="thr-ctl" title={es.method === "trained" ? "Flag instances whose SVM decision is at or above this (0 = boundary, higher = more faulty)" : "Flag instances whose appearance robust-z is at or above this"}>
+            {es.method === "trained" ? "decision ≥" : "z ≥"}
+            <input type="range" min={es.method === "trained" ? -3 : 1.5} max={es.method === "trained" ? 3 : 8} step={es.method === "trained" ? 0.05 : 0.1} bind:value={es.threshold} />
+            <b>{es.threshold.toFixed(2)}</b>
           </label>
           <div class="foot">
             <span class="flag"><b>{es.flaggedCount}</b> flagged</span>
@@ -146,7 +187,7 @@
                   <span class="qz" class:hot={c.z >= es.threshold}>z {c.z.toFixed(1)}</span>
                   <div class="nbrs">
                     {#each es.neighborsOf(c.r, 5) as nb (nb.r)}
-                      <button class="nbb" title="neighbour · frame {nb.fi + 1} · z {nb.z.toFixed(1)}" onclick={() => go(nb.fi)}><img src={nb.thumb} alt="" /></button>
+                      <button class="nbb" title="neighbour · frame {nb.fi + 1} · z {nb.z.toFixed(1)}" onclick={() => go(nb.fi, nb.ii)}><img src={nb.thumb} alt="" /></button>
                     {/each}
                   </div>
                 </div>
@@ -158,14 +199,14 @@
         </div>
       </div>
     {:else if !running && es.status !== "error"}
-      <p class="hint">Runs DINOv2 in-browser on each instance crop to catch occlusion / appearance errors geometry misses. First run downloads ~90 MB (cached after).</p>
+      <p class="hint">Flags instance crops that look unlike the rest — occlusion / appearance errors geometry misses. {view === "dino" ? "DINO downloads ~90 MB on first run." : "Classical needs no download."} Run to enable its <b>Appearance</b> check.</p>
     {/if}
   </div>
 {/snippet}
 
 {#if popped}
   <p class="popped">Popped out · <button class="link" onclick={() => (popped = false)}>show inline</button></p>
-  <PopoutWindow title="Appearance outliers · DINOv2 ViT-S" width="720px" onclose={() => (popped = false)}>{@render body()}</PopoutWindow>
+  <PopoutWindow title="Appearance outliers · {bi.label}" width="720px" onclose={() => (popped = false)}>{@render body()}</PopoutWindow>
 {:else}
   {@render body()}
 {/if}
@@ -188,6 +229,15 @@
   .backend button.sel { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
   .backend button.sel small { color: color-mix(in srgb, var(--accent) 70%, var(--dim)); }
   .backend button:disabled { cursor: default; opacity: 0.55; }
+  .backend button .rdy { color: #6ee7a8; font-size: 0.6rem; margin-left: 0.05rem; }
+  .method { display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-xs); overflow: hidden; }
+  .method button { font-size: 0.64rem; color: var(--muted); background: transparent; border: none; border-right: 1px solid var(--border); padding: 0.2rem 0.5rem; cursor: pointer; display: inline-flex; align-items: baseline; gap: 0.3rem; }
+  .method button:last-child { border-right: none; }
+  .method button small { font-size: 0.52rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.04em; }
+  .method button.sel { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+  .method button:disabled { cursor: default; opacity: 0.55; }
+  .be-note { margin: 0; font-size: 0.58rem; color: var(--dim); line-height: 1.3; }
+  .be-note b { color: var(--muted); font-weight: 600; }
 
   .ctl { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
   .ctl label { font-size: 0.66rem; color: var(--muted); display: inline-flex; align-items: center; gap: 0.3rem; }

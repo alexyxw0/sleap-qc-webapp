@@ -30,9 +30,14 @@ const findCol = (header, ...names) => {
 };
 
 /**
- * Parse a manual-check CSV. Recognizes columns `video`, `frame_idx`, `status`
- * (faulty | not_faulty) and/or `n_faulty`, and `notes`. Returns
- * `{ byKey: Map<"v:f", {faulty, notes}>, faulty, total }` or `{ error }`.
+ * Parse a manual-check CSV, matching frames by `<video>:<frame_idx>`. FRAME-LEVEL only (keypoint-level
+ * detail is ignored). Handles two schemas:
+ *   - per-frame (faulty_labels.csv): lists ALL reviewed frames; faulty is read from `status`
+ *     (faulty | not_faulty) or `n_faulty` (>0).
+ *   - faulty_keypoints.csv: lists ONLY reviewed-FAULTY frames, one row per instance (a clean-instance row,
+ *     n_bad_keypoints=0, still means its FRAME was flagged faulty). So every PRESENT frame is faulty.
+ * Rows are aggregated to FRAME level (OR); notes merged. Returns `{ byKey: Map<"v:f", {faulty, notes}>,
+ * faulty, total }` or `{ error }`.
  */
 export function parseManualCheck(text) {
   const lines = String(text).replace(/^﻿/, "").split(/\r?\n/).filter((l) => l.trim().length);
@@ -41,25 +46,36 @@ export function parseManualCheck(text) {
   const vi = findCol(header, "video", "video_idx");
   const fi = findCol(header, "frame_idx", "frameidx", "frame_index");
   const si = findCol(header, "status");
-  const nfi = findCol(header, "n_faulty");
-  const noi = findCol(header, "notes", "comment", "comments");
+  const nfi = findCol(header, "n_faulty"); // per-FRAME faulty count (all-frames schema)
+  const kpSchema = findCol(header, "n_bad_keypoints") >= 0 || findCol(header, "bad_keypoints") >= 0;
+  const noi = findCol(header, "notes", "note", "comment", "comments");
   if (fi < 0) return { error: "No frame_idx / frame_index column found." };
-  if (si < 0 && nfi < 0) return { error: "No status or n_faulty column found." };
+  if (si < 0 && nfi < 0 && !kpSchema)
+    return { error: "No status, n_faulty, or bad-keypoint column found." };
 
   const byKey = new Map();
-  let faulty = 0;
   for (let r = 1; r < lines.length; r++) {
     const cells = splitCsvLine(lines[r]);
     const frameIdx = parseInt(cells[fi], 10);
     if (!Number.isFinite(frameIdx)) continue;
     const video = vi >= 0 ? parseInt(cells[vi], 10) || 0 : 0;
-    const status = si >= 0 ? (cells[si] ?? "").trim().toLowerCase() : "";
-    const isFaulty = si >= 0 ? status === "faulty" : (parseInt(cells[nfi], 10) || 0) > 0;
-    const notes = noi >= 0 ? (cells[noi] ?? "").trim() : "";
-    byKey.set(`${video}:${frameIdx}`, { faulty: isFaulty, notes });
-    if (isFaulty) faulty++;
+    // keypoint schema lists only faulty frames -> presence ⇒ faulty; else read the per-frame verdict.
+    const rowFaulty = si >= 0 ? (cells[si] ?? "").trim().toLowerCase() === "faulty"
+      : nfi >= 0 ? (parseInt(cells[nfi], 10) || 0) > 0
+      : true;
+    const note = noi >= 0 ? (cells[noi] ?? "").trim() : "";
+    const key = `${video}:${frameIdx}`;
+    const prev = byKey.get(key);
+    byKey.set(key, {
+      faulty: (prev?.faulty ?? false) || rowFaulty, // OR across a frame's instance-rows
+      notes: [prev?.notes, note].filter(Boolean).join("; "),
+    });
   }
-  return { byKey, faulty, total: byKey.size };
+  let faulty = 0;
+  for (const v of byKey.values()) if (v.faulty) faulty++;
+  // faultyOnly ⇒ the file enumerates only faulty frames (keypoint schema, no status/n_faulty), so any frame
+  // NOT listed was reviewed-clean — the comparison can treat unmatched frames as clean true-negatives.
+  return { byKey, faulty, total: byKey.size, faultyOnly: si < 0 && nfi < 0 };
 }
 
 /** Agreement metrics from the 2x2 counts (QC flagged vs manual faulty). */
