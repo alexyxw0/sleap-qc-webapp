@@ -218,13 +218,11 @@
             {appRun.scorer}{#if appRun.gran === "instance" && clf}<small> · cv roc {clf.cv_roc.toFixed(2)}</small>{/if}
           </span>
           {#if appRun.gran === "node"}
-            <!-- Per-keypoint SVMs exist and ship (nose, CV ROC 0.92-0.95) — they are just not usable on
-                 patches cropped HERE, so the route rather than the scorer is what changes. Saying so
-                 beats a Scorer row that looks like a dead end. -->
-            <button class="xroute" onclick={() => appRun.setRoute("bundle")}
-                    title="A trained per-keypoint SVM needs patches cropped the way its trainer cropped them — a fixed pixel size. This pass crops a fraction of each instance's bbox, so the two are not interchangeable. Bring precomputed bundles instead.">
-              want a trained SVM? →
-            </button>
+            <!-- The SVM is now trained HERE, from these embeddings and your labels — so this must not
+                 send anyone to the upload route, which is only for models fitted elsewhere. -->
+            <span class="xnote" title="Run this pass, judge some keypoints in the proofreading window, then fit an SVM on them under the keypoint's graph below. It trains on the patches this run computed, so no upload and no crop-geometry mismatch.">
+              or fit an SVM on your labels — under the graph, after the run
+            </span>
           {/if}
         </div>
 
@@ -252,7 +250,7 @@
             <p class="note">Catches occlusion and appearance errors geometry misses, but not <i>which</i> keypoint is wrong — that is the per-keypoint granularity.</p>
           {:else}
             <p class="note">A patch around each keypoint, embedded with DINOv2 ViT-S/14 and scored <b>unsupervised</b>: robust-z of the distance to the k nearest patches of that <i>same</i> keypoint. No labels needed, and a flag names the keypoint responsible.</p>
-            <p class="note">One forward pass per keypoint per instance — many more crops than whole-instance, so expect minutes at full coverage. Cached after the first run. For the <i>supervised</i> per-keypoint route, go back to <b>‹ start</b> and bring precomputed bundles.</p>
+            <p class="note">One forward pass per keypoint per instance — many more crops than whole-instance, so expect minutes at full coverage. Cached after the first run. For a <i>supervised</i> per-keypoint score, judge some keypoints and fit an SVM on them under the graph below — it trains on these same patches. Bringing a bundle fitted elsewhere is the other option, back at <b>‹ start</b>.</p>
           {/if}
         </Explain>
       </section>
@@ -389,11 +387,7 @@
     background: color-mix(in srgb, var(--accent) 12%, transparent);
   }
   .fixed small { color: var(--dim); font-size: 0.55rem; }
-  .xroute {
-    background: none; border: none; padding: 0.1rem 0.2rem; cursor: pointer;
-    color: var(--accent); font-size: 0.62rem;
-  }
-  .xroute:hover { text-decoration: underline; }
+  .xnote { font-size: 0.62rem; color: var(--dim); cursor: help; }
   .note { margin: 0; font-size: 0.62rem; color: var(--dim); line-height: 1.4; }
   .kprow { align-items: flex-start; }
   .ksum { flex: none; font-size: 0.6rem; color: var(--dim); font-variant-numeric: tabular-nums; }
