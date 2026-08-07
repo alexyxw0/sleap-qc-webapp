@@ -83,6 +83,9 @@ export class NodeEmbeddingStore {
 
   // Namespaced by backend AND the "node" mode so per-node patches never collide with the instance-level
   // crop cache (different (video,frame,bbox) semantics) in the shared IndexedDB store.
+  /** The IndexedDB partition for this file. Exposed so a caller can PROBE the cache without
+   *  re-deriving the key — a probe against a slightly different key silently reports zero. */
+  get cacheId() { return this.#fileId(); }
   #fileId() {
     const L = store.labels;
     const shapes = (L?.videos ?? []).map((v) => (Array.isArray(v?.shape) ? v.shape.join("x") : "?")).join(",");
@@ -97,6 +100,18 @@ export class NodeEmbeddingStore {
     for (const f of store.frames ?? []) n += f.lf?.instances?.length ?? 0;
     return n;
   }
+
+  /** The settings this run actually used, so a later ✓ can say whether it still describes them. Compares
+   *  the EFFECTIVE cap — cap=5000 on a 1,500-instance file is the same pass as no cap at all, and a raw
+   *  comparison would report "settings changed" when nothing did. */
+  #configSig() {
+    const cap = this.sampleCap && this.sampleCap > 0 ? Math.min(this.sampleCap, this.instanceCount) : this.instanceCount;
+    const sel = Array.isArray(this.nodes) ? [...this.nodes].sort((a, b) => a - b).join(",") : "all";
+    return `${cap}|${this.referenceFraction}|${this.patchFraction}|${sel}`;
+  }
+  #ranSig = null;
+  /** Settings have moved since the run that produced these results. */
+  get configDirty() { this.rev; return this.#ranSig != null && this.#ranSig !== this.#configSig(); }
 
   /**
    * What the results actually cover. `requested` is the selection the run used (null = whole skeleton),
@@ -272,6 +287,7 @@ export class NodeEmbeddingStore {
     }
     const want = sel ? new Set(sel) : null;
     this.#ranNodes = sel;
+    this.#ranSig = this.#configSig();
 
     const byFrame = new Map();
     for (const it of list) { if (!byFrame.has(it.fi)) byFrame.set(it.fi, []); byFrame.get(it.fi).push(it.ii); }

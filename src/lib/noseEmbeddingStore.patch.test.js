@@ -32,6 +32,38 @@ const MANIFEST = "public/nose_models/index.json";
 const haveManifest = existsSync(MANIFEST);
 // The read must be guarded too, not just the suite: describe.skip still EXECUTES the suite body, so a
 // bare readFileSync in here throws at collection time and fails the whole file rather than skipping it.
+// A slot that fails to load must go QUIET. Leaving the previous bundle's scores in place while the
+// header already reports the new keypoint is worse than an error: worstNodeAt/candidates then attribute
+// the old model's verdicts to a keypoint it never saw.
+describe("a failed or mismatched load leaves no verdicts behind", () => {
+  const src2 = readFileSync("src/lib/noseEmbeddingStore.svelte.js", "utf8");
+
+  it("#score() drops the previous scores BEFORE any of its early returns", () => {
+    const body = src2.slice(src2.indexOf("#score() {"), src2.indexOf("rbfProbability("));
+    const clearZ = body.indexOf("this.#frameZ = new Map();");
+    const firstReturn = body.indexOf("return;");
+    expect(clearZ, "#score never clears #frameZ").toBeGreaterThan(-1);
+    expect(clearZ, "an early return can escape before the clear").toBeLessThan(firstReturn);
+    expect(body.indexOf("this.#instProb = new Map();")).toBeLessThan(firstReturn);
+  });
+
+  it("every load catch clears them too", () => {
+    for (const m of ["Embeddings load failed", "Model load failed"]) {
+      let at = src2.indexOf(m);
+      while (at > -1) {
+        expect(src2.slice(Math.max(0, at - 280), at), `${m} does not clear #frameZ`)
+          .toContain("this.#frameZ = new Map();");
+        at = src2.indexOf(m, at + 1);
+      }
+    }
+  });
+
+  it("the few-shot annotation goes with them — it describes a blend that no longer exists", () => {
+    const body = src2.slice(src2.indexOf("#score() {"), src2.indexOf("rbfProbability("));
+    expect(body).toContain("this.fewShotInfo = null;");
+  });
+});
+
 (haveManifest ? describe : describe.skip)("served model manifest", () => {
   const idx = haveManifest ? JSON.parse(readFileSync(MANIFEST, "utf8")) : { models: [] };
   it("every model declares the fields the UI labels with", () => {

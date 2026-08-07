@@ -129,6 +129,9 @@ export class NoseEmbeddingStore {
       this.#n = n;
       this.#score();
     } catch (e) {
+      // A failed load must not leave the previous bundle's verdicts on screen under a new name.
+      this.#frameZ = new Map();
+      this.#instProb = new Map();
       this.status = "error";
       this.message = `Embeddings load failed — ${e?.message ?? e}`;
       this.resultRev++;
@@ -145,6 +148,10 @@ export class NoseEmbeddingStore {
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       this.#ingestModel(await resp.arrayBuffer());
     } catch (e) {
+      // Same rule as the embeddings path: a failed model leaves the slot unscored, never showing the
+      // previous model's verdicts against whatever is loaded now.
+      this.#frameZ = new Map();
+      this.#instProb = new Map();
       this.status = "error";
       this.message = `Model load failed — ${e?.message ?? e}`;
       this.resultRev++;
@@ -158,6 +165,10 @@ export class NoseEmbeddingStore {
     try {
       this.#ingestModel(await file.arrayBuffer());
     } catch (e) {
+      // Same rule as the embeddings path: a failed model leaves the slot unscored, never showing the
+      // previous model's verdicts against whatever is loaded now.
+      this.#frameZ = new Map();
+      this.#instProb = new Map();
       this.status = "error";
       this.message = `Model load failed — ${e?.message ?? e}`;
       this.resultRev++;
@@ -176,6 +187,12 @@ export class NoseEmbeddingStore {
   /** Score once both EMBEDDINGS and MODEL are present (guards a dim mismatch). */
   #score() {
     const e = this.#embHeader, m = this.#modelInfo;
+    // Drop the previous scores FIRST. Every early return below leaves this slot unscored, and the header
+    // has already been replaced — so keeping them meant `hasResults` stayed true while `node` reported the
+    // NEW keypoint's name, and worstNodeAt/candidates attributed the old bundle's scores to it.
+    this.#frameZ = new Map();
+    this.#instProb = new Map();
+    this.fewShotInfo = null;
     if (!this.#embs || !this.#clf) {
       this.status = "idle";
       this.message = !e ? "Load embeddings (.bin) to begin." : "Pick a model to score these embeddings.";

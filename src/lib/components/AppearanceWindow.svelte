@@ -25,6 +25,7 @@
   import { keypointModels } from "../keypointModels.svelte.js";
   import { keypointLabels } from "../keypointLabels.svelte.js";
   import { appearanceCoverageNote } from "../qcStore.svelte.js";
+  import { loadAll } from "../qc/embedding/embcache.js";
 
   const clf = classifierInfo();
   const es = $derived(appRun.store); // null for the pretrained (upload-only) route
@@ -73,6 +74,20 @@
   }
   const covNote = $derived(appearanceCoverageNote(appRun.checkKey));
 
+  // A warm IndexedDB cache is only discovered inside run(), after the model load — so the cost line
+  // quoted a full pass and a 90 MB download to someone whose re-run would take seconds. Probe it here,
+  // using the store's OWN key so the probe cannot miss by a format detail.
+  let cached = $state(null); // entries already stored for this file, or null while unknown
+  $effect(() => {
+    const id = es?.cacheId;
+    if (!id) { cached = null; return; }
+    let stale = false;
+    loadAll(id).then((m) => { if (!stale) cached = m?.size ?? 0; }).catch(() => { if (!stale) cached = null; });
+    return () => { stale = true; };
+  });
+  // The weights download once; after that modelInfo is set and they are in memory for the session.
+  const modelReady = $derived(!!es?.modelInfo);
+
   // THE ORDERED STEPS. A step is locked only when its prerequisite is genuinely unmet — a gate over an
   // action the app could already perform is a bug wearing a guide rail's clothing. `done` is always a
   // STORE fact, never "the user visited this", so a ✓ can never tick itself.
@@ -96,7 +111,11 @@
     return [
       { id: "compute", label: "Embed & score", done: appRun.computeDone, locked: false,
         hint: "Pick granularity and coverage, then run the DINOv2 pass over this file.",
-        note: appRun.computeDone ? (covNote ?? "ready") : null },
+        // A bare ✓ after the settings moved describes a run that no longer matches the controls above it.
+        note: !appRun.computeDone ? null
+          : es?.configDirty ? "settings changed — re-run"
+            : noneSelected ? "selection empty"
+              : (covNote ?? "ready") },
     ];
   });
   // The reason the CURRENT selection is unavailable, if it is — shown once, near the strip.
@@ -293,7 +312,11 @@
           {:else if !running && es.status === "aborted"}
             <p class="dim">{es.message} {es.hasResults ? "Partial results are shown below." : ""}</p>
           {:else if !running && !es.hasResults}
-            <p class="dim">First run downloads the ~90 MB DINOv2 weights, then embeds. Results appear here.</p>
+            <p class="dim">
+              {#if !modelReady}The DINOv2 weights (~90 MB) download once, then embed.{:else}Weights already loaded.{/if}
+              {#if cached}<b>{cached.toLocaleString()} patches already cached</b> — reused, not re-embedded.{/if}
+              Results appear here.
+            </p>
           {/if}
 
           <p class="armed" class:on={ready}>

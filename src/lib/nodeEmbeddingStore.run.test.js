@@ -127,6 +127,41 @@ describe("nodeEmbeddingStore.run() — runtime", () => {
     expect(w?.node, "attributed a fault to a keypoint it never looked at").toBe(2);
   });
 
+  it("a ✓ stops describing the run once the settings move", async () => {
+    const st = new NodeEmbeddingStore("dino");
+    st.nodes = [0, 2];
+    await st.run();
+    expect(st.hasResults).toBe(true);
+    expect(st.configDirty, "clean run reported as dirty").toBe(false);
+    st.nodes = [0, 1, 2];              // the pass no longer matches the controls
+    expect(st.configDirty).toBe(true);
+    st.nodes = [0, 2];                 // ...and back
+    expect(st.configDirty).toBe(false);
+  });
+
+  it("an equivalent cap is not a change — the EFFECTIVE cap is what ran", async () => {
+    const st = new NodeEmbeddingStore("dino");
+    await st.run();
+    expect(st.configDirty).toBe(false);
+    // 5000 on a 12-instance file is the same pass as no cap at all; a raw comparison would cry wolf
+    st.sampleCap = 5000;
+    expect(st.configDirty, "an unreachable cap reported as a settings change").toBe(false);
+    st.sampleCap = 4;
+    expect(st.configDirty).toBe(true);
+  });
+
+  it("nothing is dirty before a run — there is no run to disagree with", () => {
+    const st = new NodeEmbeddingStore("dino");
+    st.sampleCap = 3;
+    expect(st.configDirty).toBe(false);
+  });
+
+  it("the cache partition is exposed so a probe cannot miss by a format detail", () => {
+    const st = new NodeEmbeddingStore("dino");
+    expect(typeof st.cacheId).toBe("string");
+    expect(st.cacheId).toContain("dino");
+  });
+
   it("the registry offers DINO only", () => {
     expect(Object.keys(nodeEmbeddingStores)).toEqual(["dino"]);
   });

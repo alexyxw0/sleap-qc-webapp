@@ -98,6 +98,9 @@ class EmbeddingStore {
   // Stable identity for the loaded file (+ backend) — namespaces the persistent cache so crops from a
   // different file OR a different backend can't be served for a matching (video,frame,bbox) key.
   // Filename + frame count + each video's shape is distinctive without reading pixels.
+  /** The IndexedDB partition for this file. Exposed so a caller can PROBE the cache without
+   *  re-deriving the key — a probe against a slightly different key silently reports zero. */
+  get cacheId() { return this.#fileId(); }
   #fileId() {
     const L = store.labels;
     const shapes = (L?.videos ?? []).map((v) => (Array.isArray(v?.shape) ? v.shape.join("x") : "?")).join(",");
@@ -115,6 +118,15 @@ class EmbeddingStore {
   get refCount() { this.rev; return this.#refCount; }
   get records() { this.rev; return this.#recs; }
   get results() { this.rev; return this.#res; }
+  /** The settings this run used. referenceFraction is deliberately absent: the trained scorer — the only
+   *  one the UI selects — returns before it is read, so including it would report a phantom change. */
+  #configSig() {
+    const cap = this.sampleCap && this.sampleCap > 0 ? Math.min(this.sampleCap, this.instanceCount) : this.instanceCount;
+    return `${cap}|${this.method}`;
+  }
+  #ranSig = null;
+  get configDirty() { this.rev; return this.#ranSig != null && this.#ranSig !== this.#configSig(); }
+
   /** Results for the CURRENTLY LOADED file. Neither compute store is reset when a file changes (their
    *  caches drop lazily at the next run), so without the identity check `hasResults` stayed true from the
    *  previous file: checkReady armed the check, and frame keys are "videoIdx:frameIdx" — a key every file
@@ -202,6 +214,7 @@ class EmbeddingStore {
     const vidx = new Map((store.labels?.videos ?? []).map((v, i) => [v, i]));
     this.status = "running";
     this.progress = { done: 0, total: list.length, startedAt: performance.now() };
+    this.#ranSig = this.#configSig();
     const crop = document.createElement("canvas");
     crop.width = crop.height = be.MODEL.input;
     const cropCtx = crop.getContext("2d", { willReadFrequently: true });
