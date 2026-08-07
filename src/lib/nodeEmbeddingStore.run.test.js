@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { readFileSync } from "node:fs";
 
 // RUNTIME test: executes nodeEmbeddingStore.run() end-to-end for BOTH backends, DOM + DINO mocked. It
 // exercises the per-node planning, batched embed, per-node grouping + scoring, and the frame-level QC
@@ -217,5 +218,32 @@ describe("nodeEmbeddingStore.run() — runtime", () => {
 
   it("the registry offers DINO only", () => {
     expect(Object.keys(nodeEmbeddingStores)).toEqual(["dino"]);
+  });
+});
+
+// scoringOf/trainedModelFor answer "what produced this number". Both were memory that outlived the
+// numbers they described, which is the worst kind: confidently wrong rather than absent.
+describe("the scoring choice never outlives the scores it describes", () => {
+  const src = readFileSync("src/lib/nodeEmbeddingStore.svelte.js", "utf8");
+
+  it("a fresh run drops the trained models and the few-shot blends", () => {
+    const body = src.slice(src.indexOf("async run() {"), src.indexOf("this.status = \"loading-model\""));
+    for (const f of ["#trainedNodes.clear()", "#fewShot.clear()", "#fsBase.clear()"]) expect(body, f).toContain(f);
+    // and it must happen where #z is dropped, not after the embed loop
+    expect(body.indexOf("#trainedNodes.clear()")).toBeGreaterThan(body.indexOf("this.#z = [];"));
+  });
+
+  it("training a model retires that keypoint's few-shot blend", () => {
+    const body = src.slice(src.indexOf("applyTrainedModel(ni, clf)"), src.indexOf("trainedNode(ni)"));
+    expect(body).toContain("this.#fewShot.delete(ni)");
+    expect(body).toContain("this.#fsBase.delete(ni)");
+  });
+
+  it("re-applying few-shot blends the ORIGINAL scores, never a previous blend", () => {
+    const body = src.slice(src.indexOf("applyFewShot(ni"), src.indexOf("fewShotInfoFor(ni)"));
+    const restore = body.indexOf("this.#fsBase.has(ni)");
+    const blend = body.indexOf("blendByRank(");
+    expect(restore, "no base snapshot — a second click compounds the shift").toBeGreaterThan(-1);
+    expect(restore).toBeLessThan(blend);
   });
 });

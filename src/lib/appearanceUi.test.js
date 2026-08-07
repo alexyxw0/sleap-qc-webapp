@@ -172,8 +172,12 @@ describe("few-shot is its own tab", () => {
 
   it("only the compute tab has something to launch", () => {
     const s = read("src/lib/appearanceRun.svelte.js");
-    expect(s).toContain('if (this.tab !== "compute") return null;'); // not `=== "upload"` — fewshot too
-    expect(s).toMatch(/TABS = \["compute", "upload", "fewshot"\]/);
+    // The bundle-route panes have nothing to launch — but "score" is on the COMPUTE route and must
+    // still see its store, so this keys off the route rather than the literal tab name.
+    expect(s).toContain("if (!this.onCompute) return null;")
+    expect(s).toMatch(/get onCompute\(\) \{ return this\.tab === "compute" \|\| this\.tab === "score"; \}/);
+    // "score" is a real pane and must be routable, but it reads a finished run rather than starting one.
+    expect(s).toMatch(/TABS = \[[^\]]*"compute"[^\]]*"score"[^\]]*"upload"[^\]]*"fewshot"[^\]]*\]/);
   });
 
   it("the adapt controls left NoseCheck and point at the new tab", () => {
@@ -229,5 +233,92 @@ describe("computation descriptions are dropdowns", () => {
       expect(at, `${n}: "${SIGNATURE[n]}" not found`).toBeGreaterThan(-1);
       expect(at > open && at < close, `${n}: methodology rendered outside Explain`).toBe(true);
     }
+  });
+});
+
+// The compute route used to just... end. Embeddings existed, kNN had scored them, and nothing on screen
+// said that a trained SVM or a few-shot nudge were the next thing to do — so they were never found.
+describe("the run ends with a scoring choice, not a dead end", () => {
+  const w = read("src/lib/components/AppearanceWindow.svelte");
+  const r = read("src/lib/appearanceRun.svelte.js");
+
+  it("per-keypoint gets a second step, gated on the run having finished", () => {
+    expect(w).toContain('id: "score"');
+    expect(w).toMatch(/locked: !appRun\.nodeDone/);
+    expect(r).toMatch(/TABS = \[[^\]]*"score"[^\]]*\]/);
+  });
+
+  it("whole-instance does NOT — the bundled model is its only scorer", () => {
+    expect(w).toMatch(/if \(appRun\.gran !== "node"\) return embed;/);
+  });
+
+  it("offers all three scorers and marks the live one", () => {
+    for (const s of ["Unsupervised (kNN)", "Train an SVM on my labels", "Few-shot nudge"]) expect(w, s).toContain(s);
+    expect(w).toContain("es.scoringOf(ni)");
+    expect(w).toMatch(/class:on=\{scoredMode === "fewshot"\}/);
+  });
+
+  it("few-shot unlocks on faulty labels alone; the SVM needs both classes", () => {
+    // t.enough is pos>0 && neg>0. Gating few-shot on it would hide the only option that works early.
+    expect(w).toMatch(/class:locked=\{!t\.pos\}/);
+    expect(w).toContain("disabled={!t.pos}");
+    expect(w).toMatch(/\{t\.enough \?/); // the SVM row still reports both counts
+  });
+
+  it("says plainly that a foreign .bin cannot score these patches", () => {
+    expect(w).toMatch(/cannot score these/);
+    expect(w).toMatch(/fixed-pixel crops/);
+  });
+});
+
+// `store`, `checkKey` and `scorer` all answer "which route is open". They were written when the compute
+// route had exactly one tab, so they tested `tab === "compute"` — and the moment it grew a second step
+// the score pane reported the BUNDLE route's store: a null `es`, so the pane rendered its empty state
+// forever. Caught by an SSR render probe, not by a build or by these files.
+describe("route-scoped getters follow the route, not one tab name", () => {
+  it("the score tab still resolves the compute route's store and check", async () => {
+    const { appRun } = await import("./appearanceRun.svelte.js");
+    const { nodeEmbeddingStores } = await import("./nodeEmbeddingStore.svelte.js");
+    const before = { tab: appRun.tab, gran: appRun.gran };
+    appRun.gran = "node";
+    for (const t of ["compute", "score"]) {
+      appRun.tab = t;
+      expect(appRun.store, t).toBe(nodeEmbeddingStores.dino);
+      expect(appRun.checkKey, t).toBe("nodeDino");
+    }
+    for (const t of ["upload", "fewshot"]) {
+      appRun.tab = t;
+      expect(appRun.store, t).toBeNull();
+      expect(appRun.checkKey, t).toBe("noseAppearance");
+    }
+    Object.assign(appRun, before);
+  });
+
+  it("but only the compute tab can launch — score reads a finished run", async () => {
+    const { appRun } = await import("./appearanceRun.svelte.js");
+    const s = read("src/lib/appearanceRun.svelte.js");
+    expect(s).toMatch(/run\(\) \{ if \(!this\.anyRunning && this\.tab === "compute"\)/);
+    const before = appRun.tab;
+    appRun.tab = "score";
+    let launched = false;
+    const st = appRun.store;
+    const real = st.run;
+    st.run = () => { launched = true; };
+    appRun.run();
+    st.run = real;
+    appRun.tab = before;
+    expect(launched, "the score tab restarted the run").toBe(false);
+  });
+});
+
+describe("finishing the run asks the question", () => {
+  const w = read("src/lib/components/AppearanceWindow.svelte");
+  it("advances to Score on the transition, not on every open", () => {
+    expect(w).toContain("let wasDone = $state(false);");
+    expect(w).toMatch(/if \(done && !wasDone && appRun\.tab === "compute" && !appRun\.anyRunning\) appRun\.setTab\("score"\)/);
+  });
+  it("the step ticks on scores existing — kNN is an answer, not a skipped step", () => {
+    expect(w).toMatch(/done: appRun\.nodeDone, locked: !appRun\.nodeDone/);
+    expect(w).toContain("SCORE_LABEL[scoredMode]");
   });
 });

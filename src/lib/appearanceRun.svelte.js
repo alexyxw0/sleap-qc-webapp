@@ -31,22 +31,30 @@ class AppearanceRun {
   tab = $state("compute"); // "compute" | "upload" | "fewshot"
   gran = $state("instance"); // compute only: "instance" (one crop per animal) | "node" (a patch per keypoint)
 
-  /** The embedding store the current selection would run. Null on the upload tab — nothing to launch. */
+  /** Which ROUTE the open pane belongs to. The three getters below describe a route, not a pane, and
+   *  `tab === "compute"` stopped being the same thing the moment the compute route grew a second step:
+   *  on "score" it would have reported the bundle route's store, check and scorer. */
+  get onCompute() { return this.tab === "compute" || this.tab === "score"; }
+
+  /** The embedding store the current selection would run. Null on the bundle route — nothing to launch. */
   get store() {
-    if (this.tab !== "compute") return null;
+    if (!this.onCompute) return null;
     return this.gran === "instance" ? embeddingStores.dino : nodeEmbeddingStores.dino;
   }
 
   /** The detection check this selection feeds, so the window can report whether it is armed yet. */
   get checkKey() {
-    if (this.tab !== "compute") return "noseAppearance";
+    if (!this.onCompute) return "noseAppearance";
     return this.gran === "instance" ? "dino" : "nodeDino";
   }
 
   /** How the selection is scored. One scorer per granularity, so this is a label, not a choice. */
   get scorer() {
-    if (this.tab !== "compute") return "Calibrated RBF-SVM bundles";
-    return this.gran === "instance" ? "Trained SVM" : "kNN · unsupervised";
+    if (!this.onCompute) return "Calibrated RBF-SVM bundles";
+    if (this.gran === "instance") return "Trained SVM";
+    return { knn: "kNN · unsupervised", svm: "Trained SVM · your labels", fewshot: "kNN + few-shot" }[
+      nodeEmbeddingStores.dino.scoringOf(nodeEmbeddingStores.dino.selectedNode)
+    ] ?? "kNN · unsupervised";
   }
 
   get running() { return RUNNING.has(this.store?.status); }
@@ -62,12 +70,12 @@ class AppearanceRun {
   }
 
   setGran(g) { this.gran = g === "node" ? "node" : "instance"; }
-  static TABS = ["compute", "upload", "fewshot"];
+  static TABS = ["compute", "score", "upload", "fewshot"];
   setTab(t) {
     this.tab = AppearanceRun.TABS.includes(t) ? t : "compute";
     // A deep link from the checks list is an answer to the fork: someone clicking "Run DINO → Upload"
     // has chosen the bundle route by clicking. Keeps every existing showTab() call site working.
-    this.route = this.tab === "compute" ? "compute" : "bundle";
+    this.route = this.tab === "compute" || this.tab === "score" ? "compute" : "bundle";
   }
   /** Answering the fork also lands you on that route's FIRST step: `tab` doubles as "which node is
    *  expanded", so leaving it behind would let route and tab describe different routes — and `store` /
@@ -104,7 +112,8 @@ class AppearanceRun {
     return keypointModels.slots.some((s) => s.store.hasResults && s.store.fewShotInfo != null);
   }
 
-  run() { if (!this.anyRunning) this.store?.run(); }
+  /** Launching is a COMPUTE-TAB action: "score" reads a finished run and must not restart it. */
+  run() { if (!this.anyRunning && this.tab === "compute") this.store?.run(); }
   abort() { this.activeStore?.abort(); }
 }
 
