@@ -154,7 +154,7 @@
     <div class="row">
       <span class="k">Few-shot</span>
       <button class="load" onclick={() => appRun.showTab("fewshot")}
-        title="Adapting a transferred model with your own labels has its own tab">→ Few-shot tab</button>
+        title="Adapting a transferred model with your own labels is step 2 of this route">→ step 2 · Adapt</button>
     </div>
 
     <div class="row">

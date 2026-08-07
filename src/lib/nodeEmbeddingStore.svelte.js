@@ -116,7 +116,9 @@ export class NodeEmbeddingStore {
   coveredNode(ni) { this.resultRev; return this.#nodeIndex.has(ni); }
 
   // ── frame-level QC interface (identical to embeddingStore, so qcStore treats it as an appearance check) ──
-  get hasResults() { this.resultRev; return this.#scored; }
+  /** Results for the CURRENTLY LOADED file — see embeddingStore.hasResults for why the identity check
+   *  is load-bearing rather than defensive. */
+  get hasResults() { this.resultRev; return this.#scored && this.#cacheLabels === store.labels; }
   frameZByKey(key) { this.resultRev; return this.#frameZ.get(key) ?? null; }
   get flaggedFrameCount() {
     this.resultRev;

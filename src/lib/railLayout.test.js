@@ -70,7 +70,9 @@ describe("geometry / appearance / analysis split", () => {
                          "{#if isGeom}"]) {   // reset-to-defaults
       expect(qcc).toContain(guard);
     }
-    expect(qcc).toContain("{#if isAppearMode && store.ready}");   // the appearance panels
+    // No `store.ready` on the entry point any more: the bundle route needs no file, so gating the only
+    // way into the window on a decodable video locked those users out entirely.
+    expect(qcc).toContain("{#if isAppearMode}");
   });
 
   it("reading a finished run — overlap, manual comparison, export — is the analysis tab", () => {

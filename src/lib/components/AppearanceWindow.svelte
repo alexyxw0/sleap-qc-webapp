@@ -73,23 +73,102 @@
   }
   const covNote = $derived(appearanceCoverageNote(appRun.checkKey));
 
+  // THE ORDERED STEPS. A step is locked only when its prerequisite is genuinely unmet — a gate over an
+  // action the app could already perform is a bug wearing a guide rail's clothing. `done` is always a
+  // STORE fact, never "the user visited this", so a ✓ can never tick itself.
+  const steps = $derived.by(() => {
+    if (appRun.route === "bundle") {
+      const pair = appRun.pairLoaded;
+      return [
+        { id: "upload", label: "Load bundles", done: appRun.bundleDone, locked: false,
+          hint: "Upload each keypoint's embeddings + model. Either order.",
+          note: appRun.bundleDone ? `${keypointModels.active.length} loaded`
+            : keypointModels.slots.some((x) => x.store.info?.hasEmb && !x.store.info?.hasModel) ? "pick a model"
+              : keypointModels.slots.some((x) => x.store.info?.hasModel && !x.store.info?.hasEmb) ? "add embeddings" : null },
+        { id: "fewshot", label: "Adapt (few-shot)", done: appRun.adaptLive,
+          locked: !appRun.canAdapt,
+          why: !pair ? "Load a keypoint's embeddings AND its model first — there is nothing to adapt yet."
+            : "No labels yet. Import a faulty_keypoints.csv, or proofread a few frames.",
+          hint: "Optional. Nudges a transferred model toward this project using your labels.",
+          note: appRun.canAdapt && !appRun.adaptLive ? "optional" : null },
+      ];
+    }
+    return [
+      { id: "compute", label: "Embed & score", done: appRun.computeDone, locked: false,
+        hint: "Pick granularity and coverage, then run the DINOv2 pass over this file.",
+        note: appRun.computeDone ? (covNote ?? "ready") : null },
+    ];
+  });
+  // The reason the CURRENT selection is unavailable, if it is — shown once, near the strip.
+  const lockedNow = $derived(steps.find((x) => x.id === appRun.tab && x.locked)?.why ?? null);
+
+  // Never strand the user on a locked pane: if the answer to an earlier step is undone, fall back to the
+  // last step that is actually reachable. Suppressed while a bundle half is still loading, so an
+  // in-flight fetch cannot bounce a deep link somewhere unexplained.
+  $effect(() => {
+    const loading = keypointModels.slots.some((x) => x.store.status === "loading");
+    if (loading) return;
+    const cur = steps.find((x) => x.id === appRun.tab);
+    if (cur && cur.locked) {
+      const open = [...steps].reverse().find((x) => !x.locked);
+      if (open) appRun.setTab(open.id);
+    }
+  });
+
   const GRAN = [
     ["instance", "Whole instance", "One crop per animal — gross appearance problems"],
     ["node", "Per keypoint", "A patch per keypoint — names the keypoint responsible"],
   ];
-  const TABS = $derived([
+  const _TABS_UNUSED = $derived([
     { id: "compute", label: "Compute", hint: "Embed this file's crops with DINOv2 in the browser" },
     { id: "upload", label: "Upload", hint: "Load precomputed keypoint bundles (embeddings + trained model)",
       badge: keypointModels.active.length || null },
     { id: "fewshot", label: "Few-shot", hint: "Adapt a transferred model to this project with a handful of your own labels",
       badge: keypointLabels.count || null },
   ]);
+  void _TABS_UNUSED; // the peer-tab strip is replaced by the ordered flow below
 </script>
 
 {#if appRun.open}
   <PopoutWindow title="Appearance · DINOv2" width="820px" onclose={() => appRun.close()}>
     <div class="win">
-      <WinTabs tabs={TABS} active={appRun.tab} disabled={busy} onpick={(t) => appRun.setTab(t)} />
+      <!-- THE FORK. Asked first and answered by clicking, because the two routes are independent: a user
+           with bundles must never be walked through a compute step, and vice versa. -->
+      {#if appRun.route == null}
+        <section class="fork">
+          <p class="f-q">What are you starting from?</p>
+          <div class="f-cards">
+            <button class="fcard" onclick={() => appRun.setRoute("bundle")}>
+              <span class="f-t">I have precomputed bundles</span>
+              <span class="f-d">Embeddings + a trained model, exported offline by <code>export_nose.py</code>. Nothing is computed here.</span>
+              <span class="f-s" class:on={appRun.bundleDone}>{appRun.bundleDone ? `✓ ${keypointModels.active.length} keypoint${keypointModels.active.length === 1 ? "" : "s"} loaded` : "○ nothing loaded yet"}</span>
+            </button>
+            <button class="fcard" disabled={!store.ready} onclick={() => appRun.setRoute("compute")}
+                    title={store.ready ? "" : "Open a .pkg.slp first — this route embeds THIS file's crops"}>
+              <span class="f-t">Compute embeddings from this file</span>
+              <span class="f-d">A forward pass of a frozen DINOv2 over this file's crops. No training happens in the browser.</span>
+              <span class="f-s" class:on={appRun.instanceDone || appRun.nodeDone}>
+                {appRun.instanceDone ? "✓" : "○"} whole instance · {appRun.nodeDone ? "✓" : "○"} per keypoint
+              </span>
+            </button>
+          </div>
+        </section>
+      {:else}
+      <nav class="flow">
+        <button class="f-back" onclick={() => appRun.clearRoute()} disabled={busy}
+                title={busy ? "Not while a run is in flight" : "Back to the first question"}>‹ start</button>
+        {#each steps as st, k (st.id)}
+          <button class="node" class:on={appRun.tab === st.id} class:done={st.done} class:locked={st.locked}
+                  disabled={st.locked || busy} onclick={() => appRun.setTab(st.id)}
+                  title={st.locked ? st.why : st.hint}>
+            <span class="n-i">{st.done ? "✓" : k + 1}</span>
+            <span class="n-l">{st.label}</span>
+            {#if st.note}<span class="n-n">{st.note}</span>{/if}
+          </button>
+          {#if k < steps.length - 1}<span class="n-arrow" aria-hidden="true">→</span>{/if}
+        {/each}
+      </nav>
+      {#if lockedNow}<p class="lockmsg">🔒 {lockedNow}</p>{/if}
 
       {#if appRun.tab === "upload"}
         <!-- Nothing to configure or launch: these bundles were made offline by export_nose.py. -->
@@ -120,7 +199,7 @@
                unsupervised kNN, where the patch is small enough for it to discriminate. -->
           <span class="fixed" title={appRun.gran === "instance"
               ? "Bundled RBF-SVM trained on proofread labels. Unsupervised kNN at this granularity scored ~chance, so it is not offered."
-              : "Each patch vs the k nearest patches of the SAME keypoint (robust-z). No labels needed. For the supervised per-keypoint route, use the Upload tab."}>
+              : "Each patch vs the k nearest patches of the SAME keypoint (robust-z). No labels needed. For the supervised per-keypoint route, start over and bring precomputed bundles."}>
             {appRun.scorer}{#if appRun.gran === "instance" && clf}<small> · cv roc {clf.cv_roc.toFixed(2)}</small>{/if}
           </span>
         </div>
@@ -178,7 +257,7 @@
             <p class="note">Catches occlusion and appearance errors geometry misses, but not <i>which</i> keypoint is wrong — that is the per-keypoint granularity.</p>
           {:else}
             <p class="note">A patch around each keypoint, embedded with DINOv2 ViT-S/14 and scored <b>unsupervised</b>: robust-z of the distance to the k nearest patches of that <i>same</i> keypoint. No labels needed, and a flag names the keypoint responsible.</p>
-            <p class="note">One forward pass per keypoint per instance — many more crops than whole-instance, so expect minutes at full coverage. Cached after the first run. For the <i>supervised</i> per-keypoint route, use the <b>Upload</b> tab.</p>
+            <p class="note">One forward pass per keypoint per instance — many more crops than whole-instance, so expect minutes at full coverage. Cached after the first run. For the <i>supervised</i> per-keypoint route, go back to <b>‹ start</b> and bring precomputed bundles.</p>
           {/if}
         </Explain>
       </section>
@@ -229,12 +308,57 @@
         {#if appRun.gran === "instance"}<EmbeddingCheck />{:else}<NodeEmbeddingCheck />{/if}
       </section>
       {/if}
+      {/if}
     </div>
   </PopoutWindow>
 {/if}
 
 <style>
   .win { display: flex; flex-direction: column; gap: 0.75rem; }
+
+  /* ---- the fork ---- */
+  .fork { display: flex; flex-direction: column; gap: 0.6rem; }
+  .f-q { margin: 0; font-size: 0.86rem; font-weight: 600; color: var(--text); }
+  .f-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
+  .fcard {
+    display: flex; flex-direction: column; gap: 0.3rem; text-align: left;
+    padding: 0.75rem 0.8rem; cursor: pointer;
+    border: 1px solid var(--border); border-radius: 9px;
+    background: rgba(255, 255, 255, 0.02);
+  }
+  .fcard:hover:not(:disabled) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  .fcard:disabled { opacity: 0.45; cursor: default; }
+  .f-t { font-size: 0.78rem; font-weight: 600; color: var(--text); }
+  .f-d { font-size: 0.64rem; color: var(--dim); line-height: 1.45; }
+  .f-d code { font-size: 0.6rem; }
+  .f-s { font-size: 0.62rem; color: var(--dim); margin-top: 0.15rem; }
+  .f-s.on { color: #6ee7a8; }
+
+  /* ---- the ordered strip: numbers, arrows, and a lock you can read the reason for ---- */
+  .flow { display: flex; align-items: center; gap: 0.3rem; flex-wrap: wrap; padding-bottom: 0.15rem; border-bottom: 1px solid var(--border); }
+  .f-back { background: none; border: none; color: var(--dim); font-size: 0.62rem; cursor: pointer; padding: 0.2rem 0.3rem; }
+  .f-back:hover:not(:disabled) { color: var(--accent); }
+  .f-back:disabled { opacity: 0.4; cursor: default; }
+  .node {
+    display: inline-flex; align-items: center; gap: 0.35rem;
+    padding: 0.3rem 0.6rem; cursor: pointer;
+    background: none; border: 1px solid transparent; border-radius: 7px;
+    color: var(--dim); font-size: 0.7rem;
+  }
+  .node:hover:not(:disabled) { color: var(--muted); }
+  .node.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .node.locked { opacity: 0.45; cursor: default; }
+  .node:disabled { cursor: default; }
+  .n-i {
+    display: inline-grid; place-items: center; width: 1.05rem; height: 1.05rem; border-radius: 50%;
+    font-size: 0.58rem; font-weight: 700;
+    background: rgba(255, 255, 255, 0.08); color: var(--dim);
+  }
+  .node.on .n-i { background: var(--accent); color: #08131c; }
+  .node.done .n-i { background: #6ee7a8; color: #08131c; }
+  .n-n { font-size: 0.56rem; color: var(--dim); padding: 0.02rem 0.3rem; border-radius: 999px; background: rgba(255, 255, 255, 0.06); }
+  .n-arrow { color: var(--border); font-size: 0.7rem; }
+  .lockmsg { margin: 0; font-size: 0.64rem; color: #f0b47a; }
 
   .cfg { display: flex; flex-direction: column; gap: 0.5rem; }
   .row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
