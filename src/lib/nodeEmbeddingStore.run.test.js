@@ -216,6 +216,41 @@ describe("nodeEmbeddingStore.run() — runtime", () => {
     keypointLabels.clear();
   });
 
+  // The claim the "upload a fitted model" branch makes: label one file, apply the boundary to the next
+  // without labelling again. Every step of that is exercised here, end to end, against a real run.
+  it("fit -> export -> import -> apply reproduces the same scores on a fresh store", async () => {
+    const { keypointLabels } = await import("./keypointLabels.svelte.js");
+    const { exportModel, importModel } = await import("./qc/embedding/svmIo.js");
+    const a = new NodeEmbeddingStore("dino");
+    await a.run();
+    keypointLabels.clear();
+    for (let f = 0; f < 6; f++) for (let ii = 0; ii < 2; ii++) keypointLabels.markAt(`0:${f}`, ii, "nose", ii === 0);
+
+    const { clf } = a.trainFor(0);
+    a.applyTrainedModel(0, clf);
+    expect(a.scoringOf(0)).toBe("svm");
+    const trained = a.pointsForNode(0).map((p) => p.z);
+
+    const file = exportModel(a.trainedModelFor(0), { node: "nose", source: "a.slp" });
+    keypointLabels.clear(); // the second session has NO labels — that is the entire point
+
+    const b = new NodeEmbeddingStore("dino");
+    await b.run();
+    const unsupervised = b.pointsForNode(0).map((p) => p.z);
+    const { clf: back, warning } = importModel(file, { dim: b.dim, node: "nose" });
+    expect(warning).toBeNull();
+
+    b.applyTrainedModel(0, back);
+    expect(b.scoringOf(0)).toBe("svm");
+    const viaFile = b.pointsForNode(0).map((p) => p.z);
+    expect(viaFile, "the boundary did not replace the unsupervised scores").not.toEqual(unsupervised);
+
+    // The equality that matters: the file-round-tripped model scores EXACTLY as the in-memory one does.
+    // (Not "the same numbers as store a" — the mock encoder is stateful, so b's patches are its own.)
+    b.applyTrainedModel(0, clf);
+    b.pointsForNode(0).map((p) => p.z).forEach((z, i) => expect(z).toBeCloseTo(viaFile[i], 5));
+  });
+
   it("the registry offers DINO only", () => {
     expect(Object.keys(nodeEmbeddingStores)).toEqual(["dino"]);
   });

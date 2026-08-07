@@ -29,6 +29,15 @@ class AppearanceRun {
   // different check. Burying it under gran=node + model=pretrained made it look like a third way to
   // compute. It is a SUBTAB: "compute something here" vs "bring something you computed elsewhere".
   tab = $state("compute"); // "compute" | "upload" | "fewshot"
+  // THE SCORING QUESTION, asked the moment a run finishes rather than left as a tab to discover. Two
+  // levels, each null until answered, for the same reason `route` is: nothing may answer on the user's
+  // behalf, and an unanswered question is the only state that renders as a question.
+  //   scoreChoice "knn"    -> already applied, nothing more to do
+  //                "svm"   -> where does the boundary come from?
+  //   svmSource   "upload" -> a model fitted in an earlier session (svmIo.js)
+  //                "fewshot" -> label ground truth here, in the proofreader, then fit
+  scoreChoice = $state(null); // null | "knn" | "svm"
+  svmSource = $state(null);   // null | "upload" | "fewshot"
   gran = $state("instance"); // compute only: "instance" (one crop per animal) | "node" (a patch per keypoint)
 
   /** Which ROUTE the open pane belongs to. The three getters below describe a route, not a pane, and
@@ -112,8 +121,22 @@ class AppearanceRun {
     return keypointModels.slots.some((s) => s.store.hasResults && s.store.fewShotInfo != null);
   }
 
+  setScoreChoice(c) {
+    this.scoreChoice = c === "knn" || c === "svm" ? c : null;
+    if (this.scoreChoice !== "svm") this.svmSource = null; // an abandoned branch keeps no answer
+  }
+  setSvmSource(s) { this.svmSource = s === "upload" || s === "fewshot" ? s : null; }
+  /** Back up one question. The only way out of a branch, so it is never a dead end. */
+  unaskScore() { if (this.svmSource) this.svmSource = null; else this.scoreChoice = null; }
+
   /** Launching is a COMPUTE-TAB action: "score" reads a finished run and must not restart it. */
-  run() { if (!this.anyRunning && this.tab === "compute") this.store?.run(); }
+  run() {
+    if (this.anyRunning || this.tab !== "compute") return;
+    // The answers describe patches that are about to be replaced, exactly as the store's own trained
+    // models and few-shot blends are — so the question gets asked again, unanswered, about the new ones.
+    this.scoreChoice = null; this.svmSource = null;
+    this.store?.run();
+  }
   abort() { this.activeStore?.abort(); }
 }
 
