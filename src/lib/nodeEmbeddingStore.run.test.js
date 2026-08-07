@@ -72,6 +72,61 @@ describe("nodeEmbeddingStore.run() — runtime", () => {
     assertCompleted(second); // per-node stores hold their own results
   });
 
+  it("a keypoint subset embeds ONLY those keypoints", async () => {
+    const st = new NodeEmbeddingStore("dino");
+    st.nodes = [0, 2]; // the fixture's poses have 3 nodes
+    await st.run();
+    expect(st.status).toBe("done");
+    expect(st.nodeStats.map((n) => n.node).sort()).toEqual([0, 2]);
+    expect(st.coveredNode(1), "node 1 was not selected but got embedded").toBe(false);
+    expect(st.coveredNode(0)).toBe(true);
+    // and it really is cheaper — 2 of 3 nodes over the same instances
+    expect(st.embeddedCount).toBe(12 * 2);
+  });
+
+  it("coverage describes the RUN, not the live selection", async () => {
+    const st = new NodeEmbeddingStore("dino");
+    st.nodes = [1];
+    await st.run();
+    expect(st.coverage.requested).toEqual([1]);
+    expect([...st.coverage.covered]).toEqual([1]);
+    st.nodes = [0, 1, 2]; // re-tick chips WITHOUT re-running
+    expect(st.coverage.requested, "results were relabelled by a chip click").toEqual([1]);
+    expect(st.coveredNode(0)).toBe(false);
+  });
+
+  it("null means every keypoint; an EMPTY selection is refused rather than widened", async () => {
+    const all = new NodeEmbeddingStore("dino");
+    all.nodes = null;
+    await all.run();
+    expect(all.coverage.partial).toBe(false);
+    expect(all.nodeStats.length).toBe(3);
+
+    const none = new NodeEmbeddingStore("dino");
+    none.nodes = [];
+    await none.run();
+    // widening [] to "all" would silently launch the most expensive possible pass
+    expect(none.status).toBe("error");
+    expect(none.message).toMatch(/at least one/i);
+    expect(none.hasResults).toBe(false);
+  });
+
+  it("a selection naming keypoints this file never places says so, distinctly", async () => {
+    const st = new NodeEmbeddingStore("dino");
+    st.nodes = [7, 8]; // beyond the fixture's 3 nodes
+    await st.run();
+    expect(st.status).toBe("error");
+    expect(st.message).toMatch(/selected keypoints/i); // not the generic "no placed keypoints"
+  });
+
+  it("worstNodeFor can only speak for what was embedded", async () => {
+    const st = new NodeEmbeddingStore("dino");
+    st.nodes = [2];
+    await st.run();
+    const w = st.worstNodeFor(0, 0);
+    expect(w?.node, "attributed a fault to a keypoint it never looked at").toBe(2);
+  });
+
   it("the registry offers DINO only", () => {
     expect(Object.keys(nodeEmbeddingStores)).toEqual(["dino"]);
   });

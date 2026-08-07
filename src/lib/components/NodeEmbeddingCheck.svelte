@@ -59,21 +59,48 @@
     jumpPos = (jumpPos + 1) % outs.length;
   }
   const zColor = (z) => (z >= es.threshold ? "#fb926e" : `hsl(190 70% ${Math.max(32, 60 - z * 7)}%)`);
+
+  // One chip per SKELETON keypoint, not per result row. A keypoint the run never embedded used to have
+  // no chip at all, which reads as "this skeleton has 3 keypoints" rather than "nothing is known about
+  // the other 10" — the exact confusion a subset pass invites. Built here rather than in the store so
+  // nodeStats keeps its record-derived contract.
+  const chips = $derived.by(() => {
+    void es.resultRev;
+    const names = store.skeleton?.nodeNames ?? [];
+    const byNode = new Map(es.nodeStats.map((n) => [n.node, n]));
+    const rows = names.length ? names.map((_, ni) => ni) : es.nodeStats.map((n) => n.node);
+    return rows.map((ni) => {
+      const ns = byNode.get(ni);
+      if (!ns) return { node: ni, state: "absent", count: 0 };            // never embedded
+      if (!ns.scored) return { node: ni, state: "few", count: ns.count }; // embedded, too few to score
+      return { node: ni, state: "scored", count: ns.count, refCount: ns.refCount };
+    });
+  });
+  const someAbsent = $derived(chips.some((c) => c.state === "absent"));
 </script>
 
 <div class="emb">
   {#if es.hasResults}
     <!-- Node selector = per-node flagged-count summary in one row: click a keypoint to view its graph. -->
     <div class="nodes" role="group" aria-label="Keypoint">
-      {#each es.nodeStats as ns (ns.node)}
-        {@const flagged = ns.scored ? es.flaggedCountForNode(ns.node) : 0}
-        <button class="nodechip" class:sel={es.selectedNode === ns.node} class:unscored={!ns.scored}
-          disabled={!ns.scored} onclick={() => (es.selectedNode = ns.node)}
-          title={ns.scored ? `${nodeName(ns.node)} · ${ns.count} patches · ${flagged} flagged · ref ${ns.refCount}` : `${nodeName(ns.node)} · ${ns.count} patches — too few to score`}>
-          {nodeName(ns.node)}{#if ns.scored}<span class="nc" class:hot={flagged > 0}>{flagged}</span>{/if}
+      {#each chips as ch (ch.node)}
+        {@const flagged = ch.state === "scored" ? es.flaggedCountForNode(ch.node) : 0}
+        <button class="nodechip" class:sel={es.selectedNode === ch.node}
+          class:unscored={ch.state === "few"} class:absent={ch.state === "absent"}
+          disabled={ch.state !== "scored"} onclick={() => (es.selectedNode = ch.node)}
+          title={ch.state === "scored" ? `${nodeName(ch.node)} · ${ch.count} patches · ${flagged} flagged · ref ${ch.refCount}`
+            : ch.state === "few" ? `${nodeName(ch.node)} · ${ch.count} patches — too few to score`
+              : `${nodeName(ch.node)} — NOT embedded in this run. Nothing is known about it; re-run with it selected.`}>
+          {nodeName(ch.node)}{#if ch.state === "scored"}<span class="nc" class:hot={flagged > 0}>{flagged}</span>{/if}
         </button>
       {/each}
     </div>
+    {#if someAbsent}
+      <p class="cov">
+        ✳ {chips.filter((c) => c.state !== "absent").length} of {chips.length} keypoints embedded —
+        the struck-through ones were not looked at, which is not the same as clean.
+      </p>
+    {/if}
 
     {#if scatter}
       {@const s = scatter}
@@ -136,6 +163,9 @@
 <style>
   .emb { display: flex; flex-direction: column; gap: 0.5rem; }
   .hint { font-size: 0.66rem; color: var(--dim); margin: 0; }
+  .cov { margin: 0; font-size: 0.6rem; color: #f0b47a; line-height: 1.4; }
+  /* struck through, like the picker's off-state — the same keypoint in the same visual language */
+  .nodechip.absent { text-decoration: line-through; opacity: 0.5; border-style: dashed; }
 
   .nodes { display: flex; flex-wrap: wrap; gap: 3px; }
   .nodechip { font-size: 0.6rem; color: var(--muted); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-xs); padding: 0.12rem 0.35rem; cursor: pointer; display: inline-flex; align-items: center; gap: 0.25rem; }

@@ -42,6 +42,16 @@ const APPEARANCE_CHECKS = [
   { key: "noseAppearance", store: keypointModels, label: "Keypoint (trained)", chip: "Mislabeled keypoint · DINO" },
 ];
 const APPEARANCE_BY_KEY = Object.fromEntries(APPEARANCE_CHECKS.map((a) => [a.key, a]));
+
+/** "3 of 13 keypoints" when a per-node pass covered a subset, else null. Read from the RESULT snapshot,
+ *  so re-ticking a chip cannot relabel a finished run. */
+export function appearanceCoverageNote(key) {
+  const st = APPEARANCE_BY_KEY[key]?.store;
+  const cov = st?.coverage;
+  if (!cov?.partial || !st.hasResults) return null;
+  const total = store.skeleton?.nodeNames?.length ?? 0;
+  return total ? `${cov.covered.size} of ${total} keypoints` : `${cov.covered.size} keypoints`;
+}
 const isAppearanceCheck = (name) => name in APPEARANCE_BY_KEY;
 
 // A user-facing check maps to a computable unit. count/negative/duplicates share one frame unit.
@@ -1746,7 +1756,13 @@ class QCStore {
     for (const a of APPEARANCE_CHECKS) {
       if (!c[a.key] || !a.store.hasResults) continue; // enabled but not-yet-precomputed -> no phantom row
       const z = this.#appZ(item, a.key);
-      out.push({ key: a.key, label: a.label, score: z ?? 0, threshold: a.store.threshold, flagged: z != null && z >= a.store.threshold, unit: "σ" });
+      // `z ?? 0` rendered a frame the pass never examined as "passed · 0.00σ" — maximally normal, and a
+      // lie. A missing score is not a low score: leave it null so the row shows WHY instead.
+      out.push({
+        key: a.key, label: a.label, score: z, threshold: a.store.threshold,
+        flagged: z != null && z >= a.store.threshold, unit: "σ",
+        detail: z == null ? "not in the sample" : undefined,
+      });
     }
     return out;
   }
