@@ -252,22 +252,24 @@ describe("the run ends with a scoring choice, not a dead end", () => {
     expect(w).toMatch(/if \(appRun\.gran !== "node"\) return embed;/);
   });
 
-  it("offers all three scorers and marks the live one", () => {
-    for (const s of ["Unsupervised (kNN)", "Train an SVM on my labels", "Few-shot nudge"]) expect(w, s).toContain(s);
+  it("names both techniques and reports which is live", () => {
+    for (const t of ["kNN · unsupervised", "SVM · supervised"]) expect(w, t).toContain(t);
     expect(w).toContain("es.scoringOf(ni)");
-    expect(w).toMatch(/class:on=\{scoredMode === "fewshot"\}/);
+    expect(w).toContain("SCORE_LABEL[scoredMode]");
   });
 
-  it("few-shot unlocks on faulty labels alone; the SVM needs both classes", () => {
-    // t.enough is pos>0 && neg>0. Gating few-shot on it would hide the only option that works early.
-    expect(w).toMatch(/class:locked=\{!t\.pos\}/);
-    expect(w).toContain("disabled={!t.pos}");
-    expect(w).toMatch(/\{t\.enough \?/); // the SVM row still reports both counts
+  it("few-shot falls back to a nudge on faulty labels alone; the SVM needs both classes", () => {
+    // t.enough is pos>0 && neg>0. The fit button appears only then; below it, the prototype nudge —
+    // which needs only the faulty side — is offered instead of nothing.
+    expect(w).toMatch(/\{#if t\.enough\}[\s\S]*?fit the SVM[\s\S]*?\{:else\}[\s\S]*?disabled=\{!t\.pos\}[\s\S]*?nudge instead/);
+    expect(w).toContain("nudge(ni)");
   });
 
   it("says plainly that a foreign .bin cannot score these patches", () => {
-    expect(w).toMatch(/cannot score these/);
-    expect(w).toMatch(/fixed-pixel crops/);
+    expect(w).toMatch(/Only a model exported here fits/);
+    expect(w).toMatch(/fixed pixel box/);
+    // and the parser refuses one rather than scoring with it
+    expect(read("src/lib/qc/embedding/svmIo.js")).toMatch(/cannot score these patches/);
   });
 });
 
@@ -297,7 +299,7 @@ describe("route-scoped getters follow the route, not one tab name", () => {
   it("but only the compute tab can launch — score reads a finished run", async () => {
     const { appRun } = await import("./appearanceRun.svelte.js");
     const s = read("src/lib/appearanceRun.svelte.js");
-    expect(s).toMatch(/run\(\) \{ if \(!this\.anyRunning && this\.tab === "compute"\)/);
+    expect(s).toMatch(/if \(this\.anyRunning \|\| this\.tab !== "compute"\) return;/);
     const before = appRun.tab;
     appRun.tab = "score";
     let launched = false;
@@ -320,5 +322,59 @@ describe("finishing the run asks the question", () => {
   it("the step ticks on scores existing — kNN is an answer, not a skipped step", () => {
     expect(w).toMatch(/done: appRun\.nodeDone, locked: !appRun\.nodeDone/);
     expect(w).toContain("SCORE_LABEL[scoredMode]");
+  });
+});
+
+// "The score tab should not have to be manually clicked" — the run's end is a branching QUESTION that
+// asks itself, and each answer routes the next one. kNN | SVM -> upload | few-shot -> the proofreader.
+describe("the scoring question asks itself and branches", () => {
+  const w = read("src/lib/components/AppearanceWindow.svelte");
+  const r = read("src/lib/appearanceRun.svelte.js");
+
+  it("holds two levels of answer, each null until answered", () => {
+    expect(r).toContain("scoreChoice = $state(null);");
+    expect(r).toContain("svmSource = $state(null);");
+  });
+
+  it("Q1 is the technique; Q2 only exists under SVM", () => {
+    expect(w).toContain("Which detection technique");
+    expect(w).toMatch(/appRun\.setScoreChoice\("knn"\)/);
+    expect(w).toMatch(/appRun\.setScoreChoice\("svm"\)/);
+    // Q2 renders only after "svm" — it sits in the {:else if} chain past the knn branch
+    expect(w.indexOf('appRun.scoreChoice === "knn"')).toBeLessThan(w.indexOf("Where does the boundary come from"));
+    expect(w).toMatch(/appRun\.setSvmSource\("upload"\)/);
+    expect(w).toMatch(/appRun\.setSvmSource\("fewshot"\)/);
+  });
+
+  it("abandoning the SVM branch drops its answer, so re-entering asks again", async () => {
+    const { appRun } = await import("./appearanceRun.svelte.js");
+    appRun.setScoreChoice("svm");
+    appRun.setSvmSource("fewshot");
+    appRun.setScoreChoice("knn");
+    expect(appRun.svmSource).toBeNull();
+    appRun.setScoreChoice(null);
+  });
+
+  it("every branch has a way back — none is a dead end", () => {
+    expect(r).toContain("unaskScore()");
+    expect(w.match(/appRun\.unaskScore\(\)/g).length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("few-shot opens the proofreader that produces the labels it needs", () => {
+    expect(w).toContain("keypointLabels.proofreading = true;");
+    expect(w).toContain('proofreadWindow.showTab("frames")');
+    // ...and refuses when the ranking it would show does not exist yet
+    expect(w).toContain("disabled={!qc.proofreadReady}");
+  });
+
+  it("the few-shot branch ends in a fit and an export, not just labelling", () => {
+    expect(w).toContain("es.trainFor(ni)");
+    expect(w).toContain("es.applyTrainedModel(ni, clf)");
+    expect(w).toContain("exportModel(clf,");
+    expect(w).toContain("importModel(await f.text()");
+  });
+
+  it("a new run re-asks — the answers described the patches it replaced", () => {
+    expect(r).toMatch(/this\.scoreChoice = null; this\.svmSource = null;\s*\n\s*this\.store\?\.run\(\);/);
   });
 });

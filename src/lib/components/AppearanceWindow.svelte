@@ -26,6 +26,8 @@
   import { keypointLabels } from "../keypointLabels.svelte.js";
   import { appearanceCoverageNote } from "../qcStore.svelte.js";
   import { loadAll } from "../qc/embedding/embcache.js";
+  import { proofreadWindow } from "../proofreadWindow.svelte.js";
+  import { importModel, exportModel, modelFilename } from "../qc/embedding/svmIo.js";
 
   const clf = classifierInfo();
   const es = $derived(appRun.store); // null for the pretrained (upload-only) route
@@ -36,6 +38,65 @@
     const ni = es?.selectedNode;
     return ni == null || !es?.scoringOf ? "knn" : es.scoringOf(ni);
   });
+  // ---- the scoring branch's actions. Each one reports its own outcome in the pane: a fit that silently
+  // did nothing, or an upload that silently failed, is the failure mode this whole flow exists to remove.
+  let upErr = $state(null), upWarn = $state(null);
+  let fitting = $state(false), fitMsg = $state(null);
+  const lastFit = new Map(); // node -> { cv } from this session's fit, for the export header
+
+  /** Straight into the ranked queue — the labels this branch needs are exactly what it produces. */
+  function openProofreader() {
+    keypointLabels.proofreading = true;
+    proofreadWindow.showTab("frames");
+  }
+
+  async function onUpload(e, ni, nodeName) {
+    upErr = upWarn = null;
+    const f = e.target.files?.[0];
+    if (!f) return;
+    try {
+      const { clf, warning } = importModel(await f.text(), { dim: es.dim ?? null, node: nodeName });
+      es.applyTrainedModel(ni, clf);
+      upWarn = warning;
+    } catch (err) {
+      upErr = err.message;
+    }
+    e.target.value = ""; // so re-picking the same file after a fix still fires
+  }
+
+  async function doFit(ni, nodeName) {
+    fitting = true; fitMsg = null;
+    try {
+      // Yield once so the button repaints as "fitting…" — the SMO solve blocks the main thread.
+      await new Promise((r) => setTimeout(r, 0));
+      const { clf, cv, warning } = es.trainFor(ni);
+      es.applyTrainedModel(ni, clf);
+      lastFit.set(ni, { cv, node: nodeName });
+      fitMsg = `${cv.roc == null ? "no held-out ROC" : `held-out ROC ${cv.roc.toFixed(3)}`} · AP ${cv.pr?.toFixed?.(3) ?? "—"} · ${cv.folds}-fold on ${cv.nPos}/${cv.nPos + cv.nNeg}${warning ? ` — ${warning}` : ""}`;
+    } catch (err) {
+      fitMsg = `fit failed — ${err.message}`;
+    }
+    fitting = false;
+  }
+
+  function nudge(ni) { es.applyFewShot(ni, 0.5); }
+
+  function doExport(ni, nodeName) {
+    const clf = es.trainedModelFor(ni);
+    if (!clf) return;
+    const t = es.trainableFor(ni);
+    const cv = lastFit.get(ni)?.cv ?? null;
+    const blob = new Blob([exportModel(clf, {
+      node: nodeName, source: store.fileName ?? null,
+      nLabels: t.n, nPos: t.pos, cvRoc: cv?.roc ?? null, cvAp: cv?.pr ?? null,
+    })], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = modelFilename(nodeName, store.fileName);
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
   const running = $derived(appRun.running);
   const busy = $derived(appRun.anyRunning); // the two stores share one worker
   const ready = $derived(qc.checkReady(appRun.checkKey));
@@ -332,50 +393,135 @@
       {/if}
 
       {#if appRun.tab === "score" && appRun.gran === "node"}
-        <!-- The choice the run used to end without. Each option states its own precondition rather than
-             being silently absent, so "why can't I do that" is answerable from the screen. -->
+        <!-- The run used to just end. This is the rest of the workflow, asked as questions rather than
+             left as tabs to discover: technique, then where the boundary comes from, then how to get the
+             labels that boundary needs. One question on screen at a time, each answer routing the next. -->
         <section class="score">
-          <p class="s-q">How should these patches be scored?</p>
           {#if es?.selectedNode == null}
+            <p class="s-q">How should these patches be scored?</p>
             <p class="dim">Pick a keypoint in the graph below first — scoring is chosen per keypoint.</p>
           {:else}
             {@const ni = es.selectedNode}
             {@const t = es.trainableFor(ni)}
-            <div class="s-opts">
-              <div class="sopt" class:on={scoredMode === "knn"}>
-                <span class="so-t">Unsupervised (kNN)</span>
-                <span class="so-d">Each patch against the same keypoint elsewhere. No labels. Already applied.</span>
-              </div>
-              <div class="sopt" class:on={scoredMode === "svm"}>
-                <span class="so-t">Train an SVM on my labels</span>
-                <span class="so-d">
-                  {t.enough ? `${t.n} judged · ${t.pos} faulty / ${t.neg} clean — fit it under the graph below.`
-                    : "Needs at least one faulty and one clean judged patch of this keypoint. Proofread a few frames."}
-                </span>
-              </div>
-              <!-- Few-shot needs only the FAULTY side (it falls back to the file mean for the other), so
-                   it unlocks earlier than the SVM. Gating both on `enough` would hide the one option that
-                   still works when you have three labels. -->
-              <div class="sopt" class:on={scoredMode === "fewshot"} class:locked={!t.pos}>
-                <span class="so-t">Few-shot nudge</span>
-                <span class="so-d">
-                  {t.pos ? "Averages the patches you marked faulty and shifts the ranking toward them — works at label counts where an SVM's score would be meaningless."
-                    : "Needs at least one patch of this keypoint marked faulty. Proofread a few frames."}
-                </span>
-                <button class="so-go" disabled={!t.pos} onclick={() => es.applyFewShot(ni, 0.5)}>
-                  {scoredMode === "fewshot" ? "re-apply" : "apply"}
+            {@const nodeName = store.skeleton?.nodeNames?.[ni] ?? `node ${ni}`}
+
+            <!-- Q1 ------------------------------------------------------------------------------ -->
+            {#if !appRun.scoreChoice}
+              <p class="s-q">Which detection technique for <b>{nodeName}</b>?</p>
+              <div class="s-opts">
+                <button class="sopt" onclick={() => appRun.setScoreChoice("knn")}>
+                  <span class="so-t">kNN · unsupervised</span>
+                  <span class="so-d">Each patch against the k most similar patches of this keypoint elsewhere in the file. No labels, already applied — choose this to keep it.</span>
+                </button>
+                <button class="sopt" onclick={() => appRun.setScoreChoice("svm")}>
+                  <span class="so-t">SVM · supervised</span>
+                  <span class="so-d">A fitted boundary between faulty and clean appearance. Needs labels — bring a model you fitted before, or make them here.</span>
                 </button>
               </div>
-            </div>
-            {#if es.fewShotInfoFor(ni)}
-              {@const fs = es.fewShotInfoFor(ni)}
-              <p class="s-note">✓ few-shot applied · prototype from <b>{fs.nPos}</b> faulty{fs.usedGlobal ? " vs the file mean" : ` / ${fs.nNeg} clean`}</p>
+
+            <!-- kNN: the default, so this confirms rather than acts ------------------------------ -->
+            {:else if appRun.scoreChoice === "knn"}
+              <p class="s-q">✓ Scoring <b>{nodeName}</b> with kNN</p>
+              <p class="s-note dim">
+                Already applied to all {es.patchCount(ni).toLocaleString()} patches — the graph below is it.
+                Threshold and per-frame verdicts are live in the <b>Per-node · DINO</b> check.
+              </p>
+              <button class="back" onclick={() => appRun.unaskScore()}>‹ use a different technique</button>
+
+            <!-- Q2 ------------------------------------------------------------------------------ -->
+            {:else if !appRun.svmSource}
+              <p class="s-q">Where does the boundary come from?</p>
+              <div class="s-opts">
+                <button class="sopt" onclick={() => appRun.setSvmSource("upload")}>
+                  <span class="so-t">Upload a fitted model</span>
+                  <span class="so-d">A <code>.json</code> exported from this app in an earlier session — label once, apply to every file after.</span>
+                </button>
+                <button class="sopt" onclick={() => appRun.setSvmSource("fewshot")}>
+                  <span class="so-t">Few-shot — label some frames here</span>
+                  <span class="so-d">
+                    Proofread the frames the detectors already rank as suspect, then fit on what you marked.
+                    {t.n ? `${t.n} patches of ${nodeName} judged so far.` : "Nothing judged yet."}
+                  </span>
+                </button>
+              </div>
+              <button class="back" onclick={() => appRun.unaskScore()}>‹ back</button>
+
+            <!-- Upload --------------------------------------------------------------------------- -->
+            {:else if appRun.svmSource === "upload"}
+              <p class="s-q">Upload a boundary for <b>{nodeName}</b></p>
+              <label class="drop">
+                <input type="file" accept=".json,application/json" onchange={(e) => onUpload(e, ni, nodeName)} />
+                <span>Choose a <code>keypoint-svm_*.json</code></span>
+              </label>
+              {#if upErr}<p class="s-err">{upErr}</p>{/if}
+              {#if upWarn}<p class="s-warn">⚠ {upWarn}</p>{/if}
+              {#if scoredMode === "svm"}
+                <p class="s-note">✓ applied — {es.patchCount(ni).toLocaleString()} patches re-scored by the model.</p>
+              {/if}
+              <p class="s-note dim">
+                Only a model exported here fits: this pass crops a fraction of each instance's bbox, while the
+                bundled models (<code>export_nose.py</code>) crop a fixed pixel box. Those load under
+                <b>‹ start → precomputed bundles</b>, with their own embeddings.
+              </p>
+              <button class="back" onclick={() => appRun.unaskScore()}>‹ back</button>
+
+            <!-- Few-shot: label here, then fit --------------------------------------------------- -->
+            {:else}
+              <p class="s-q">Label ground truth for <b>{nodeName}</b></p>
+              <ol class="fs-steps">
+                <li class:done={t.n > 0}>
+                  <span class="fs-n">1</span>
+                  <span class="fs-b">
+                    <b>Proofread.</b> The queue is already ranked by how faulty every detector thinks each
+                    instance is, so the labels land where they are worth most.
+                    {#if t.n}<br /><span class="dim">{t.n} judged · {t.pos} faulty / {t.neg} clean</span>{/if}
+                    <!-- The queue IS the QC output, so with no QC run there is nothing to proofread. Say
+                         it here rather than letting the button open an empty window. -->
+                    {#if !qc.proofreadReady}<br /><span class="warn">Run the automatic QC first — the queue is its ranking.</span>{/if}
+                  </span>
+                  <button class="fs-go" disabled={!qc.proofreadReady} onclick={() => openProofreader()}>
+                    {t.n ? "keep labelling" : "open proofreader"}
+                  </button>
+                </li>
+                <li class:done={scoredMode !== "knn"} class:locked={!t.pos}>
+                  <span class="fs-n">2</span>
+                  <span class="fs-b">
+                    <b>Fit.</b>
+                    {#if t.enough}
+                      A cross-validated RBF-SVM on all {t.n} labelled patches.
+                      {#if t.pos < t.floor}<br /><span class="warn">Only {t.pos} faulty — below {t.floor}, the CV score is noise, not a measurement.</span>{/if}
+                    {:else if t.pos}
+                      An SVM needs both classes; you have {t.pos} faulty and no clean ones yet. The few-shot
+                      nudge works from the faulty side alone in the meantime.
+                    {:else}
+                      Nothing marked faulty yet.
+                    {/if}
+                    {#if fitMsg}<br /><span class="fs-msg">{fitMsg}</span>{/if}
+                  </span>
+                  {#if t.enough}
+                    <button class="fs-go" disabled={fitting} onclick={() => doFit(ni, nodeName)}>
+                      {fitting ? "fitting…" : scoredMode === "svm" ? "re-fit" : "fit the SVM"}
+                    </button>
+                  {:else}
+                    <button class="fs-go" disabled={!t.pos} onclick={() => nudge(ni)}>
+                      {scoredMode === "fewshot" ? "re-nudge" : "nudge instead"}
+                    </button>
+                  {/if}
+                </li>
+                <li class:done={scoredMode === "svm"} class:locked={scoredMode !== "svm"}>
+                  <span class="fs-n">3</span>
+                  <span class="fs-b">
+                    <b>Keep it.</b> Export the boundary and upload it on the next file instead of labelling again.
+                  </span>
+                  <button class="fs-go" disabled={scoredMode !== "svm"} onclick={() => doExport(ni, nodeName)}>export</button>
+                </li>
+              </ol>
+              {#if es.fewShotInfoFor(ni)}
+                {@const fs = es.fewShotInfoFor(ni)}
+                <p class="s-note">✓ few-shot applied · prototype from <b>{fs.nPos}</b> faulty{fs.usedGlobal ? " vs the file mean" : ` / ${fs.nNeg} clean`}</p>
+              {/if}
+              <button class="back" onclick={() => appRun.unaskScore()}>‹ back</button>
             {/if}
-            <p class="s-note dim">
-              A model fitted elsewhere (<code>export_nose.py</code>) cannot score these: it was trained on
-              fixed-pixel crops and this pass crops a fraction of each instance's bbox. Load those under
-              <b>‹ start → precomputed bundles</b> instead, with their own embeddings.
-            </p>
           {/if}
         </section>
       {/if}
@@ -436,26 +582,55 @@
   .n-n { font-size: 0.56rem; color: var(--dim); padding: 0.02rem 0.3rem; border-radius: 999px; background: rgba(255, 255, 255, 0.06); }
   .n-arrow { color: var(--border); font-size: 0.7rem; }
   .lockmsg { margin: 0; font-size: 0.64rem; color: #f0b47a; }
-  .score { display: flex; flex-direction: column; gap: 0.45rem; }
-  .s-q { margin: 0; font-size: 0.78rem; font-weight: 600; color: var(--text); }
-  .s-opts { display: flex; flex-direction: column; gap: 0.35rem; }
+  .score { display: flex; flex-direction: column; gap: 0.5rem; }
+  .s-q { margin: 0; font-size: 0.8rem; font-weight: 600; color: var(--text); }
+  .s-opts { display: flex; flex-direction: column; gap: 0.4rem; }
+  /* Answering is a click, so an option is a button — not a div you have to discover is clickable. */
   .sopt {
-    display: grid; grid-template-columns: 1fr auto; gap: 0.15rem 0.5rem;
-    padding: 0.45rem 0.6rem; border: 1px solid var(--border); border-radius: 7px;
+    display: flex; flex-direction: column; gap: 0.2rem; text-align: left;
+    padding: 0.55rem 0.7rem; border: 1px solid var(--border); border-radius: 8px;
+    background: transparent; cursor: pointer; font: inherit;
   }
-  .sopt.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
-  .sopt.locked { opacity: 0.55; }
-  .so-t { font-size: 0.72rem; color: var(--text); }
-  .sopt.on .so-t { color: var(--accent); font-weight: 600; }
-  .so-d { grid-column: 1; font-size: 0.62rem; color: var(--dim); line-height: 1.45; }
-  .so-go {
-    grid-row: 1 / span 2; align-self: center;
+  .sopt:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  .so-t { font-size: 0.75rem; font-weight: 600; color: var(--text); }
+  .so-d { font-size: 0.63rem; color: var(--dim); line-height: 1.5; }
+  .back {
+    align-self: flex-start; background: transparent; border: 0; padding: 0.1rem 0;
+    color: var(--dim); font-size: 0.65rem; cursor: pointer;
+  }
+  .back:hover { color: var(--accent); }
+  .drop {
+    display: block; padding: 0.7rem; border: 1px dashed var(--border); border-radius: 8px;
+    text-align: center; font-size: 0.68rem; color: var(--dim); cursor: pointer;
+  }
+  .drop:hover { border-color: var(--accent); color: var(--accent); }
+  .drop input { display: none; }
+  .s-note { margin: 0; font-size: 0.63rem; color: #6ee7a8; line-height: 1.5; }
+  .s-note.dim { color: var(--dim); }
+  .s-err { margin: 0; font-size: 0.65rem; color: #ff6b6b; line-height: 1.5; }
+  .s-warn { margin: 0; font-size: 0.65rem; color: #f0b47a; line-height: 1.5; }
+  .warn { color: #f0b47a; }
+  .fs-msg { color: var(--accent); }
+  /* The three moves of the few-shot branch, numbered — the order is the point. */
+  .fs-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+  .fs-steps li {
+    display: grid; grid-template-columns: auto 1fr auto; align-items: start; gap: 0.5rem;
+    padding: 0.5rem 0.6rem; border: 1px solid var(--border); border-radius: 8px;
+  }
+  .fs-steps li.locked { opacity: 0.5; }
+  .fs-steps li.done { border-color: color-mix(in srgb, #6ee7a8 45%, var(--border)); }
+  .fs-n {
+    display: grid; place-items: center; width: 1.15rem; height: 1.15rem; border-radius: 50%;
+    background: var(--border); color: var(--dim); font-size: 0.6rem; font-weight: 700;
+  }
+  .fs-steps li.done .fs-n { background: #6ee7a8; color: #06281a; }
+  .fs-b { font-size: 0.65rem; color: var(--dim); line-height: 1.55; }
+  .fs-b b { color: var(--text); }
+  .fs-go {
     background: transparent; border: 1px solid var(--accent); border-radius: var(--r-xs);
-    color: var(--accent); font-size: 0.64rem; padding: 0.15rem 0.6rem; cursor: pointer;
+    color: var(--accent); font-size: 0.64rem; padding: 0.2rem 0.6rem; cursor: pointer; white-space: nowrap;
   }
-  .so-go:disabled { opacity: 0.4; border-color: var(--border); color: var(--dim); cursor: default; }
-  .s-note { margin: 0; font-size: 0.62rem; color: #6ee7a8; }
-  .s-note.dim { color: var(--dim); line-height: 1.45; }
+  .fs-go:disabled { opacity: 0.4; border-color: var(--border); color: var(--dim); cursor: default; }
 
   .cfg { display: flex; flex-direction: column; gap: 0.5rem; }
   .row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }

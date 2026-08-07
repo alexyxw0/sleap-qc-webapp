@@ -99,6 +99,10 @@ export class NodeEmbeddingStore {
   /** Node patches embedded in the current results — cheap (record count), NOT a re-scan of all frames.
    *  (A pre-run count would need an O(frames·nodes²) re-plan of every keypoint, which stalls large files.) */
   get embeddedCount() { this.rev; return this.#recs.length; }
+  /** Embedding width — what an uploaded model has to match before it may score these patches. */
+  get dim() { this.rev; return this.#embs[0]?.length ?? null; }
+  /** How many patches of ONE keypoint were embedded, for the per-keypoint scoring copy. */
+  patchCount(ni) { this.resultRev; return (this.#nodeIndex.get(ni) ?? []).length; }
   get instanceCount() {
     let n = 0;
     for (const f of store.frames ?? []) n += f.lf?.instances?.length ?? 0;
