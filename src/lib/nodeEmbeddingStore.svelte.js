@@ -12,6 +12,7 @@ import { l2norm, stratifiedReference, buildFrameZ, robustZ } from "./qc/embeddin
 import { scoreEmbeddings } from "./qc/embedding/scoreRemote.js";
 import { nodePatchPlan } from "./qc/embedding/nodePatch.js";
 import { rbfDecision } from "./qc/embedding/svm.js";
+import { prototypeDirection, prototypeScores, blendByRank } from "./qc/embedding/fewshot.js";
 import { fitSvm, MIN_POSITIVES } from "./qc/embedding/svmFit.js";
 import { keypointLabels } from "./keypointLabels.svelte.js";
 import { loadAll as loadCache, putMany as saveCache } from "./qc/embedding/embcache.js";
@@ -63,6 +64,8 @@ export class NodeEmbeddingStore {
   // finished results, and a check that examined 2 keypoints starts claiming it examined 13.
   #ranNodes = null;
   #trainedNodes = new Map(); // node -> locally-fitted clf, for the groups no longer scored by kNN
+  #fewShot = new Map(); // node -> { alpha, nPos, nNeg, usedGlobal } when a prototype is blended in
+  #fsBase = new Map();  // node -> the pre-blend z, so re-applying few-shot never compounds
   #recs = []; // { fi, ii, node, thumb }
   #embs = []; // Float32Array (L2-normalized), index-aligned with #recs
   #z = []; // outlier robust-z, index-aligned with #recs (per-node within its group)
@@ -184,6 +187,9 @@ export class NodeEmbeddingStore {
     const z = robustZ(Array.from(dec));
     idxs.forEach((r, k) => { this.#z[r] = z[k]; });
     this.#trainedNodes.set(ni, clf);
+    // The trained decisions ARE the new baseline; a few-shot blend over the kNN scores no longer
+    // describes anything, and its saved base belongs to a scoring pass that is gone.
+    this.#fewShot.delete(ni); this.#fsBase.delete(ni);
     // frameZ is the max over a frame's patches, so it has to be rebuilt from every group, not this one.
     const vidx = new Map((store.labels?.videos ?? []).map((v, i) => [v, i]));
     this.#frameZ = buildFrameZ(this.#recs, this.#z, store.frames, vidx);
@@ -193,6 +199,58 @@ export class NodeEmbeddingStore {
   }
   /** Which keypoints are scored by a locally-trained model rather than by unsupervised kNN. */
   trainedNode(ni) { this.resultRev; return this.#trainedNodes.has(ni); }
+  /** How a keypoint is currently scored: the third option only exists once a model was fitted. */
+  scoringOf(ni) {
+    this.resultRev;
+    if (this.#fewShot.has(ni)) return "fewshot";
+    return this.#trainedNodes.has(ni) ? "svm" : "knn";
+  }
+
+  /**
+   * Few-shot: nudge a keypoint's ranking toward the patches you marked faulty.
+   *
+   * The cheap sibling of trainFor — a nearest-centroid direction rather than a fitted boundary — so it
+   * works at label counts where an SVM's cross-validated score would be meaningless. Blended BY RANK
+   * over whatever is scoring the group now (kNN or a trained SVM), so alpha=0 recovers that exactly and
+   * the units never change out from under the threshold.
+   */
+  applyFewShot(ni, alpha = 0.5) {
+    const idxs = this.#nodeIndex.get(ni) ?? [];
+    const names = store.skeleton?.nodeNames ?? [];
+    const nm = names[ni];
+    if (!idxs.length || !nm) return null;
+    const frames = store.frames ?? [];
+    const embs = idxs.map((r) => this.#embs[r]);
+    const pos = [], neg = [];
+    idxs.forEach((r, k) => {
+      const f = frames[this.#recs[r].fi];
+      if (!f) return;
+      const v = store.labels?.videos?.indexOf(f.video) ?? 0;
+      if (!keypointLabels.isReviewed(v, f.frameIdx, this.#recs[r].ii)) return;
+      (keypointLabels.isBad(v, f.frameIdx, this.#recs[r].ii, nm) ? pos : neg).push(k);
+    });
+    const proto = prototypeDirection(embs, pos, neg);
+    if (!proto) return null;
+    // Blend from the UNBLENDED scores, always. Re-applying (a second click, a moved alpha, new labels)
+    // would otherwise blend a blend, drifting the ranking further each time with nothing to show for it.
+    if (this.#fsBase.has(ni)) { const b = this.#fsBase.get(ni); idxs.forEach((r, k) => { this.#z[r] = b[k]; }); }
+    else this.#fsBase.set(ni, Float64Array.from(idxs.map((r) => this.#z[r])));
+    const base = idxs.map((r) => this.#z[r]);
+    const blended = blendByRank(base, Array.from(prototypeScores(embs, proto.w)), alpha);
+    // blendByRank returns [0,1]; put it back on the robust-z scale the threshold and every consumer use.
+    const z = robustZ(Array.from(blended));
+    idxs.forEach((r, k) => { this.#z[r] = z[k]; });
+    this.#fewShot.set(ni, { alpha, ...proto });
+    const vidx = new Map((store.labels?.videos ?? []).map((v, i) => [v, i]));
+    this.#frameZ = buildFrameZ(this.#recs, this.#z, store.frames, vidx);
+    this.#scoreSig = null; this.#scoreRes = null;
+    this.rev++; this.resultRev++;
+    return this.#fewShot.get(ni);
+  }
+  fewShotInfoFor(ni) { this.resultRev; return this.#fewShot.get(ni) ?? null; }
+
+  /** The locally-fitted model for a keypoint, in the shape the .bin exporter and svm.js both use. */
+  trainedModelFor(ni) { return this.#trainedNodes.get(ni) ?? null; }
 
   /** Was this keypoint embedded in the run that produced the current results? */
   coveredNode(ni) { this.resultRev; return this.#nodeIndex.has(ni); }
@@ -317,6 +375,10 @@ export class NodeEmbeddingStore {
     }
     this.#abort = false;
     this.#recs = []; this.#embs = []; this.#z = []; this.#coords = []; this.#nodeIndex = new Map(); this.#nodeStats = []; this.#frameZ = new Map(); this.#scored = false;
+    // The scoring choices describe the patches that are about to be thrown away: a model fitted on the
+    // old embeddings, and a blend over scores that no longer exist. Keeping them would make the next run
+    // report "trained SVM" for a group the kNN pass just scored, and hand out that stale model on export.
+    this.#trainedNodes.clear(); this.#fewShot.clear(); this.#fsBase.clear();
     this.rev++; this.resultRev++;
     const be = this.#be();
     this.status = "loading-model"; this.message = `Loading ${be.MODEL.name}…`;

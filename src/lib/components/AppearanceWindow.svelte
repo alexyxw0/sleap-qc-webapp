@@ -29,6 +29,13 @@
 
   const clf = classifierInfo();
   const es = $derived(appRun.store); // null for the pretrained (upload-only) route
+  const SCORE_LABEL = { knn: "unsupervised", svm: "trained SVM", fewshot: "few-shot" };
+  /** What is scoring the inspected keypoint right now — kNN unless the user chose otherwise. */
+  const scoredMode = $derived.by(() => {
+    void es?.resultRev;
+    const ni = es?.selectedNode;
+    return ni == null || !es?.scoringOf ? "knn" : es.scoringOf(ni);
+  });
   const running = $derived(appRun.running);
   const busy = $derived(appRun.anyRunning); // the two stores share one worker
   const ready = $derived(qc.checkReady(appRun.checkKey));
@@ -104,8 +111,11 @@
           note: appRun.canAdapt && !appRun.adaptLive ? "optional" : null },
       ];
     }
-    return [
-      { id: "compute", label: "Embed & score", done: appRun.computeDone, locked: false,
+    // Per keypoint gets a SECOND step: once the embeddings exist there is a real choice about how to
+    // score them, and burying it in the results panel meant the run just ended with no "what now".
+    // Whole instance has no such choice — the bundled SVM is the only scorer — so it stays one step.
+    const embed = [
+      { id: "compute", label: appRun.gran === "node" ? "Embed" : "Embed & score", done: appRun.computeDone, locked: false,
         hint: "Pick granularity and coverage, then run the DINOv2 pass over this file.",
         // A bare ✓ after the settings moved describes a run that no longer matches the controls above it.
         note: !appRun.computeDone ? null
@@ -113,9 +123,30 @@
             : noneSelected ? "selection empty"
               : (covNote ?? "ready") },
     ];
+    if (appRun.gran !== "node") return embed;
+    return [...embed, {
+      id: "score", label: "Score",
+      // Ticked as soon as scores EXIST: kNN is a real answer, not a skipped step, and a ✓ withheld
+      // until you train something would nag about a choice the default already made. The note carries
+      // which one is live, which is the part that actually varies.
+      done: appRun.nodeDone, locked: !appRun.nodeDone,
+      why: "Embed the patches first — there is nothing to score yet.",
+      hint: "Unsupervised by default. Fit an SVM on your labels, or nudge the ranking with few-shot.",
+      note: appRun.nodeDone ? SCORE_LABEL[scoredMode] : null,
+    }];
   });
   // The reason the CURRENT selection is unavailable, if it is — shown once, near the strip.
   const lockedNow = $derived(steps.find((x) => x.id === appRun.tab && x.locked)?.why ?? null);
+
+  // "The run finished" is the moment the scoring question becomes answerable, so that is when it gets
+  // asked. Only on the TRANSITION — re-opening the window on old results leaves you where you were, and
+  // clicking back to Embed to re-run does not get bounced forward again.
+  let wasDone = $state(false);
+  $effect(() => {
+    const done = appRun.gran === "node" && appRun.nodeDone;
+    if (done && !wasDone && appRun.tab === "compute" && !appRun.anyRunning) appRun.setTab("score");
+    wasDone = done;
+  });
 
   // Never strand the user on a locked pane: if the answer to an earlier step is undone, fall back to the
   // last step that is actually reachable. Suppressed while a bundle half is still loading, so an
@@ -300,6 +331,55 @@
         </section>
       {/if}
 
+      {#if appRun.tab === "score" && appRun.gran === "node"}
+        <!-- The choice the run used to end without. Each option states its own precondition rather than
+             being silently absent, so "why can't I do that" is answerable from the screen. -->
+        <section class="score">
+          <p class="s-q">How should these patches be scored?</p>
+          {#if es?.selectedNode == null}
+            <p class="dim">Pick a keypoint in the graph below first — scoring is chosen per keypoint.</p>
+          {:else}
+            {@const ni = es.selectedNode}
+            {@const t = es.trainableFor(ni)}
+            <div class="s-opts">
+              <div class="sopt" class:on={scoredMode === "knn"}>
+                <span class="so-t">Unsupervised (kNN)</span>
+                <span class="so-d">Each patch against the same keypoint elsewhere. No labels. Already applied.</span>
+              </div>
+              <div class="sopt" class:on={scoredMode === "svm"}>
+                <span class="so-t">Train an SVM on my labels</span>
+                <span class="so-d">
+                  {t.enough ? `${t.n} judged · ${t.pos} faulty / ${t.neg} clean — fit it under the graph below.`
+                    : "Needs at least one faulty and one clean judged patch of this keypoint. Proofread a few frames."}
+                </span>
+              </div>
+              <!-- Few-shot needs only the FAULTY side (it falls back to the file mean for the other), so
+                   it unlocks earlier than the SVM. Gating both on `enough` would hide the one option that
+                   still works when you have three labels. -->
+              <div class="sopt" class:on={scoredMode === "fewshot"} class:locked={!t.pos}>
+                <span class="so-t">Few-shot nudge</span>
+                <span class="so-d">
+                  {t.pos ? "Averages the patches you marked faulty and shifts the ranking toward them — works at label counts where an SVM's score would be meaningless."
+                    : "Needs at least one patch of this keypoint marked faulty. Proofread a few frames."}
+                </span>
+                <button class="so-go" disabled={!t.pos} onclick={() => es.applyFewShot(ni, 0.5)}>
+                  {scoredMode === "fewshot" ? "re-apply" : "apply"}
+                </button>
+              </div>
+            </div>
+            {#if es.fewShotInfoFor(ni)}
+              {@const fs = es.fewShotInfoFor(ni)}
+              <p class="s-note">✓ few-shot applied · prototype from <b>{fs.nPos}</b> faulty{fs.usedGlobal ? " vs the file mean" : ` / ${fs.nNeg} clean`}</p>
+            {/if}
+            <p class="s-note dim">
+              A model fitted elsewhere (<code>export_nose.py</code>) cannot score these: it was trained on
+              fixed-pixel crops and this pass crops a fraction of each instance's bbox. Load those under
+              <b>‹ start → precomputed bundles</b> instead, with their own embeddings.
+            </p>
+          {/if}
+        </section>
+      {/if}
+
       <!-- 3 — INSPECT -------------------------------------------------------------------------- -->
       <section class="results">
         {#if appRun.gran === "instance"}<EmbeddingCheck />{:else}<NodeEmbeddingCheck />{/if}
@@ -356,6 +436,26 @@
   .n-n { font-size: 0.56rem; color: var(--dim); padding: 0.02rem 0.3rem; border-radius: 999px; background: rgba(255, 255, 255, 0.06); }
   .n-arrow { color: var(--border); font-size: 0.7rem; }
   .lockmsg { margin: 0; font-size: 0.64rem; color: #f0b47a; }
+  .score { display: flex; flex-direction: column; gap: 0.45rem; }
+  .s-q { margin: 0; font-size: 0.78rem; font-weight: 600; color: var(--text); }
+  .s-opts { display: flex; flex-direction: column; gap: 0.35rem; }
+  .sopt {
+    display: grid; grid-template-columns: 1fr auto; gap: 0.15rem 0.5rem;
+    padding: 0.45rem 0.6rem; border: 1px solid var(--border); border-radius: 7px;
+  }
+  .sopt.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .sopt.locked { opacity: 0.55; }
+  .so-t { font-size: 0.72rem; color: var(--text); }
+  .sopt.on .so-t { color: var(--accent); font-weight: 600; }
+  .so-d { grid-column: 1; font-size: 0.62rem; color: var(--dim); line-height: 1.45; }
+  .so-go {
+    grid-row: 1 / span 2; align-self: center;
+    background: transparent; border: 1px solid var(--accent); border-radius: var(--r-xs);
+    color: var(--accent); font-size: 0.64rem; padding: 0.15rem 0.6rem; cursor: pointer;
+  }
+  .so-go:disabled { opacity: 0.4; border-color: var(--border); color: var(--dim); cursor: default; }
+  .s-note { margin: 0; font-size: 0.62rem; color: #6ee7a8; }
+  .s-note.dim { color: var(--dim); line-height: 1.45; }
 
   .cfg { display: flex; flex-direction: column; gap: 0.5rem; }
   .row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
