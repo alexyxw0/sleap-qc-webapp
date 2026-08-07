@@ -8,8 +8,75 @@ vi.mock("./labelsStore.svelte.js", () => ({
 }));
 
 const { appRun, fmtEta, fmtRate } = await import("./appearanceRun.svelte.js");
+const { keypointModels } = await import("./keypointModels.svelte.js");
+const { keypointLabels } = await import("./keypointLabels.svelte.js");
 const { embeddingStores } = await import("./embeddingStore.svelte.js");
 const { nodeEmbeddingStores } = await import("./nodeEmbeddingStore.svelte.js");
+
+describe("the route fork", () => {
+  beforeEach(() => { appRun.clearRoute(); appRun.setTab("compute"); appRun.close(); });
+
+  it("starts unanswered — nothing may answer question 1 on the user's behalf", () => {
+    appRun.clearRoute();
+    expect(appRun.route).toBeNull();
+    appRun.setRoute("nonsense");
+    expect(appRun.route, "an unrecognised value silently picked a route").toBeNull();
+  });
+
+  it("a deep link from the checks list IS an answer", () => {
+    appRun.clearRoute();
+    appRun.showTab("upload");
+    expect(appRun.route).toBe("bundle"); // clicking "→ Upload" chose the bundle route
+    appRun.clearRoute();
+    appRun.showTab("compute");
+    expect(appRun.route).toBe("compute");
+  });
+
+  it("the two routes are independent — going back clears no results", () => {
+    appRun.setRoute("compute");
+    appRun.clearRoute();
+    expect(appRun.route).toBeNull();
+    appRun.setRoute("bundle");
+    // answering the fork lands on that route's first step, so route and tab can never disagree
+    expect(appRun.tab).toBe("upload");
+    expect(appRun.checkKey).toBe("noseAppearance"); // still resolves; nothing was torn down
+  });
+});
+
+describe("step completion is a store fact, never a click", () => {
+  beforeEach(() => { keypointLabels.clear(); for (const sl of keypointModels.slots) sl.store.reset(); });
+
+  it("nothing is complete before anything is loaded", () => {
+    expect(appRun.bundleDone).toBe(false);
+    expect(appRun.pairLoaded).toBe(false);
+    expect(appRun.adaptLive).toBe(false);
+    expect(appRun.canAdapt).toBe(false);
+  });
+
+  it("few-shot needs BOTH a loaded pair and labels — neither alone unlocks it", () => {
+    keypointLabels.markAt("0:1", 0, "nose", true);
+    expect(keypointLabels.hasLabels).toBe(true);
+    expect(appRun.pairLoaded, "no bundle loaded").toBe(false);
+    expect(appRun.canAdapt, "labels alone unlocked adaptation").toBe(false);
+    keypointLabels.clear();
+  });
+
+  it("adaptLive is not merely available — a slider at zero is not an adaptation", () => {
+    // fewShotInfo is what the store sets only when a prototype was actually blended in
+    expect(appRun.adaptLive).toBe(false);
+  });
+
+  it("a new file clears the few-shot state, so a fresh file cannot show an adapted badge", () => {
+    const st = keypointModels.slots[0]?.store;
+    if (!st) return;
+    st.fewShot = 0.4;
+    st.fewShotInfo = { nPos: 3, nNeg: 5, usedGlobal: false };
+    st.reset();
+    expect(st.fewShot).toBe(0);
+    expect(st.fewShotInfo).toBeNull();
+    expect(appRun.adaptLive).toBe(false);
+  });
+});
 
 describe("appearance run selection", () => {
   beforeEach(() => { appRun.setTab("compute"); appRun.setGran("instance"); appRun.close(); });

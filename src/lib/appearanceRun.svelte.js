@@ -10,11 +10,21 @@
 // is selected or what is running.
 import { embeddingStores } from "./embeddingStore.svelte.js";
 import { nodeEmbeddingStores } from "./nodeEmbeddingStore.svelte.js";
+import { keypointModels } from "./keypointModels.svelte.js";
+import { keypointLabels } from "./keypointLabels.svelte.js";
 
 const RUNNING = new Set(["loading-model", "running", "scoring"]);
 
 class AppearanceRun {
   open = $state(false); // the configuration/run window
+
+  // THE FORK. null = unanswered, which is the only value that renders the question — so no code path can
+  // auto-answer it on the user's behalf. The two routes are genuinely INDEPENDENT: bringing bundles needs
+  // no file and no compute, and computing needs no bundle. Neither is ever gated on the other; the only
+  // real prerequisites are inside a route, and those are the ones the steps lock on.
+  route = $state(null); // null | "bundle" | "compute"
+  // "asked and declined" is not derivable from the stores, so few-shot's answer needs its own field.
+  adaptChoice = $state(null); // null | "as-is" | "adapt"
   // Uploading a precomputed bundle is not a run — nothing launches, nothing has a rate, and it arms a
   // different check. Burying it under gran=node + model=pretrained made it look like a third way to
   // compute. It is a SUBTAB: "compute something here" vs "bring something you computed elsewhere".
@@ -53,13 +63,46 @@ class AppearanceRun {
 
   setGran(g) { this.gran = g === "node" ? "node" : "instance"; }
   static TABS = ["compute", "upload", "fewshot"];
-  setTab(t) { this.tab = AppearanceRun.TABS.includes(t) ? t : "compute"; }
+  setTab(t) {
+    this.tab = AppearanceRun.TABS.includes(t) ? t : "compute";
+    // A deep link from the checks list is an answer to the fork: someone clicking "Run DINO → Upload"
+    // has chosen the bundle route by clicking. Keeps every existing showTab() call site working.
+    this.route = this.tab === "compute" ? "compute" : "bundle";
+  }
+  /** Answering the fork also lands you on that route's FIRST step: `tab` doubles as "which node is
+   *  expanded", so leaving it behind would let route and tab describe different routes — and `store` /
+   *  `checkKey` key off tab, so that contradiction reaches the QC layer. */
+  setRoute(r) {
+    if (r !== "bundle" && r !== "compute") { this.route = null; return; }
+    this.route = r;
+    this.tab = r === "bundle" ? "upload" : "compute";
+  }
+  /** Back to the fork. Clears nothing — the routes are independent and results are never discarded. */
+  clearRoute() { this.route = null; }
   /** Jump straight to a pane — the tab's locked-check hints link here. */
   showTab(t) { this.setTab(t); this.open = true; }
 
   show() { this.open = true; }
   close() { this.open = false; }
   toggle() { this.open = !this.open; }
+
+  // ---- step completion. Every one of these is a STORE fact, never a click the user made: a ✓ that can
+  // tick itself (e.g. "a file is open") is exactly the false signal a gated flow exists to prevent.
+  get instanceDone() { return embeddingStores.dino.hasResults; }
+  get nodeDone() { return nodeEmbeddingStores.dino.hasResults; }
+  get computeDone() { return this.gran === "node" ? this.nodeDone : this.instanceDone; }
+  /** Both halves of at least one keypoint slot are in — the real precondition for scoring OR adapting. */
+  get pairLoaded() {
+    return keypointModels.slots.some((s) => s.store.info?.hasEmb && s.store.info?.hasModel);
+  }
+  get bundleDone() { return keypointModels.hasResults; }
+  get hasLabels() { return keypointLabels.hasLabels; }
+  /** Few-shot is genuinely two-part: a loaded pair AND labels. Blocking on either alone would be wrong. */
+  get canAdapt() { return this.pairLoaded && this.hasLabels; }
+  /** In effect, not merely available — a slider at 0 is not an adaptation. */
+  get adaptLive() {
+    return keypointModels.slots.some((s) => s.store.hasResults && s.store.fewShotInfo != null);
+  }
 
   run() { if (!this.anyRunning) this.store?.run(); }
   abort() { this.activeStore?.abort(); }

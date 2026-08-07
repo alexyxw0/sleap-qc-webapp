@@ -594,7 +594,10 @@
         <div class="ovl-inline"><ManualCheckCompare /></div>
       {/if}
     {/if}
-    {#if isAppearMode && store.ready}
+    <!-- No `store.ready`: the bundle route needs no file at all (uploaded embeddings carry their own
+         video/frame/inst), so gating the only way IN on a decodable video locked those users out of the
+         window entirely. The compute card inside the window carries that requirement, where it is true. -->
+    {#if isAppearMode}
       <!-- ONE affordance. The tab is a checklist; configuring and launching an embedding run is a job,
            and a job belongs in its own window, not stacked down a 312 px rail. While a run is going the
            button becomes the progress readout, so closing the window never loses sight of it. -->
@@ -609,8 +612,8 @@
         </div>
       {:else}
         <button class="run-dino" onclick={() => appRun.show()}
-                title="Configure and run the DINOv2 embedding pass — granularity, coverage, and the live progress all live in the window">
-          ⧉ Run DINO…
+                title="Choose a route — bring precomputed bundles, or compute embeddings from this file — then work down the numbered steps">
+          ⧉ Appearance setup…
         </button>
       {/if}
     {/if}

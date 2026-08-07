@@ -103,6 +103,10 @@ export class NoseEmbeddingStore {
     this.#embs = null;
     this.#clf = null;
     this.#n = 0;
+    // The few-shot state is per-FILE too: leaving it set made a brand-new file show "adapting · nose
+    // α=0.35" against a slot with nothing loaded in it.
+    this.fewShot = 0;
+    this.fewShotInfo = null;
     this.status = "idle";
     this.message = "";
     this.resultRev++;

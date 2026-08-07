@@ -115,7 +115,11 @@ class EmbeddingStore {
   get refCount() { this.rev; return this.#refCount; }
   get records() { this.rev; return this.#recs; }
   get results() { this.rev; return this.#res; }
-  get hasResults() { this.resultRev; return !!this.#res; }
+  /** Results for the CURRENTLY LOADED file. Neither compute store is reset when a file changes (their
+   *  caches drop lazily at the next run), so without the identity check `hasResults` stayed true from the
+   *  previous file: checkReady armed the check, and frame keys are "videoIdx:frameIdx" — a key every file
+   *  has — so file A's scores painted file B's frames. */
+  get hasResults() { this.resultRev; return !!this.#res && this.#cacheLabels === store.labels; }
   get flaggedCount() { this.rev; return this.#res ? this.#res.z.reduce((a, z) => a + (z >= this.threshold), 0) : 0; }
   /** Max embedding z for a frame, by "videoIdx:frameIdx" key (the DINO QC check reads this), or null. */
   frameZByKey(key) { this.resultRev; return this.#frameZ.get(key) ?? null; }
@@ -281,6 +285,10 @@ class EmbeddingStore {
     if (this.#abort) {
       // Drop reservations whose batch never ran; the filled records remain valid partial output.
       for (let r = this.#recs.length - 1; r >= 0; r--) if (!this.#embs[r]) { this.#recs.splice(r, 1); this.#embs.splice(r, 1); usedKeys.splice(r, 1); }
+      // Persist first: a partially-embedded set is exactly as reusable as a complete one, and throwing
+      // away a long DINO pass because someone pressed Stop is the most expensive bug on this path.
+      // (nodeEmbeddingStore already does this; this route was still discarding it.)
+      if (fresh.length) saveCache(fileId, fresh);
       this.status = "aborted"; this.message = "Stopped."; this.rev++; return;
     }
 

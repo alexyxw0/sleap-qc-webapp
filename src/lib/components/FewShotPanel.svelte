@@ -45,6 +45,12 @@
       <b>Adapt</b> is the blend weight: 0 leaves the transferred model untouched, 1 leans entirely on your
       prototype. Scores update the moment you move it — no recompute, the embeddings are already here.
     </p>
+    <p class="note">
+      This does <b>not</b> retrain anything, and nothing in this app can: it averages the patches you
+      marked faulty and nudges the ranking toward them. For a genuinely retrained model, export your
+      labels with <b>⤓ Export (.csv)</b>, run the offline trainer (<code>dino_probe/export_nose.py</code>),
+      and load the result under step&nbsp;1.
+    </p>
   </Explain>
 
   <!-- 1 — the labels ------------------------------------------------------------------------- -->
