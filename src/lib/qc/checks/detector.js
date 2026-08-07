@@ -16,6 +16,7 @@ import { NearestNeighborScorer } from "./features/reference.js";
 import { analyzerFromSkeleton } from "./features/skeleton.js";
 import { InstanceCountChecker, checkNegativeFrame, detectDuplicates } from "./frameLevel.js";
 import { ChiralityModel, resolveChiralityInputs, firstWrongPairNode } from "./features/chirality.js";
+import { checkFrameBounds, videoBounds } from "./features/outOfFrame.js";
 import { computePoseSplit } from "./features/poseSplit.js";
 import { resolveChains, computeChainOrdering, linearizeChains } from "./features/ordering.js";
 
@@ -48,6 +49,11 @@ export class ZScoreDetector {
     return 1 / (1 + Math.exp(-(maxZ - this.threshold))); // sigmoid
   }
 }
+
+/** Replace the values a fitted model cannot consume. The detectors were FIT on this exact substitution,
+ *  so scoring must apply the identical one or a re-score drifts from the fit. */
+export const cleanFeatureRow = (row) =>
+  row.map((f) => (Number.isNaN(f) ? 0 : f === Infinity ? 10 : f === -Infinity ? -10 : f));
 
 export class LabelQCDetector {
   constructor(config = makeQCConfig()) {
@@ -110,7 +116,7 @@ export class LabelQCDetector {
       this.extractFeatures(p, !fitMask || fitMask[i] ? looNN[fitIdxByAll.get(i)] : null),
     ));
     this.cleanMatrix = this.rawMatrix.map((row) =>
-      row.map((f) => (Number.isNaN(f) ? 0 : f === Infinity ? 10 : f === -Infinity ? -10 : f)),
+      cleanFeatureRow(row),
     );
     this.fitRows = [...fitIdxByAll.keys()];
     this._timings = T;
@@ -145,9 +151,7 @@ export class LabelQCDetector {
   /** Anomaly score (0..1) + raw feature contributions for a pose. */
   scoreInstance(pose) {
     const features = this.extractFeatures(pose);
-    const clean = features.map((f) =>
-      Number.isNaN(f) ? 0 : f === Infinity ? 10 : f === -Infinity ? -10 : f,
-    );
+    const clean = cleanFeatureRow(features);
     const score = this.detector.scoreOne(clean);
     const contributions = {};
     this.featureNames.forEach((n, i) => (contributions[n] = features[i] ?? 0));
@@ -263,7 +267,12 @@ export function fitAndScoreLabels(labels, { config = makeQCConfig(), getInstance
       instanceScores.set(key, r.score);
       contributions.set(key, r.contributions);
     });
-    frameResults.set(`${f.videoIdx}:${f.frameIdx}`, det.checkFrame(f.poses, f.vid, f.isNegative, f.conf));
+    const fq = det.checkFrame(f.poses, f.vid, f.isNegative, f.conf);
+    // Hard rule, computed here rather than inside checkFrame because it needs the video's dimensions,
+    // which the detector never receives. No bounds (poses-only file) -> nothing reported.
+    const b = f.bounds;
+    frameResults.set(`${f.videoIdx}:${f.frameIdx}`,
+      { ...fq, ...checkFrameBounds(f.poses, b?.w, b?.h, det.config?.outOfFrameMargin ?? 0) });
   }
   return {
     instanceScores, contributions,
@@ -313,7 +322,9 @@ export function buildContext(labels, config = makeQCConfig()) {
     for (const lf of labels.labeledFrames.filter((f) => f.video === video)) {
       const poses = lf.instances.map(toPose);
       const conf = lf.instances.map(instConf);
-      frames.push({ videoIdx, frameIdx: lf.frameIdx, isNegative: lf.isNegative ?? false, poses, conf, vid });
+      // bounds ride along so the out-of-frame check can test coordinates against the image rectangle
+      frames.push({ videoIdx, frameIdx: lf.frameIdx, isNegative: lf.isNegative ?? false, poses, conf, vid,
+                    bounds: videoBounds(video) });
       allPoses.push(...poses);
       frameCounts.push(poses.length);
       videoIds.push(vid);
@@ -421,7 +432,12 @@ export function computeFrameUnit(ctx) {
   det.countChecker = new InstanceCountChecker(true).fit(ctx.frameCounts, ctx.videoIds);
   const frameResults = new Map();
   for (const f of ctx.frames) {
-    frameResults.set(`${f.videoIdx}:${f.frameIdx}`, det.checkFrame(f.poses, f.vid, f.isNegative, f.conf));
+    const fq = det.checkFrame(f.poses, f.vid, f.isNegative, f.conf);
+    // Hard rule, computed here rather than inside checkFrame because it needs the video's dimensions,
+    // which the detector never receives. No bounds (poses-only file) -> nothing reported.
+    const b = f.bounds;
+    frameResults.set(`${f.videoIdx}:${f.frameIdx}`,
+      { ...fq, ...checkFrameBounds(f.poses, b?.w, b?.h, det.config?.outOfFrameMargin ?? 0) });
   }
   return { frameResults };
 }

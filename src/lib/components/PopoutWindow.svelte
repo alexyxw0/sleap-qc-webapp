@@ -7,7 +7,9 @@
 <script>
   // A non-blocking, draggable floating window (no backdrop) so the main app stays interactive —
   // e.g. arrow-key frame traversal keeps working while it's open. Drag by the title bar.
-  let { title = "", onclose, width = "420px", children } = $props();
+  // `fill`: the body becomes a flex column that does NOT scroll, so a child can claim the leftover
+  // height (the proofreading frame). Default stays "size to content, scroll if tall".
+  let { title = "", onclose, width = "420px", height = null, fill = false, children } = $props();
 
   let el = $state.raw(null);
   const saved = POS.get(title);
@@ -46,6 +48,7 @@
   class="popwin"
   bind:this={el}
   style:width={width}
+  style:height={height ?? undefined}
   style:left={x == null ? "50%" : `${x}px`}
   style:top={y == null ? "10%" : `${y}px`}
   style:transform={x == null ? "translateX(-50%)" : "none"}
@@ -57,7 +60,7 @@
     <span class="ttl">{title}</span>
     <button class="x" onclick={onclose} title="Close">✕</button>
   </div>
-  <div class="body">{@render children?.()}</div>
+  <div class="body" class:fill>{@render children?.()}</div>
 </div>
 
 <style>
@@ -91,4 +94,12 @@
   .x { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 0.8rem; padding: 0 0.2rem; flex: none; }
   .x:hover { color: var(--accent); }
   .body { padding: 0.85rem 1rem; overflow: auto; }
+  .body.fill {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 0.6rem 0.7rem;
+  }
 </style>

@@ -3,10 +3,27 @@
   import { store } from "../labelsStore.svelte.js";
   import DetectorOverlap from "./DetectorOverlap.svelte";
   import ManualCheckCompare from "./ManualCheckCompare.svelte";
-  import EmbeddingCheck from "./EmbeddingCheck.svelte";
-  import NodeEmbeddingCheck from "./NodeEmbeddingCheck.svelte";
-  import NoseCheck from "./NoseCheck.svelte";
-  import { embeddingStores } from "../embeddingStore.svelte.js";
+  import { appRun } from "../appearanceRun.svelte.js";
+  import RunProgress from "./RunProgress.svelte";
+
+  // ONE component, three tabs (geometry / appearance / analysis). The split is by COST and by WHEN you
+  // read it, not by taste: "geometry" checks score straight from
+  // coordinates the moment QC runs, while "appearance" needs embeddings computed (or a bundle uploaded)
+  // before it can say anything. Mixing them made the checks list look uniformly cheap when half of it
+  // wasn't. Shared snippets (checkRow, thresholds, the run header) stay in one place.
+  //   geometry   — pick detectors + thresholds, run them (coordinate-only, instant)
+  //   appearance  — the detectors that need a compute pass or an uploaded bundle
+  //   analysis    — what the run FOUND: overlap between detectors, agreement with a human review, export.
+  //                 Separate because it's read after the fact, not while configuring.
+  let { mode = "geometry" } = $props();
+  const isGeom = $derived(mode === "geometry");
+  const isAppearMode = $derived(mode === "appearance");
+  const isAnalysis = $derived(mode === "analysis");
+  const groupsFor = $derived(
+    isGeom ? GROUPS.filter((g) => g.id !== "appearance")
+      : isAppearMode ? GROUPS.filter((g) => g.id === "appearance")
+        : [],   // analysis shows no detector list — it reports on the run
+  );
 
   // Each detection technique the user can include in the flagged set. Pick the ones you want
   // BEFORE running QC — only selected techniques are computed, and each result is memoized so
@@ -76,40 +93,48 @@
       info: "A frame marked negative (no animal) should carry no instances — flags any that still do. Boolean. Off by default.",
     },
     {
+      key: "outOfFrame",
+      label: "Out of frame",
+      hint: "A visible keypoint whose coordinate lies outside the image. A hard error — no threshold.",
+      info: "Flags a frame containing a keypoint with real coordinates outside the image rectangle (x<0, y<0, or beyond width/height) — a label that cannot be correct, so it flags outright. NOT the same as a NaN coordinate: in SLEAP NaN means the node was never annotated, which is normal (a partly occluded animal has several) — that is covered by Sparse instance and the visibility_rate feature. Needs the video dimensions; a poses-only file reports nothing. On by default.",
+    },
+    {
       key: "duplicates",
       label: "Duplicates",
       hint: "Two instances overlapping / duplicated.",
       info: "Flags a frame with two overlapping instances (bbox IoU > 0.5, or shared nodes within ~10 px) — the same animal labeled twice. On by default.",
     },
     {
-      key: "classical",
-      label: "Appearance · Classical",
-      hint: "Instance crop that looks unlike the rest — occlusion / mis-placement geometry can't see. Needs embeddings.",
-      info: "Image (not geometry) check: flags instance crops whose fast pixel-feature embedding is unlike the file — occluded / obstructed / mis-placed. Run Classical (Whole-instance) in the Appearance panel; threshold is its z-slider. Off by default.",
-    },
-    {
       key: "dino",
-      label: "Appearance · DINO",
+      label: "Appearance · whole instance",
       hint: "Instance crop that looks unlike the rest by the DINOv2 ViT embedding. Needs embeddings.",
-      info: "Image check using the DINOv2 ViT semantic embedding — strongest on subtle differences, slower. Run DINO (Whole-instance) in the Appearance panel; threshold is its z-slider. Off by default.",
-    },
-    {
-      key: "nodeClassical",
-      label: "Per-node · Classical",
-      hint: "A single keypoint whose patch is unlike that keypoint elsewhere (pixel features). Needs embeddings.",
-      info: "Per-keypoint image check: flags a keypoint whose patch is unlike that same keypoint elsewhere (nose vs noses) — catches a single mis-placed / occluded node and points at it. Run Per-keypoint · Classical in the Appearance panel. Off by default.",
+      info: "Image check using the DINOv2 ViT semantic embedding, scored by the bundled trained RBF-SVM (unsupervised kNN was ~chance on whole-animal crops, so it is offered only per keypoint). Run DINO → Whole instance; the threshold is its decision slider. Off by default.",
     },
     {
       key: "nodeDino",
       label: "Per-node · DINO",
-      hint: "A single keypoint whose patch is unlike that keypoint elsewhere (DINOv2 ViT — slow). Needs embeddings.",
-      info: "Per-keypoint check using the DINOv2 ViT embedding — most sensitive but slow (a pass per keypoint, minutes at full coverage). Run Per-keypoint · DINO in the Appearance panel. Off by default.",
+      hint: "Unsupervised kNN: a single keypoint whose patch is unlike that keypoint elsewhere (DINOv2 ViT — slow). Needs embeddings.",
+      info: "Per-keypoint check using the DINOv2 ViT embedding — most sensitive but slow (a pass per keypoint, minutes at full coverage). Run DINO → Per keypoint. Off by default.",
     },
     {
       key: "noseAppearance",
-      label: "Nose keypoint (trained)",
-      hint: "A mislabeled NOSE, from the trained DINO detector (per-project). Upload precomputed embeddings to enable.",
-      info: "The validated per-keypoint appearance detector (CV ROC ~0.92): scores each nose patch with a calibrated RBF-SVM trained on proofread labels and flags likely-mislabeled noses. Uses precomputed DINO embeddings (in-browser DINO is too slow) — upload them in the Nose panel below. Off by default.",
+      label: "Keypoint (trained)",
+      hint: "A mislabeled keypoint, from the trained DINO detector (per-project). Upload precomputed embeddings to enable.",
+      repro: {
+        what: "DINOv2 patch embedding + calibrated RBF-SVM, trained per project on proofread labels.",
+        steps: [
+          "Crop a square patch around the target keypoint in every instance (side = node_min px, default 48).",
+          "Embed each patch with DINOv2 ViT-S/14 (facebook/dinov2-small) → a 384-d CLS vector.",
+          "Label each patch from *.faulty_keypoints.csv: positive iff THIS node is listed faulty for that instance.",
+          "Standardize, then fit an RBF-SVM (class-balanced) with Platt calibration; score out-of-fold, 5-fold stratified.",
+          "Export the model and the embeddings SEPARATELY so a model can score another dataset (transfer).",
+        ],
+        cmd: "conda run -n dino python dino_probe/export_nose.py \\\n  --dataset <your_dataset> --node-min 48 --split",
+        out: "public/nose_models/nose_model_<ds>__p<N>.bin   (model — served in the dropdown)\nprecomputed/nose_emb_<ds>__p<N>.bin        (embeddings — upload here)\npublic/nose_models/index.json              (manifest, rewritten each run)",
+        fmt: "[uint32 LE hlen][utf8 JSON header, 4B-padded][f32 payload]\nmodel payload : mean | scale | dual | support_vectors\nemb   payload : n × dim embeddings\nheaders carry dataset, dim, node (target keypoint), cv_roc, cv_pr.",
+        note: "The target keypoint comes from the bundle header, not this app — export a bundle for any node with enough positives. Nose is simply the only node with enough so far (CV ROC ≈ 0.92–0.95); sparse nodes (<15 positives) are unreliable.",
+      },
+      info: "The validated per-keypoint appearance detector (CV ROC ~0.92 on nose, the only node with enough positives so far): scores each target-keypoint patch with a calibrated RBF-SVM trained on proofread labels. The target node comes from the bundle. Uses precomputed DINO embeddings (in-browser DINO is too slow) — upload them under Run DINO → Upload. Off by default.",
     },
   ];
 
@@ -123,60 +148,33 @@
   const GROUPS = [
     { id: "geometric", label: "Geometric", hint: "Structural checks: L/R flip + chain ordering (scale-invariant hard rules) and split-pose / chimera.", keys: ["chirality", "ordering", "poseSplit"] },
     { id: "statistical", label: "Statistical", hint: "Outlier detectors that score each instance against the file's distribution (shared feature vector + baseline control). Only GMM is non-deterministic (EM fit); the z-score is deterministic.", keys: ["anomaly", "gmm"] },
-    { id: "frame", label: "Frame-level", hint: "Whole-frame consistency: count, sparsity, keypoint/instance confidence, negative frames, duplicates.", keys: ["count", "sparse", "confidence", "instConfidence", "negative", "duplicates"] },
-    { id: "appearance", label: "Appearance", hint: "Image-embedding outliers geometry can't see — whole-instance or per-keypoint, Classical or DINO. Precompute a backend in the Appearance panel below to enable its check.", keys: ["classical", "dino", "nodeClassical", "nodeDino", "noseAppearance"] },
+    { id: "frame", label: "Frame-level", hint: "Whole-frame consistency: count, sparsity, keypoint/instance confidence, negative frames, duplicates.", keys: ["count", "sparse", "confidence", "instConfidence", "negative", "outOfFrame", "duplicates"] },
+    { id: "appearance", label: "Appearance", hint: "DINOv2-embedding outliers geometry can't see — whole-instance or per-keypoint. Run DINO to compute one, or upload a precomputed bundle, to enable its check.", keys: ["dino", "nodeDino", "noseAppearance"] },
   ];
   // Each appearance check can only run once ITS backend's embeddings are precomputed (Appearance-outliers panel).
   const APPEARANCE_KEYS = GROUPS.find((g) => g.id === "appearance").keys;
   const isAppearance = (key) => APPEARANCE_KEYS.includes(key);
   // Which mode + backend (in the single Appearance panel) unlocks each check (drives the "locked" hint).
   const APPEARANCE_SRC = {
-    classical: { backend: "Classical", mode: "Whole instance" },
-    dino: { backend: "DINO", mode: "Whole instance" },
-    nodeClassical: { backend: "Classical", mode: "Per keypoint" },
-    nodeDino: { backend: "DINO", mode: "Per keypoint" },
-    noseAppearance: { backend: "upload", mode: "precomputed embeddings", upload: true },
+    dino: { mode: "Whole instance", gran: "instance" },
+    nodeDino: { mode: "Per keypoint", gran: "node" },
+    noseAppearance: { mode: "Upload", upload: true },
   };
   const appLocked = $derived(Object.fromEntries(APPEARANCE_KEYS.map((k) => [k, !qc.checkReady(k)])));
 
-  let groupOpen = $state({ geometric: false, statistical: false, frame: false }); // per-group collapse (compact by default; each header shows "N on")
+  // Groups start EXPANDED: the tab already scopes what you're looking at, so collapsing on top of that
+  // just hides the tab's own content behind a second click. The genuinely optional detail below
+  // (per-check ⓘ, the feature vector, run timing, overlap, manual-check) stays collapsed — that's the
+  // "more information" layer, not the primary content.
+  let groupOpen = $state({ geometric: true, statistical: true, frame: true, appearance: true });
   let infoOpen = $state({}); // per-check key -> show the long-form description
   let featOpen = $state(false); // read-only "feature vector" panel under the GMM check
   let dragFeature = $state(null); // feature name currently being dragged out to the custom drop zone
   let dropHot = $state(false); // the custom drop zone is hovered during a drag
   let timingOpen = $state(false); // expand the per-step run-timing breakdown (auto-open while running)
-  let overlapOpen = $state(false); // the detector-overlap viz overlay (chord / upset / euler prototypes)
-  let manualOpen = $state(false); // the manual-check CSV comparison panel
-  let appOpen = $state(false); // the Appearance-outliers panel (holds both granularities)
-  let appMode = $state("instance"); // "instance" (whole-instance crops) | "node" (per-keypoint patches)
+  let overlapOpen = $state(true); // the detector-overlap viz overlay (chord / upset / euler prototypes)
+  let manualOpen = $state(true); // the manual-check CSV comparison panel
 
-  // Consolidated Appearance check: ONE check with three binary MODES that route to the underlying per-variant
-  // store (classical / dino / nodeClassical / nodeDino / noseAppearance). Only one variant is ever enabled.
-  let appModes = $state({ gran: "instance", backend: "dino", model: "live" }); // model: "live" (kNN) | "pretrained"
-  function resolveAppKey(m) {
-    if (m.gran === "instance") return m.backend === "classical" ? "classical" : "dino";
-    return m.backend === "classical" ? "nodeClassical" : m.model === "pretrained" ? "noseAppearance" : "nodeDino";
-  }
-  const appKey = $derived(resolveAppKey(appModes));
-  const appOn = $derived(qc.checks[appKey] === true);
-  function syncAppMethod() {
-    // whole-instance DINO is a single store with a knn/trained switch — keep it aligned with the Model toggle
-    if (appModes.gran === "instance" && appModes.backend === "dino")
-      embeddingStores.dino.setMethod(appModes.model === "pretrained" ? "trained" : "knn");
-  }
-  function soloAppearance(on) {
-    qc.setChecks(APPEARANCE_KEYS.filter((k) => k !== appKey), false); // clear the other variants
-    qc.setChecks([appKey], on); // setChecks gates on #canEnable (ready), so a not-precomputed variant stays off
-    syncAppMethod();
-  }
-  function setAppMode(dim, val) {
-    const wasOn = appOn; // capture before mutating (appKey/appOn re-derive to the NEW variant after)
-    appModes[dim] = val;
-    if (appModes.backend !== "dino") appModes.model = "live"; // pretrained models are DINO-only
-    appMode = appModes.gran; // keep the Appearance-outliers panel granularity in sync
-    if (wasOn) soloAppearance(true); // carry the "on" state to the newly-resolved variant
-    else syncAppMethod();
-  }
   let featTimeOpen = $state(false); // expand the feature-vector step into its per-metric breakdown
 
   // a check is hidden when it can't apply (confidence needs predicted instances)
@@ -187,7 +185,7 @@
 {#if store.labels}
   <section class="side-section">
     <div class="sec-head">
-      <span class="side-h">Detection checks</span>
+      <span class="side-h">{isGeom ? "Detection checks" : isAppearMode ? "Appearance" : "Analysis"}</span>
       {#if qc.hasResults}
         <span class="sum">{qc.flaggedFrameCount} flagged</span>
       {:else if qc.pendingCount > 0}
@@ -196,7 +194,7 @@
     </div>
 
     <!-- Live run progress (during a run) → per-step timing breakdown (after) -->
-    {#if qc.runProgress}
+    {#if isGeom && qc.runProgress}
       {@const p = qc.runProgress}
       {@const running = qc.status === "running"}
       {@const totalMs = p.steps.reduce((s, x) => s + x.ms, 0)}
@@ -272,18 +270,42 @@
                 disabled={isAppearance(c.key) && appLocked[c.key]}
                 onchange={() => qc.toggleCheck(c.key)}
                 oncontextmenu={(e) => { e.preventDefault(); qc.soloChecks([c.key]); }}
-                title={isAppearance(c.key) && appLocked[c.key] ? (APPEARANCE_SRC[c.key].upload ? "Upload the precomputed nose embeddings (Nose panel below) to enable" : `Precompute first: Appearance panel below → ${APPEARANCE_SRC[c.key].mode} → ${APPEARANCE_SRC[c.key].backend}`) : "Right-click: solo (run only this check)"}
+                title={isAppearance(c.key) && appLocked[c.key] ? (APPEARANCE_SRC[c.key].upload ? "Run DINO → Upload, then load this keypoint's bundle" : `Precompute first: Run DINO → ${APPEARANCE_SRC[c.key].mode}`) : "Right-click: solo (run only this check)"}
               />
             </label>
           </div>
           {#if infoOpen[c.key]}
             <p class="info">{c.info}</p>
+            {#if c.repro}
+              <!-- Reproduction recipe for the detectors whose data is PRECOMPUTED offline: without this
+                   a user with no cached bundle has no way to know how to build one. -->
+              <div class="repro">
+                <p class="rp-what">{c.repro.what}</p>
+                <p class="rp-h">Method</p>
+                <ol class="rp-steps">
+                  {#each c.repro.steps as st, i (i)}<li>{st}</li>{/each}
+                </ol>
+                <p class="rp-h">Generate</p>
+                <pre class="rp-code">{c.repro.cmd}</pre>
+                <p class="rp-h">Writes</p>
+                <pre class="rp-code">{c.repro.out}</pre>
+                <p class="rp-h">Bundle format</p>
+                <pre class="rp-code">{c.repro.fmt}</pre>
+                <p class="rp-note">{c.repro.note}</p>
+              </div>
+            {/if}
           {/if}
           {#if isAppearance(c.key) && appLocked[c.key]}
             {#if APPEARANCE_SRC[c.key].upload}
-              <p class="dino-lock">↓ In the <b>Nose (trained)</b> panel below, upload the precomputed nose embeddings to activate this check.</p>
+              <p class="dino-lock">
+                <button type="button" class="lock-go" onclick={() => appRun.showTab("upload")}>Run DINO → Upload</button>
+                — load this keypoint's embeddings + model.
+              </p>
             {:else}
-              <p class="dino-lock">↓ In <b>Appearance outliers</b> below, run <b>{APPEARANCE_SRC[c.key].backend}</b> ({APPEARANCE_SRC[c.key].mode}) to activate this check.</p>
+              <p class="dino-lock">
+                <button type="button" class="lock-go" onclick={() => { appRun.setGran(APPEARANCE_SRC[c.key].gran); appRun.showTab("compute"); }}>Run DINO → {APPEARANCE_SRC[c.key].mode}</button>
+                — activates once it has results.
+              </p>
             {/if}
           {/if}
           {#if c.key === "anomaly" && qc.checks.anomaly}
@@ -446,10 +468,11 @@
         </li>
     {/snippet}
 
-    {#each GROUPS as g (g.id)}
+    {#each groupsFor as g (g.id)}
       {@const visible = visibleInGroup(g)}
       {@const visKeys = visible.map((c) => c.key)}
-      {@const onCount = visKeys.filter((k) => qc.checks[k]).length}
+      {@const extraKeys = g.extra ?? []}
+      {@const onCount = [...visKeys, ...extraKeys].filter((k) => qc.checks[k]).length}
       <!-- "all on" ignores checks that CAN'T be enabled (a locked appearance backend): a locked-off
            row would pin allOn false and turn the master into a one-way switch — able to arm the
            ready check but never able to toggle the group back off. -->
@@ -466,11 +489,11 @@
             <input
               type="checkbox"
               class="grp-check"
-              checked={g.id === "appearance" ? appOn : allOn}
-              indeterminate={g.id === "appearance" ? false : onCount > 0 && !allOn}
-              disabled={g.id === "appearance" ? !qc.checkReady(appKey) : !enableable.length}
-              onchange={() => (g.id === "appearance" ? soloAppearance(!appOn) : qc.setChecks(visKeys, !allOn))}
-              oncontextmenu={(e) => { e.preventDefault(); g.id === "appearance" ? soloAppearance(true) : qc.soloChecks(visKeys); }}
+              checked={allOn}
+              indeterminate={onCount > 0 && !allOn}
+              disabled={!enableable.length}
+              onchange={() => qc.setChecks(visKeys, !allOn)}
+              oncontextmenu={(e) => { e.preventDefault(); qc.soloChecks(visKeys); }}
               title="{allOn ? 'Disable' : 'Enable'} all {g.label.toLowerCase()} checks · right-click: solo this group"
               aria-label="Toggle all {g.label} checks"
             />
@@ -485,47 +508,12 @@
                 </div>
               </div>
             {/if}
-            {#if g.id === "appearance"}
-              {@const ready = qc.checkReady(appKey)}
-              <div class="app-modes">
-                <div class="app-seg">
-                  <span class="seg-lbl">Granularity</span>
-                  <div class="seg">
-                    <button type="button" class:on={appModes.gran === "instance"} onclick={() => setAppMode("gran", "instance")}>Whole instance</button>
-                    <button type="button" class:on={appModes.gran === "node"} onclick={() => setAppMode("gran", "node")}>Per keypoint</button>
-                  </div>
-                </div>
-                <div class="app-seg">
-                  <span class="seg-lbl">Backend</span>
-                  <div class="seg">
-                    <button type="button" class:on={appModes.backend === "classical"} onclick={() => setAppMode("backend", "classical")}>Classical</button>
-                    <button type="button" class:on={appModes.backend === "dino"} onclick={() => setAppMode("backend", "dino")}>DINO</button>
-                  </div>
-                </div>
-                <div class="app-seg">
-                  <span class="seg-lbl">Model</span>
-                  <div class="seg">
-                    <button type="button" class:on={appModes.model === "live"} onclick={() => setAppMode("model", "live")}>Live · kNN</button>
-                    <button type="button" class:on={appModes.model === "pretrained"} disabled={appModes.backend !== "dino"} onclick={() => setAppMode("model", "pretrained")} title={appModes.backend !== "dino" ? "Pretrained models are DINO-only" : "Trained RBF-SVM"}>Pretrained</button>
-                  </div>
-                </div>
-                <p class="app-status">
-                  {#if ready}
-                    <span class="app-ok">✓ ready · {qc.checkCount(appKey)} flagged{appOn ? "" : " · enable above"}</span>
-                  {:else if APPEARANCE_SRC[appKey]?.upload}
-                    <span class="app-lock">↓ load the nose bundle in the panel below to enable</span>
-                  {:else}
-                    <span class="app-lock">↓ run <b>{APPEARANCE_SRC[appKey].backend}</b> ({APPEARANCE_SRC[appKey].mode}) in the panel below to enable</span>
-                  {/if}
-                </p>
-              </div>
-            {:else}
-              <ul class="checks">
-                {#each visible as c (c.key)}
-                  {@render checkRow(c)}
-                {/each}
-              </ul>
-            {/if}
+
+            <ul class="checks">
+              {#each visible as c (c.key)}
+                {@render checkRow(c)}
+              {/each}
+            </ul>
             {#if g.id === "statistical"}
               {@const nOn = qc.featureChecks.filter((f) => f.on).length}
               <!-- Custom per-feature checks: pick from the dropdown, or drag a feature out of the vector above -->
@@ -589,7 +577,7 @@
         </div>
       {/if}
     {/each}
-    {#if qc.hasResults}
+    {#if isAnalysis && qc.hasResults}
       <p class="union">
         <span>flagged · union</span><b>{qc.flaggedFrameCount}</b>
       </p>
@@ -606,27 +594,44 @@
         <div class="ovl-inline"><ManualCheckCompare /></div>
       {/if}
     {/if}
-    {#if store.ready}
-      <button class="export" onclick={() => (appOpen = !appOpen)} title="Embed instance crops (whole-instance) or per-keypoint patches — flags occlusion / appearance / mis-placement errors geometry can't detect">
-        ⧉ Appearance outliers {appOpen ? "▴" : "▾"}
-      </button>
-      {#if appOpen}
-        <div class="app-mode" role="group" aria-label="Appearance granularity">
-          <button class:on={appMode === "instance"} onclick={() => (appMode = "instance")} title="One embedding per whole-instance crop">Whole instance</button>
-          <button class:on={appMode === "node"} onclick={() => (appMode = "node")} title="One embedding per keypoint patch — a graph for each keypoint type">Per keypoint</button>
+    {#if isAppearMode && store.ready}
+      <!-- ONE affordance. The tab is a checklist; configuring and launching an embedding run is a job,
+           and a job belongs in its own window, not stacked down a 312 px rail. While a run is going the
+           button becomes the progress readout, so closing the window never loses sight of it. -->
+      {#if appRun.anyRunning}
+        <div class="running">
+          <div class="rhead">
+            <span class="rttl">Running DINO · {appRun.gran === "node" ? "per keypoint" : "whole instance"}</span>
+            <button class="rlink" onclick={() => appRun.show()}>open window</button>
+            <button class="rstop" onclick={() => appRun.abort()} title="Stop the run (partial results are kept)">■</button>
+          </div>
+          <RunProgress store={appRun.activeStore} compact />
         </div>
-        <div class="ovl-inline">
-          {#if appMode === "instance"}<EmbeddingCheck />{:else}<NodeEmbeddingCheck />{/if}
-        </div>
+      {:else}
+        <button class="run-dino" onclick={() => appRun.show()}
+                title="Configure and run the DINOv2 embedding pass — granularity, coverage, and the live progress all live in the window">
+          ⧉ Run DINO…
+        </button>
       {/if}
-      <NoseCheck />
     {/if}
-    {#if qc.canExportCsv}
+    <!-- Settings persist across sessions, so there must be a way back to defaults that isn't "clear site
+         data" — otherwise a config that produces confusing behaviour is effectively unrecoverable. -->
+    {#if isGeom}
+    <p class="cfg-note">
+      Settings are saved for next time.
+      <button type="button" class="cfg-reset" onclick={() => qc.resetConfig()}
+        title="Restore the shipped detector selection and thresholds, and forget the saved copy">reset to defaults</button>
+    </p>
+    {/if}
+    {#if isAnalysis && qc.canExportCsv}
       <button class="export" onclick={() => qc.downloadCsv()} title="Download per-instance QC scores + features as a CSV">
         ⤓ Export results (CSV)
       </button>
     {/if}
-    {#if qc.pendingCount > 0}
+    {#if isAnalysis && !qc.hasResults}
+      <p class="hint">Run the checks first — this tab reports on what they found.</p>
+    {/if}
+    {#if isGeom && qc.pendingCount > 0}
       <p class="hint">
         {qc.pendingCount} selected check{qc.pendingCount === 1 ? "" : "s"} need{qc.pendingCount === 1 ? "s" : ""} a run
       </p>
@@ -683,39 +688,7 @@
     opacity: 0.35;
     cursor: not-allowed;
   }
-  /* consolidated Appearance check: a label + a segmented mode toggle per row */
-  .app-modes {
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-    padding: 0.4rem 0.6rem 0.55rem 1.35rem;
-  }
-  .app-seg {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-  .app-seg .seg {
-    margin-left: 0;
-    flex: 1;
-  }
-  .app-seg .seg button {
-    flex: 1;
-    text-align: center;
-  }
-  .seg-lbl {
-    font-size: 0.66rem;
-    color: var(--muted);
-    width: 4.8rem;
-    flex: none;
-  }
-  .app-status {
-    margin: 0.15rem 0 0 1.35rem;
-    font-size: 0.66rem;
-  }
-  .app-ok { color: #39d353; }
-  .app-lock { color: #e0a030; }
-  /* a detector group: a category checkbox + a small secondary (collapsible) header */
+  /* consolidated Appearance check: a label + a segmented mode toggle per row */  /* a detector group: a category checkbox + a small secondary (collapsible) header */
   .grp-head {
     display: flex;
     align-items: center;
@@ -1033,7 +1006,6 @@
     font-size: 0.64rem;
     color: var(--dim);
   }
-  .dino-lock b { color: var(--accent); font-weight: 600; }
   /* anomaly flag-threshold slider, tucked under its check row */
   .thresh {
     display: flex;
@@ -1310,9 +1282,86 @@
     border-radius: var(--r-xs);
     background: rgba(255, 255, 255, 0.015);
   }
+  /* The Appearance tab's single affordance: primary, full width, unmissable. */
+  .run-dino {
+    width: 100%;
+    padding: 0.55rem 0.7rem;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: #08131c;
+    background: var(--accent);
+    border: none;
+    border-radius: 7px;
+    cursor: pointer;
+  }
+  .run-dino:hover { filter: brightness(1.08); }
+  .running {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    padding: 0.45rem 0.55rem;
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+    border-radius: 7px;
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+  }
+  .rhead { display: flex; align-items: center; gap: 0.4rem; }
+  .rttl { flex: 1 1 auto; min-width: 0; font-size: 0.64rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rlink { background: none; border: none; color: var(--accent); font-size: 0.6rem; cursor: pointer; padding: 0; }
+  .rlink:hover { text-decoration: underline; }
+  .rstop { background: none; border: none; color: #fca5a5; font-size: 0.6rem; cursor: pointer; padding: 0 0.1rem; }
+
+  /* The lock hint doubles as the way out of it. */
+  .lock-go {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .lock-go:hover { text-decoration: underline; }
+
+  .cfg-note { margin: 0.6rem 0 0; font-size: 0.56rem; color: var(--dim); }
+  .cfg-reset {
+    background: none; border: none; padding: 0; margin-left: 0.2rem;
+    font: inherit; color: var(--accent); cursor: pointer; text-decoration: underline dotted;
+  }
+  /* "How to reproduce" recipe inside the ⓘ expansion (precomputed detectors only) */
+  .repro {
+    margin: 0.35rem 0 0.1rem;
+    padding: 0.45rem 0.5rem;
+    border: 1px solid var(--border);
+    border-left: 2px solid var(--accent);
+    border-radius: var(--r-xs);
+    background: rgba(255, 255, 255, 0.015);
+  }
+  .rp-what { margin: 0 0 0.4rem; font-size: 0.62rem; color: var(--muted); line-height: 1.35; }
+  .rp-h {
+    margin: 0.45rem 0 0.2rem;
+    font-size: 0.54rem;
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .rp-h:first-of-type { margin-top: 0; }
+  .rp-steps { margin: 0; padding-left: 1rem; font-size: 0.6rem; color: var(--dim); line-height: 1.45; }
+  .rp-steps li { margin-bottom: 0.2rem; }
+  .rp-code {
+    margin: 0;
+    padding: 0.35rem 0.4rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.56rem;
+    line-height: 1.4;
+    color: var(--text);
+    background: rgba(0, 0, 0, 0.28);
+    border-radius: var(--r-xs);
+    white-space: pre-wrap;      /* wrap long paths rather than clipping or scrolling sideways */
+    overflow-wrap: anywhere;
+  }
+  .rp-note { margin: 0.45rem 0 0; font-size: 0.58rem; color: var(--dim); line-height: 1.4; font-style: italic; }
+  /* The resolved variant row, directly under the granularity/backend/model switch */
+  /* Independent (precomputed) detectors listed under the Appearance variant switch */
+  /* Section label separating the in-browser backends from the precomputed (loaded-bundle) detectors */
   /* Appearance granularity switch (whole-instance vs per-keypoint) atop the merged Appearance panel */
-  .app-mode { display: inline-flex; margin-top: 0.5rem; border: 1px solid var(--border); border-radius: var(--r-xs); overflow: hidden; }
-  .app-mode button { font-size: 0.66rem; color: var(--muted); background: transparent; border: none; border-right: 1px solid var(--border); padding: 0.24rem 0.6rem; cursor: pointer; }
-  .app-mode button:last-child { border-right: none; }
-  .app-mode button.on { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
 </style>

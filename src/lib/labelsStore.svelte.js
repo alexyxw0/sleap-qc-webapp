@@ -76,6 +76,10 @@ class LabelsStore {
   videoModel = $state.raw(null); // optional externally-uploaded video backend
   frames = $state.raw([]); // navigable list: [{ video, frameIdx, lf }]
   frameImage = $state.raw(null); // decoded image for the current frame (kept in sync via the pump)
+  // The frame `frameImage` actually depicts. Published together with the image so a consumer can draw a
+  // MATCHED pair: `current` flips the instant you navigate, the decode lands ~50-100 ms later, and
+  // drawing the new pose over the old picture is what made the skeleton look like it arrived first.
+  shownItem = $state.raw(null);
 
   // --- reactive scalars ---
   rev = $state(0); // bump to signal model mutated -> redraw
@@ -224,6 +228,7 @@ class LabelsStore {
     this.videoModel = null;
     this.frames = [];
     this.frameImage = null;
+    this.shownItem = null;
     this.#imgWant = null;
     this.#imgHave = undefined;
     this.index = 0;
@@ -276,6 +281,7 @@ class LabelsStore {
     this.videoModel = null;
     this.frames = [];
     this.frameImage = null;
+    this.shownItem = null;
     this.#imgCache.clear();
     this.#imgWant = null;
     this.#imgHave = undefined;
@@ -316,6 +322,11 @@ class LabelsStore {
     this.#pumpFrameImage();
   }
 
+  /** Is `frameImage` the picture of the frame you are ON? False during a decode. */
+  get frameImageReady() {
+    return this.#frameKey(this.current) === this.#imgHave;
+  }
+
   async #pumpFrameImage() {
     if (this.#imgPumping) return;
     this.#imgPumping = true;
@@ -327,7 +338,10 @@ class LabelsStore {
         const item = this.current; // the frame `want` refers to
         const img = await this.getFrameImage(item);
         if (this.#imgWant !== want) continue; // superseded during decode — refetch latest
+        // Publish the image AND the frame it depicts together. Consumers draw the pair, so the
+        // overlay can never be a frame ahead of the picture underneath it.
         this.frameImage = img ?? null;
+        this.shownItem = item;
         this.#imgHave = want;
       }
     } finally {
@@ -335,6 +349,25 @@ class LabelsStore {
     }
     // A request that arrived as we were exiting gets picked up here.
     if (this.#imgWant !== this.#imgHave) this.#pumpFrameImage();
+    else this.#prefetchNeighbours();
+  }
+
+  /**
+   * Warm the frames either side of the current one, once the wanted frame has landed.
+   *
+   * Sequential navigation is the overwhelmingly common case, and a decode is ~50-100 ms — long enough
+   * that waiting for a matched pair would feel like a stall on every arrow press. Prefetching turns
+   * that into a cache hit. Fire-and-forget and strictly AFTER the real request, so it can never delay
+   * the frame you are actually looking at.
+   */
+  #prefetchNeighbours() {
+    const i = this.index;
+    for (const j of [i + 1, i - 1]) {
+      const it = this.frames[j];
+      if (!it) continue;
+      if (this.#imgCache.has(this.#frameKey(it))) continue;
+      this.getFrameImage(it).catch(() => {}); // best effort; a failure just means no warm cache
+    }
   }
 
   async getFrameImage(item, signal) {

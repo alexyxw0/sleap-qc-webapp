@@ -6,13 +6,22 @@
   import FileUpload from "./lib/components/FileUpload.svelte";
   import Viewer from "./lib/components/Viewer.svelte";
   import Sidebar from "./lib/components/Sidebar.svelte";
+  import RailTabs from "./lib/components/RailTabs.svelte";
   import EditToolbar from "./lib/components/EditToolbar.svelte";
   import CommandPalette from "./lib/components/CommandPalette.svelte";
   import ShortcutsHelp from "./lib/components/ShortcutsHelp.svelte";
   import QcReview from "./lib/components/QcReview.svelte";
+  import AppearanceWindow from "./lib/components/AppearanceWindow.svelte";
+  import ProofreadWindow from "./lib/components/ProofreadWindow.svelte";
   import Toasts from "./lib/components/Toasts.svelte";
   import { ui } from "./lib/uiStore.svelte.js";
   import { manualCheck } from "./lib/manualCheckStore.svelte.js";
+  import { keypointModels } from "./lib/keypointModels.svelte.js";
+  import { appRun } from "./lib/appearanceRun.svelte.js";
+  import { proofreadWindow } from "./lib/proofreadWindow.svelte.js";
+  import { framePass } from "./lib/framePass.svelte.js";
+  import { keypointLabels } from "./lib/keypointLabels.svelte.js";
+  import { autoLoadForCurrentFile } from "./lib/bundlePrefs.js";
 
   // Reset edit history + view whenever a different labels object is loaded (or closed).
   let lastLabels = null;
@@ -23,8 +32,30 @@
       view.reset();
       qc.reset();
       ui.closeAll();
+      appRun.close(); // a floating run window over a different file is just confusing
+      proofreadWindow.reset();
+      framePass.reset();
       manualCheck.reset(); // else a stale CSV would score against the new file's frames
+      // Same hazard, worse: keypoint labels are keyed "videoIdx:frameIdx:inst" — a key EVERY file has —
+      // so the last file's verdicts would paint red rings and "✓ judged" onto this one's frames, and
+      // toCsv() would export two datasets under one schema. The mode and the budget are preferences; keep them.
+      keypointLabels.clear();
+      keypointLabels.cursor = 0;
+      // Clear the previous file's appearance bundles (their scores are keyed to that file's instances),
+      // then auto-load whatever SAM/DINO selection was remembered for THIS dataset (bundlePrefs).
+      keypointModels.reset();
+      if (store.labels) autoLoadForCurrentFile();
     }
+  });
+
+  // Proofreading is a MODE, and its window is that mode's home — so entering the mode raises it, from
+  // whichever entry point (the `r` key, the toggle in the panel, the command palette). Leaving the mode
+  // does NOT close it: you may still want to read the tally or export what you just labelled.
+  let wasProofreading = false;
+  $effect(() => {
+    const on = keypointLabels.proofreading;
+    if (on && !wasProofreading) proofreadWindow.show();
+    wasProofreading = on;
   });
 
   // Auto-rerun QC when the detection selection adds an uncomputed check, so the flagged set
@@ -53,10 +84,14 @@
       <Viewer />
       <Sidebar />
     </div>
+    <RailTabs />
   </main>
   <CommandPalette />
   <ShortcutsHelp />
   <QcReview />
+  <!-- Floating, so it outlives the tab that launched it: a run keeps going while you browse frames. -->
+  <AppearanceWindow />
+  <ProofreadWindow />
 {:else}
   <FileUpload />
 {/if}

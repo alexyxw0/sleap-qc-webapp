@@ -1,12 +1,12 @@
 import { describe, it, expect, vi } from "vitest";
 
-// RUNTIME test: actually executes embeddingStore.run() (a .svelte.js reactive store) end-to-end for
-// BOTH backends, with the DOM (and the DINO model) mocked. This exercises the exact browser control
+// RUNTIME test: actually executes embeddingStore.run() (a .svelte.js reactive store) end-to-end, with
+// the DOM (and the DINO model) mocked. This exercises the exact browser control
 // flow that a production build and the pure-math tests do NOT — it would have caught the "z is out of
 // scope → run() throws → stuck at scoring → checkbox never unlocks" bug (run() never reached "done").
 
 // Minimal DOM fakes for the few APIs run()/embed() touch. getImageData returns a properly-sized buffer
-// (varying by a counter) so the real CLASSICAL backend produces valid, non-degenerate feature vectors.
+// (varying by a counter) so the crops the store hands the mocked encoder are valid and non-degenerate.
 let px = 0;
 globalThis.document = {
   createElement: () => ({
@@ -42,9 +42,17 @@ vi.mock("./labelsStore.svelte.js", () => ({
   store: { labels: { videos: [vA] }, frames: fakeFrames, fileName: "test.pkg.slp", getFrameImage: async () => ({ width: 100, height: 100 }) },
 }));
 
+// Whole-instance scoring is the trained RBF-SVM now (the unsupervised kNN option was removed), and the
+// classifier weights are a fetched binary asset. Mock the decision function — this test is about the run
+// loop reaching a terminal state, not about the SVM's arithmetic (svm.test.js covers that).
+vi.mock("./qc/embedding/appearanceClf.js", async (orig) => ({
+  ...(await orig()),
+  classifyDecisions: async (embs) => embs.map((_, i) => Math.sin(i * 1.7)),
+}));
+
 const { embeddingStores } = await import("./embeddingStore.svelte.js");
 
-// The regression guard for BOTH backends: a throw anywhere in run() (like the z-scope bug) leaves the
+// The regression guard: a throw anywhere in run() (like the z-scope bug) leaves the
 // status stuck and hasResults false — the exact 'stuck at scoring / checkbox uncheckable' symptom.
 function assertCompleted(es) {
   expect(es.status).toBe("done");
@@ -57,16 +65,19 @@ function assertCompleted(es) {
 }
 
 describe("embeddingStore.run() — runtime", () => {
-  it("classical backend runs to completion with valid results", async () => {
-    await embeddingStores.classical.run();
-    assertCompleted(embeddingStores.classical);
-  });
-
-  it("dino backend runs to completion with valid results, without clobbering the classical store", async () => {
+  it("runs to completion with valid results", async () => {
     await embeddingStores.dino.run();
     assertCompleted(embeddingStores.dino);
     expect(embeddingStores.dino.results.coords.length).toBe(5);
-    // Both stores coexist: running DINO must not wipe the classical results (they're separate checks).
-    assertCompleted(embeddingStores.classical);
+  });
+
+  it("a re-run replaces the results rather than accumulating them", async () => {
+    await embeddingStores.dino.run();
+    assertCompleted(embeddingStores.dino);
+    expect(embeddingStores.dino.results.coords.length).toBe(5);
+  });
+
+  it("DINO is the only backend the registry exposes", () => {
+    expect(Object.keys(embeddingStores)).toEqual(["dino"]);
   });
 });

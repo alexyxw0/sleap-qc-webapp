@@ -12,6 +12,8 @@
 // file layout (all): [uint32 LE hlen][utf8 json header, 4B-padded][f32 payload]
 //   model payload:  mean|scale|dual|support_vectors      emb payload: n*dim embeddings
 import { parseClassifier, rbfProbability } from "./qc/embedding/svm.js";
+import { prototypeDirection, prototypeScores, blendByRank } from "./qc/embedding/fewshot.js";
+import { keypointLabels } from "./keypointLabels.svelte.js";
 
 function readHeader(buf) {
   const hlen = new DataView(buf).getUint32(0, true);
@@ -19,8 +21,11 @@ function readHeader(buf) {
   return { header, f32Start: 4 + hlen };
 }
 
-class NoseEmbeddingStore {
+export class NoseEmbeddingStore {
   threshold = $state(0.5);   // probability cutoff; set from the model's operating point on load
+  fewShot = $state(0);       // 0 = transferred model as-is; >0 blends in a prototype direction learned
+                             // from the target-domain keypoint labels (see qc/embedding/fewshot.js)
+  fewShotInfo = $state(null); // { nPos, nNeg, usedGlobal } for the UI, or null when not adapting
   resultRev = $state(0);     // bumps when scored frame-flags change — the cheap reactive dep
   status = $state("idle");   // idle | loading | done | error
   message = $state("");
@@ -51,9 +56,13 @@ class NoseEmbeddingStore {
   }
   get embDataset() { this.resultRev; return this.#embHeader?.dataset ?? null; }
   get modelDataset() { this.resultRev; return this.#modelInfo?.dataset ?? null; }
+  /** Which keypoint this trained bundle targets (per-keypoint generalization; legacy bundles → "nose"). */
+  get node() { this.resultRev; return this.#embHeader?.node ?? this.#modelInfo?.node ?? "nose"; }
 
   frameZByKey(key) { this.resultRev; return this.#frameZ.get(key) ?? null; }
   instProbByKey(key) { this.resultRev; return this.#instProb.get(key) ?? null; }
+  /** Every scored instance as ["videoIdx:frameIdx:inst", prob] — the registry ranks the review queue. */
+  instProbEntries() { this.resultRev; return this.#instProb.entries(); }
 
   get flaggedFrameCount() {
     this.resultRev;
@@ -61,11 +70,20 @@ class NoseEmbeddingStore {
     for (const z of this.#frameZ.values()) if (z >= this.threshold) n++;
     return n;
   }
-  flaggedFrameKeys() {
+  flaggedFrameKeys() { return this.flaggedFrameKeysAt(this.threshold); }
+  /** Same, judged against an EXTERNAL cutoff — the registry applies one shared threshold across keypoints
+   *  (calibrated probabilities are comparable, so a per-slot cutoff would make the union incoherent). */
+  flaggedFrameKeysAt(thr) {
     this.resultRev;
     const out = [];
-    for (const [k, z] of this.#frameZ) if (z >= this.threshold) out.push(k);
+    for (const [k, z] of this.#frameZ) if (z >= thr) out.push(k);
     return out;
+  }
+  flaggedCountAt(thr) {
+    this.resultRev;
+    let n = 0;
+    for (const z of this.#instProb.values()) if (z >= thr) n++;
+    return n;
   }
   get flaggedCount() {
     this.resultRev;
@@ -73,6 +91,9 @@ class NoseEmbeddingStore {
     for (const z of this.#instProb.values()) if (z >= this.threshold) n++;
     return n;
   }
+
+  /** Re-run scoring — call after the few-shot slider or the label set changes (cheap: no re-embed). */
+  rescore() { this.#score(); }
 
   reset() {
     this.#frameZ = new Map();
@@ -163,7 +184,27 @@ class NoseEmbeddingStore {
       this.resultRev++;
       return;
     }
-    const prob = rbfProbability(this.#embs, this.#clf); // calibrated fault probabilities
+    let prob = rbfProbability(this.#embs, this.#clf); // calibrated fault probabilities
+
+    // ---- few-shot adaptation (optional) ------------------------------------------------------------
+    // A transferred model ranks the target domain poorly (center→gily nose: PR 0.08). A handful of
+    // target labels fixes most of that offline. Recalibration can't help (monotone ⇒ same ranking), so we
+    // learn a prototype DIRECTION from the labelled patches and blend it into the ranking.
+    this.fewShotInfo = null;
+    if (this.fewShot > 0 && keypointLabels.hasLabels) {
+      const { pos, neg } = keypointLabels.forNode(this.node);
+      const posIdx = [], negIdx = [];
+      for (let i = 0; i < this.#n; i++) {
+        const k = `${e.video[i]}:${e.frame_idx[i]}:${e.inst[i]}`;
+        if (pos.has(k)) posIdx.push(i);
+        else if (neg.has(k)) negIdx.push(i);
+      }
+      const proto = prototypeDirection(this.#embs, posIdx, negIdx);
+      if (proto) {
+        prob = blendByRank(prob, prototypeScores(this.#embs, proto.w), this.fewShot);
+        this.fewShotInfo = { nPos: proto.nPos, nNeg: proto.nNeg, usedGlobal: proto.usedGlobal };
+      }
+    }
     const fz = new Map();
     const iz = new Map();
     for (let i = 0; i < this.#n; i++) {
@@ -175,7 +216,14 @@ class NoseEmbeddingStore {
     this.#instProb = iz;
     this.status = "done";
     const how = e.dataset === m.dataset ? "own model" : `model ← ${m.dataset} (transfer)`;
-    this.message = `${e.dataset} · ${how}: ${this.#n} nose patches · ${fz.size} frames · ${this.flaggedFrameCount} flagged`;
+    // dim alone can't separate patch sizes (p48 and p64 are both 384-d), so check node_min explicitly.
+    const pm = e.node_min != null && m.node_min != null && e.node_min !== m.node_min
+      ? ` · ⚠ patch mismatch: embeddings p${e.node_min} vs model p${m.node_min}`
+      : "";
+    const fs = this.fewShotInfo
+      ? ` · few-shot α=${this.fewShot.toFixed(2)} (${this.fewShotInfo.nPos} labelled ${this.node})`
+      : "";
+    this.message = `${e.dataset} · ${how}: ${this.#n} ${this.node} patches · ${fz.size} frames · ${this.flaggedFrameCount} flagged${fs}${pm}`;
     this.resultRev++;
   }
 

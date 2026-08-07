@@ -41,6 +41,11 @@ html,
 body {
   margin: 0;
   height: 100%;
+  /* The hover rail parks off-screen (fixed, translateX(100%)), which extends the document past the
+     viewport and raises a horizontal scrollbar. That scrollbar appearing/disappearing changes the
+     viewport size, so the canvas re-fits and EVERYTHING appears to rescale as the rail opens. This app
+     is a fixed-height shell — every scrollable region handles its own overflow — so clip at the root. */
+  overflow: hidden;
   color: var(--text);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;

@@ -17,6 +17,9 @@
     })),
   );
   const active = $derived(dets.filter((d) => d.count > 0));
+  // Enabled + ready but flagging NOTHING. A zero-length arc can't be drawn and a zero bar is noise, so
+  // these are named explicitly instead — otherwise "ran and found nothing" looks like "not wired up".
+  const silent = $derived(dets.filter((d) => d.count === 0));
 
   function overlap(a, b) {
     const [s, l] = a.set.size < b.set.size ? [a.set, b.set] : [b.set, a.set];
@@ -114,10 +117,10 @@
     </div>
   </div>
 
-  {#if !active.length}
+  {#if !active.length && !silent.length}
     <p class="ov-empty">No detectors are flagging anything — run QC and enable some checks.</p>
   {:else if mode === "chord"}
-    <svg viewBox="0 0 360 300" class="ov-svg">
+    <svg viewBox="-110 0 580 300" class="ov-svg">
       {#each chord.ribbons as r (r.key)}
         <path d={ribbonPath(r.s1, r.s2, R_IN)} fill={r.color} fill-opacity="0.4" stroke={r.color} stroke-opacity="0.75" stroke-width="0.8" stroke-linejoin="round" />
       {/each}
@@ -128,7 +131,8 @@
         {@const lp = polar(R_LBL, a.mid)}
         <text x={lp[0]} y={lp[1]} class="ov-lbl" dominant-baseline="middle"
           text-anchor={Math.cos(a.mid) > 0.15 ? "start" : Math.cos(a.mid) < -0.15 ? "end" : "middle"}>
-          {a.det.label} · {(a.det.pct * 100).toFixed(1)}%
+          <tspan x={lp[0]} dy="-0.35em">{a.det.label}</tspan>
+          <tspan x={lp[0]} dy="1.05em" class="ov-lbl-pct">{(a.det.pct * 100).toFixed(1)}%</tspan>
         </text>
       {/each}
     </svg>
@@ -159,6 +163,11 @@
       </div>
     </div>
   {/if}
+  {#if silent.length}
+    <p class="ov-note silent">
+      Enabled, ran, flagged nothing: {silent.map((d) => d.label).join(", ")}
+    </p>
+  {/if}
 </div>
 {/snippet}
 
@@ -187,9 +196,10 @@
     font-weight: 600;
     flex: 1 1 auto;
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    /* .ov-head already wraps the mode/pop buttons below on a narrow rail, so let the title wrap
+       too rather than ellipsis-truncating the frame count. */
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
   .ov-actions {
     display: inline-flex;
@@ -240,8 +250,12 @@
   }
   .ov-lbl {
     fill: var(--text);
-    font-size: 8.5px;
+    font-size: 8px;
     font-weight: 600;
+  }
+  .ov-lbl-pct {
+    fill: var(--dim);
+    font-weight: 500;
   }
   .ov-note {
     margin: 0.3rem 0 0;
@@ -249,6 +263,7 @@
     color: var(--dim);
     text-align: center;
   }
+  .ov-note.silent { color: var(--dim); font-style: italic; }
   .ov-empty {
     font-size: 0.78rem;
     color: var(--muted);
@@ -262,7 +277,7 @@
   }
   .us-det {
     display: grid;
-    grid-template-columns: auto 1fr 5rem 2.6rem;
+    grid-template-columns: auto minmax(0, 1fr) 3.5rem 2.4rem;
     align-items: center;
     gap: 0.4rem;
     font-size: 0.72rem;
@@ -273,9 +288,10 @@
     border-radius: 50%;
   }
   .us-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    min-width: 0;
+    white-space: normal;      /* wrap rather than clip — long detector names were being truncated */
+    overflow-wrap: anywhere;
+    line-height: 1.2;
   }
   .us-bar, .us-cbar {
     height: 6px;

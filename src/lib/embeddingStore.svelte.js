@@ -1,17 +1,16 @@
 // Appearance-outlier analysis: crop each instance, embed the crop, and flag instances whose appearance
-// is an outlier (occlusions / mis-placed nodes that geometry can't see). Two interchangeable backends
-// feed the SAME kNN/robust-z/PCA pipeline: "classical" (fast pixel features, default) and "dino" (the
-// DINOv2 ViT semantic embedding, batched in a worker). Kept fully inspectable — every crop,
-// neighbourhood, and score is UI-visible.
+// is an outlier (occlusions / mis-placed nodes that geometry can't see). One backend: "dino", the DINOv2
+// ViT semantic embedding, batched in a worker. (A classical pixel-feature backend used to sit alongside
+// it; the experiments dropped it, so it is gone rather than left as an option that scores nothing worth
+// acting on.) Kept fully inspectable — every crop, neighbourhood, and score is UI-visible.
 import { store } from "./labelsStore.svelte.js";
 import * as dinoBackend from "./qc/embedding/dinoRemote.js";
-import * as classicalBackend from "./qc/embedding/classical.js";
 import { l2norm, stratifiedReference, nearestNeighbors, buildFrameZ, pca2 } from "./qc/embedding/outlier.js";
 import { scoreEmbeddings } from "./qc/embedding/scoreRemote.js";
 import { classifyDecisions, classifierInfo } from "./qc/embedding/appearanceClf.js";
 import { loadAll as loadCache, putMany as saveCache } from "./qc/embedding/embcache.js";
 
-const BACKENDS = { classical: classicalBackend, dino: dinoBackend };
+const BACKENDS = { dino: dinoBackend };
 
 // Padded square around the instance's placed nodes — image-INDEPENDENT (points only), so it can
 // key the embedding cache; clamping to the actual image happens at draw time.
@@ -55,14 +54,17 @@ const evenSample = (arr, cap) => {
 class EmbeddingStore {
   status = $state("idle"); // idle | loading-model | running | scoring | done | error | aborted
   message = $state("");
-  progress = $state({ done: 0, total: 0 });
+  progress = $state({ done: 0, total: 0, startedAt: 0 });
   modelInfo = $state(null);
-  backend; // pinned at construction: "classical" (fast pixel features) | "dino" (ViT — slow, semantic)
+  backend; // pinned at construction; "dino" (ViT — slow, semantic) is the only one built
   // Scoring method: "knn" = unsupervised kNN-outlier (robust-z); "trained" = the RBF-SVM ported from the
   // dino_probe (supervised, ~0.82 ROC, DINO-ViT-S-only). threshold's meaning follows the method (robust-z
   // for knn, SVM decision value for trained), so the flag logic (z >= threshold) is unchanged.
-  method = $state("knn");
-  threshold = $state(3.5); // knn: robust-z cutoff · trained: SVM decision cutoff (set on setMethod)
+  // Trained by default: the unsupervised kNN scored ~chance on whole-animal crops in the experiments,
+  // so it is no longer offered in the UI. setMethod("knn") still works (the pipeline is intact) but
+  // nothing selects it — per-keypoint patches are where the unsupervised route still discriminates.
+  method = $state("trained");
+  threshold = $state(classifierInfo()?.threshold ?? -0.67); // trained: SVM decision cutoff · knn: robust-z
   sampleCap = $state(null); // max crops to EMBED; null/0 => ALL instances (full coverage, no sampling gap)
   referenceFraction = $state(0.2); // fraction of embedded instances forming the kNN "normal" reference
   k = 6;
@@ -86,12 +88,12 @@ class EmbeddingStore {
   #scoreSig = null;
   #scoreRes = null;
 
-  /** Each store instance is pinned to ONE backend so classical + DINO can run and be scored
+  /** Each store instance is pinned to ONE backend so several encoders could run and be scored
    *  side-by-side (their vectors, dims, thresholds, and caches are all backend-namespaced). */
-  constructor(backend = "classical") { this.backend = BACKENDS[backend] ? backend : "classical"; }
+  constructor(backend = "dino") { this.backend = BACKENDS[backend] ? backend : "dino"; }
 
-  /** The active backend module (classical | dino). */
-  #be() { return BACKENDS[this.backend] ?? classicalBackend; }
+  /** The active backend module. */
+  #be() { return BACKENDS[this.backend] ?? dinoBackend; }
 
   // Stable identity for the loaded file (+ backend) — namespaces the persistent cache so crops from a
   // different file OR a different backend can't be served for a matching (video,frame,bbox) key.
@@ -195,7 +197,7 @@ class EmbeddingStore {
 
     const vidx = new Map((store.labels?.videos ?? []).map((v, i) => [v, i]));
     this.status = "running";
-    this.progress = { done: 0, total: list.length };
+    this.progress = { done: 0, total: list.length, startedAt: performance.now() };
     const crop = document.createElement("canvas");
     crop.width = crop.height = be.MODEL.input;
     const cropCtx = crop.getContext("2d", { willReadFrequently: true });
@@ -211,7 +213,7 @@ class EmbeddingStore {
 
     // Resolve every frame's crop boxes + cache keys up front (pure point math): fully-cached frames
     // skip the decode entirely, and the NEXT frame's decode can start while the current one embeds.
-    // Keys are prefixed by backend so classical vs dino vectors never collide in the in-memory cache.
+    // Keys are prefixed by backend so two encoders' vectors could never collide in the in-memory cache.
     const jobs = [];
     for (const [fi, iis] of byFrame) {
       const item = frames[fi];
@@ -346,6 +348,18 @@ class EmbeddingStore {
 
   /** Switch scoring method. "trained" is DINO-ViT-S-only (the classifier's feature space). Resets the
    *  threshold to the method's default and re-scores the cached embeddings in place if we have them. */
+  /** Throughput + ETA for the in-flight run, or null when there is not yet enough to say anything.
+   *  Read off progress.done, so it re-derives on every batch — `performance.now()` alone is not reactive.
+   *  `startedAt` is stamped AFTER the model is ready, so a one-time 90 MB download can't poison the rate. */
+  get pace() {
+    const { done, total, startedAt } = this.progress;
+    if (!startedAt || !total || done <= 0) return null;
+    const elapsed = (performance.now() - startedAt) / 1000;
+    if (elapsed < 0.75) return null; // the first fraction of a second says nothing useful
+    const rate = done / elapsed;
+    return { rate, elapsed, etaSec: done < total ? (total - done) / rate : 0, frac: done / total };
+  }
+
   setMethod(m) {
     if (m === this.method || (m !== "knn" && m !== "trained")) return;
     if (m === "trained" && this.backend !== "dino") return; // classifier is DINO-specific
@@ -362,9 +376,8 @@ class EmbeddingStore {
 
 // One store PER backend, so both can be embedded, scored, and enabled as independent checks at the
 // same time (each holds its own results + threshold; caches are namespaced by backend).
+// A one-entry registry rather than a bare store: the per-backend shape is what makes adding a second
+// encoder a one-line change, and every call site already indexes by name.
 export const embeddingStores = {
-  classical: new EmbeddingStore("classical"),
   dino: new EmbeddingStore("dino"),
 };
-// Back-compat default (the classical store): existing single-backend callers keep working.
-export const embeddingStore = embeddingStores.classical;
