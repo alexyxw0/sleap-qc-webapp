@@ -49,11 +49,19 @@ export class NodeEmbeddingStore {
   patchFraction = 0.3; // node patch side as a fraction of the instance's bbox max-side
   k = 6;
   selectedNode = $state(null); // which keypoint's graph the panel is inspecting
+  // WHICH keypoints to embed. null = every placed node (the default). An array of node indices = only
+  // those. [] is INVALID, not "all" — a subset pass is instances x nodes, so silently widening an empty
+  // selection to the whole skeleton is the most expensive possible misreading of a click.
+  nodes = $state(null);
   static REF_MIN_PER_VIDEO = 20;
   static MIN_PER_NODE = 8; // a node group smaller than this can't yield a meaningful outlier reference
   rev = $state(0);
   resultRev = $state(0); // bumps only when scored frame-flags change — the cheap dep for the QC check
 
+  // What the LAST RUN asked for, snapshotted where the plan is filtered. Coverage must be a property of
+  // the results, never of the live `nodes` field: otherwise re-ticking a chip retroactively relabels
+  // finished results, and a check that examined 2 keypoints starts claiming it examined 13.
+  #ranNodes = null;
   #recs = []; // { fi, ii, node, thumb }
   #embs = []; // Float32Array (L2-normalized), index-aligned with #recs
   #z = []; // outlier robust-z, index-aligned with #recs (per-node within its group)
@@ -89,6 +97,23 @@ export class NodeEmbeddingStore {
     for (const f of store.frames ?? []) n += f.lf?.instances?.length ?? 0;
     return n;
   }
+
+  /**
+   * What the results actually cover. `requested` is the selection the run used (null = whole skeleton),
+   * `covered` is the nodes that produced at least one patch — a requested keypoint placed in no instance
+   * yields nothing, and that is a different fact from not asking for it.
+   *
+   * Every "is this check done" surface reads THIS, not hasResults, because a 2-of-13 pass and a 13-of-13
+   * pass are the same boolean and very different claims.
+   */
+  get coverage() {
+    this.resultRev;
+    const covered = new Set();
+    for (const r of this.#recs) covered.add(r.node);
+    return { requested: this.#ranNodes ? [...this.#ranNodes] : null, covered, partial: this.#ranNodes != null };
+  }
+  /** Was this keypoint embedded in the run that produced the current results? */
+  coveredNode(ni) { this.resultRev; return this.#nodeIndex.has(ni); }
 
   // ── frame-level QC interface (identical to embeddingStore, so qcStore treats it as an appearance check) ──
   get hasResults() { this.resultRev; return this.#scored; }
@@ -145,7 +170,8 @@ export class NodeEmbeddingStore {
     this.rev;
     return (this.#nodeIndex.get(ni) ?? []).map((r) => this.#withStats(r)).sort((a, b) => b.z - a.z);
   }
-  /** The most-outlier node of one instance (for attribution), or null. */
+  /** The most-outlier node of one instance among the keypoints THIS RUN EMBEDDED, or null. Under a
+   *  subset that is not the worst node of the instance — see `coverage` before presenting it as one. */
   worstNodeFor(fi, ii) {
     this.rev;
     let best = null;
@@ -195,7 +221,16 @@ export class NodeEmbeddingStore {
 
   async run() {
     if (this.status === "running" || this.status === "loading-model" || this.status === "scoring") return;
-    if (store.labels !== this.#cacheLabels) { this.#cache.clear(); this.#scoreSig = null; this.#scoreRes = null; this.#cacheLabels = store.labels; this.#loadedFileId = null; }
+    if (store.labels !== this.#cacheLabels) {
+      // Node INDICES mean different keypoints under a different skeleton, so a selection cannot follow a
+      // file across. But only clear it when we are actually LEAVING a file: #cacheLabels is null until
+      // the first run, so clearing unconditionally threw away the selection the user had just made —
+      // every first run silently embedded the whole skeleton.
+      const hadFile = this.#cacheLabels !== null;
+      this.#cache.clear(); this.#scoreSig = null; this.#scoreRes = null; this.#cacheLabels = store.labels;
+      this.#loadedFileId = null;
+      if (hadFile) { this.nodes = null; this.#ranNodes = null; }
+    }
     this.#abort = false;
     this.#recs = []; this.#embs = []; this.#z = []; this.#coords = []; this.#nodeIndex = new Map(); this.#nodeStats = []; this.#frameZ = new Map(); this.#scored = false;
     this.rev++; this.resultRev++;
@@ -225,6 +260,17 @@ export class NodeEmbeddingStore {
     const list = evenSample(insts, cap);
     if (!list.length) { this.status = "error"; this.message = "No instances to embed."; return; }
 
+    // Resolve the keypoint selection ONCE, here, and snapshot it: the results must keep describing the
+    // run that made them even if the user re-ticks chips afterwards.
+    const sel = Array.isArray(this.nodes) ? [...new Set(this.nodes)].filter((n) => Number.isInteger(n) && n >= 0) : null;
+    if (sel && !sel.length) {
+      this.status = "error";
+      this.message = "No keypoints selected — pick at least one to embed.";
+      this.rev++; return;
+    }
+    const want = sel ? new Set(sel) : null;
+    this.#ranNodes = sel;
+
     const byFrame = new Map();
     for (const it of list) { if (!byFrame.has(it.fi)) byFrame.set(it.fi, []); byFrame.get(it.fi).push(it.ii); }
     const vidx = new Map((store.labels?.videos ?? []).map((v, i) => [v, i]));
@@ -239,13 +285,22 @@ export class NodeEmbeddingStore {
       for (const ii of iis) {
         const pts = item.lf?.instances?.[ii]?.points;
         for (const { node, box } of nodePatchPlan(pts, this.patchFraction)) {
+          if (want && !want.has(node)) continue; // not in this pass's keypoint selection
           plan.push({ ii, node, box, key: `${this.backend}:${patchKey(vi, item.frameIdx, node, box)}` });
         }
       }
       if (plan.length) jobs.push({ fi, item, plan, needsImg: plan.some((p) => !this.#cache.has(p.key)) });
     }
     const total = jobs.reduce((s, j) => s + j.plan.length, 0);
-    if (!total) { this.status = "error"; this.message = "No placed keypoints to embed (instances need ≥2 nodes)."; return; }
+    if (!total) {
+      // Distinguish "your selection isn't in this file" from "this file has no usable poses" — the first
+      // is a two-second fix, the second is not.
+      this.status = "error";
+      this.message = want
+        ? "None of the selected keypoints are placed in any sampled instance — pick different keypoints."
+        : "No placed keypoints to embed (instances need ≥2 nodes).";
+      this.rev++; return;
+    }
 
     this.status = "running";
     this.progress = { done: 0, total, startedAt: performance.now() };
@@ -310,11 +365,14 @@ export class NodeEmbeddingStore {
       }
     }
     try { if (!this.#abort) await flush(); } catch (e) { this.status = "error"; this.message = `Embedding failed — ${e.message}`; return; }
+    // Persist BEFORE the abort check: a partially-embedded set is exactly as reusable as a complete one
+    // (each entry is keyed by file/video/frame/node/box), and throwing away twenty minutes of DINO
+    // because someone pressed Stop is the most expensive bug in this file.
+    if (fresh.length) saveCache(fileId, fresh);
     if (this.#abort) {
       for (let r = this.#recs.length - 1; r >= 0; r--) if (!this.#embs[r]) { this.#recs.splice(r, 1); this.#embs.splice(r, 1); usedKeys.splice(r, 1); }
       this.status = "aborted"; this.message = "Stopped."; this.rev++; return;
     }
-    if (fresh.length) saveCache(fileId, fresh);
     if (!this.#embs.length) { this.status = "error"; this.message = "No patches could be embedded (no frame images?)."; return; }
 
     // Scoring wrapped so a throw can NEVER wedge the panel in "scoring" (mirrors embeddingStore's guard).

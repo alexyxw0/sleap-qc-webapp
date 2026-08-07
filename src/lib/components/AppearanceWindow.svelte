@@ -24,6 +24,7 @@
   import FewShotPanel from "./FewShotPanel.svelte";
   import { keypointModels } from "../keypointModels.svelte.js";
   import { keypointLabels } from "../keypointLabels.svelte.js";
+  import { appearanceCoverageNote } from "../qcStore.svelte.js";
 
   const clf = classifierInfo();
   const es = $derived(appRun.store); // null for the pretrained (upload-only) route
@@ -51,8 +52,26 @@
     const nodes = store.skeleton?.nodeNames?.length ?? 0;
     // Without a node count the pass count is unknowable — say nothing rather than understate it.
     if (!nodes) return { units: null, label: `${n.toLocaleString()} instances` };
-    return { units: n * nodes, label: `${n.toLocaleString()} instances × ${nodes} keypoints` };
+    // Multiply by the SELECTED count, or the estimate ignores the one control that changes it. Name both
+    // numbers so a subset is never mistaken for the whole skeleton.
+    const sel = Array.isArray(es.nodes) ? es.nodes.length : nodes;
+    const of = sel === nodes ? `${nodes} keypoints` : `${sel} of ${nodes} keypoints`;
+    return { units: n * sel, label: `${n.toLocaleString()} instances × ${of}` };
   });
+
+  // ---- keypoint subset (per-keypoint only) --------------------------------------------------------
+  // Per-keypoint is instances x nodes forward passes, so choosing 3 of 13 keypoints is the single
+  // biggest cost lever in the app. null = all; [] is invalid and blocks the run rather than widening.
+  const allNodes = $derived(store.skeleton?.nodeNames ?? []);
+  const picked = $derived(appRun.gran === "node" && Array.isArray(es?.nodes) ? es.nodes : null);
+  const nSel = $derived(picked ? picked.length : allNodes.length);
+  const noneSelected = $derived(picked != null && picked.length === 0);
+  function toggleNode(ni) {
+    if (!es) return;
+    const cur = Array.isArray(es.nodes) ? es.nodes : allNodes.map((_, k) => k);
+    es.nodes = cur.includes(ni) ? cur.filter((k) => k !== ni) : [...cur, ni].sort((a, b) => a - b);
+  }
+  const covNote = $derived(appearanceCoverageNote(appRun.checkKey));
 
   const GRAN = [
     ["instance", "Whole instance", "One crop per animal — gross appearance problems"],
@@ -133,6 +152,26 @@
           </div>
         {/if}
 
+        {#if es && appRun.gran === "node" && allNodes.length}
+          <div class="row kprow">
+            <span class="lbl">Keypoints</span>
+            <label class="chk" title="Embed a patch for every keypoint. Untick to choose a subset — this pass is instances × keypoints, so it is the biggest thing you control.">
+              <input type="checkbox" checked={picked == null} disabled={busy}
+                     onchange={(e) => (es.nodes = e.currentTarget.checked ? null : allNodes.map((_, k) => k))} />
+              all ({allNodes.length})
+            </label>
+            {#if picked}
+              <div class="chips">
+                {#each allNodes as nm, ni (nm)}
+                  <button type="button" class="kchip" class:on={picked.includes(ni)} disabled={busy}
+                          onclick={() => toggleNode(ni)}
+                          title={picked.includes(ni) ? `Embed ${nm}` : `${nm} will NOT be embedded — nothing will be known about it`}>{nm}</button>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {/if}
+
         <Explain>
           {#if appRun.gran === "instance"}
             <p class="note">One whole-instance crop per animal, embedded with DINOv2 ViT-S/14 (384-d) and scored by an RBF-SVM trained on proofread labels{#if clf} — <b>{clf.dataset}</b>, CV ROC {clf.cv_roc.toFixed(3)} / PR {clf.cv_pr.toFixed(3)}{/if}. Flags by SVM decision (0 = the boundary).</p>
@@ -151,7 +190,7 @@
             {#if running}
               <button class="big stop" onclick={() => appRun.abort()}>■ Stop</button>
             {:else}
-              <button class="big" disabled={busy || !store.ready} onclick={() => appRun.run()}>
+              <button class="big" disabled={busy || !store.ready || noneSelected} onclick={() => appRun.run()}>
                 {es.hasResults ? "Re-run" : "Run"} DINO
               </button>
             {/if}
@@ -160,6 +199,8 @@
                 <RunProgress store={es} />
               {:else if busy}
                 <span class="dim">The other granularity is running — they share one worker.</span>
+              {:else if noneSelected}
+                <span class="dim">Select at least one keypoint — an empty selection embeds nothing.</span>
               {:else if workload}
                 <span class="dim">{workload.label}{workload.units ? ` · ${workload.units.toLocaleString()} forward passes` : ""}</span>
               {:else}
@@ -178,7 +219,7 @@
 
           <p class="armed" class:on={ready}>
             {ready ? "✓" : "○"} the <b>{appRun.checkKey === "dino" ? "Appearance · whole instance" : appRun.checkKey === "nodeDino" ? "Per-node · DINO" : "Keypoint (trained)"}</b> check
-            {ready ? "is armed — tick it in the Appearance tab" : "unlocks once this has results"}
+            {ready ? "is armed" : "unlocks once this has results"}{#if ready && covNote} · <b>{covNote}</b>{/if}{ready ? " — tick it in the Appearance tab" : ""}
           </p>
         </section>
       {/if}
@@ -242,6 +283,21 @@
     padding: 0.15rem 0.3rem;
   }
   .note { margin: 0; font-size: 0.62rem; color: var(--dim); line-height: 1.4; }
+  .kprow { align-items: flex-start; }
+  .chips { display: flex; flex-wrap: wrap; gap: 0.22rem; flex: 1 1 14rem; }
+  /* Off is the LOUD state here: an un-embedded keypoint is one nothing will be known about, which is
+     easier to miss than an extra one selected. */
+  .kchip {
+    font-size: 0.62rem; padding: 0.1rem 0.4rem; cursor: pointer;
+    border: 1px dashed var(--border); border-radius: var(--r-xs);
+    background: transparent; color: var(--dim); text-decoration: line-through;
+  }
+  .kchip.on {
+    border-style: solid; text-decoration: none;
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+    background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent);
+  }
+  .kchip:disabled { opacity: 0.5; cursor: default; }
   .note b { color: var(--muted); font-weight: 600; }
 
   .launch {
