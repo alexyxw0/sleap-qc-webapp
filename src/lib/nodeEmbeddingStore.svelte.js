@@ -8,9 +8,12 @@
 // getters the panel reads.
 import { store } from "./labelsStore.svelte.js";
 import * as dinoBackend from "./qc/embedding/dinoRemote.js";
-import { l2norm, stratifiedReference, buildFrameZ } from "./qc/embedding/outlier.js";
+import { l2norm, stratifiedReference, buildFrameZ, robustZ } from "./qc/embedding/outlier.js";
 import { scoreEmbeddings } from "./qc/embedding/scoreRemote.js";
 import { nodePatchPlan } from "./qc/embedding/nodePatch.js";
+import { rbfDecision } from "./qc/embedding/svm.js";
+import { fitSvm, MIN_POSITIVES } from "./qc/embedding/svmFit.js";
+import { keypointLabels } from "./keypointLabels.svelte.js";
 import { loadAll as loadCache, putMany as saveCache } from "./qc/embedding/embcache.js";
 
 const BACKENDS = { dino: dinoBackend };
@@ -59,6 +62,7 @@ export class NodeEmbeddingStore {
   // the results, never of the live `nodes` field: otherwise re-ticking a chip retroactively relabels
   // finished results, and a check that examined 2 keypoints starts claiming it examined 13.
   #ranNodes = null;
+  #trainedNodes = new Map(); // node -> locally-fitted clf, for the groups no longer scored by kNN
   #recs = []; // { fi, ii, node, thumb }
   #embs = []; // Float32Array (L2-normalized), index-aligned with #recs
   #z = []; // outlier robust-z, index-aligned with #recs (per-node within its group)
@@ -123,6 +127,73 @@ export class NodeEmbeddingStore {
     for (const r of this.#recs) covered.add(r.node);
     return { requested: this.#ranNodes ? [...this.#ranNodes] : null, covered, partial: this.#ranNodes != null };
   }
+  /**
+   * Every embedded patch of one keypoint that the user has JUDGED, as training rows.
+   *
+   * Uses every labelled patch — never a sample. A subsample would train on part of the ground truth the
+   * user paid for in review time, and would make the reported score depend on which part was drawn.
+   * Unreviewed patches are excluded outright: "not looked at" is not a clean label, and folding it in as
+   * one would teach the model that whatever nobody checked is correct.
+   */
+  trainingSetFor(ni) {
+    this.resultRev;
+    const names = store.skeleton?.nodeNames ?? [];
+    const nm = names[ni];
+    const rows = [], y = [];
+    if (!nm) return { rows, y };
+    const frames = store.frames ?? [];
+    for (let r = 0; r < this.#recs.length; r++) {
+      const rec = this.#recs[r];
+      if (rec.node !== ni || !this.#embs[r]) continue;
+      const f = frames[rec.fi];
+      if (!f) continue;
+      const v = store.labels?.videos?.indexOf(f.video) ?? 0;
+      if (!keypointLabels.isReviewed(v, f.frameIdx, rec.ii)) continue;
+      rows.push(this.#embs[r]);
+      y.push(keypointLabels.isBad(v, f.frameIdx, rec.ii, nm) ? 1 : -1);
+    }
+    return { rows, y };
+  }
+
+  /** How many judged patches this keypoint has, and whether that is enough to fit anything meaningful. */
+  trainableFor(ni) {
+    const { y } = this.trainingSetFor(ni);
+    const pos = y.reduce((s, v) => s + (v > 0 ? 1 : 0), 0);
+    return { n: y.length, pos, neg: y.length - pos, enough: pos > 0 && y.length - pos > 0, floor: MIN_POSITIVES };
+  }
+
+  /** Fit an RBF-SVM for one keypoint on its judged patches. -> { clf, cv, warning } or throws. */
+  trainFor(ni) {
+    const { rows, y } = this.trainingSetFor(ni);
+    return fitSvm(rows, y);
+  }
+
+  /**
+   * Re-score ONE keypoint's patches with a trained model, replacing that group's unsupervised z.
+   *
+   * The decisions are converted to the SAME robust-z scale the kNN path produces, rather than left as
+   * probabilities: every consumer downstream — the threshold slider, frameZByKey, the QC union, the
+   * per-node counts — is written against that scale, and a group that suddenly reported 0..1 would be
+   * silently compared to a cutoff of 3.5 and never flag. Higher decision still means more faulty, so the
+   * ordering the model learned is preserved exactly; only the units change.
+   */
+  applyTrainedModel(ni, clf) {
+    const idxs = this.#nodeIndex.get(ni) ?? [];
+    if (!idxs.length) return;
+    const dec = rbfDecision(idxs.map((r) => this.#embs[r]), clf);
+    const z = robustZ(Array.from(dec));
+    idxs.forEach((r, k) => { this.#z[r] = z[k]; });
+    this.#trainedNodes.set(ni, clf);
+    // frameZ is the max over a frame's patches, so it has to be rebuilt from every group, not this one.
+    const vidx = new Map((store.labels?.videos ?? []).map((v, i) => [v, i]));
+    this.#frameZ = buildFrameZ(this.#recs, this.#z, store.frames, vidx);
+    // The memo describes the unsupervised pass; a trained group is no longer it.
+    this.#scoreSig = null; this.#scoreRes = null;
+    this.rev++; this.resultRev++;
+  }
+  /** Which keypoints are scored by a locally-trained model rather than by unsupervised kNN. */
+  trainedNode(ni) { this.resultRev; return this.#trainedNodes.has(ni); }
+
   /** Was this keypoint embedded in the run that produced the current results? */
   coveredNode(ni) { this.resultRev; return this.#nodeIndex.has(ni); }
 
