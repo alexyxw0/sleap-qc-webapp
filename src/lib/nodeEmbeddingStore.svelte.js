@@ -38,7 +38,11 @@ export class NodeEmbeddingStore {
   modelInfo = $state(null);
   backend; // pinned at construction; "dino" is the only one built
   threshold = $state(3.5); // robust-z cutoff, shared across all node graphs
-  referenceFraction = $state(0.2); // per-node kNN "normal" reference fraction (stratified by video)
+  // The kNN "normal" yardstick — NOT a coverage setting: every patch is scored either way. It is an
+  // even, per-video subsample on purpose. At 100% a slow-moving animal's own neighbouring video frames
+  // become its nearest neighbours, distance goes to ~0, and a fault that persists across a few frames
+  // reads as perfectly normal. Fixed rather than exposed: it is a tuned constant, not a user choice.
+  referenceFraction = $state(0.2);
   patchFraction = 0.3; // node patch side as a fraction of the instance's bbox max-side
   k = 6;
   selectedNode = $state(null); // which keypoint's graph the panel is inspecting

@@ -36,9 +36,6 @@
   // Every instance, always. Subsampling left frames unexamined, which is the same "not looked at vs
   // clean" ambiguity the keypoint coverage work exists to kill — and embeddings are cached, so the full
   // pass is a one-time cost. The keypoint selector is the cost lever that survives.
-  function setRef(v) {
-    if (es) es.referenceFraction = Math.min(1, Math.max(0.05, (+v || 20) / 100));
-  }
 
   // What a launch will actually chew through, so "all" is an informed choice rather than a shrug.
   const workload = $derived.by(() => {
@@ -217,22 +214,21 @@
                unsupervised kNN, where the patch is small enough for it to discriminate. -->
           <span class="fixed" title={appRun.gran === "instance"
               ? "Bundled RBF-SVM trained on proofread labels. Unsupervised kNN at this granularity scored ~chance, so it is not offered."
-              : "Each patch vs the k nearest patches of the SAME keypoint (robust-z). No labels needed. For the supervised per-keypoint route, start over and bring precomputed bundles."}>
+              : "Each patch vs the k nearest patches of the SAME keypoint (robust-z). No labels needed."}>
             {appRun.scorer}{#if appRun.gran === "instance" && clf}<small> · cv roc {clf.cv_roc.toFixed(2)}</small>{/if}
           </span>
+          {#if appRun.gran === "node"}
+            <!-- Per-keypoint SVMs exist and ship (nose, CV ROC 0.92-0.95) — they are just not usable on
+                 patches cropped HERE, so the route rather than the scorer is what changes. Saying so
+                 beats a Scorer row that looks like a dead end. -->
+            <button class="xroute" onclick={() => appRun.setRoute("bundle")}
+                    title="A trained per-keypoint SVM needs patches cropped the way its trainer cropped them — a fixed pixel size. This pass crops a fraction of each instance's bbox, so the two are not interchangeable. Bring precomputed bundles instead.">
+              want a trained SVM? →
+            </button>
+          {/if}
         </div>
 
         {#if es}
-          {#if appRun.gran === "node"}
-            <div class="row">
-              <span class="lbl">Reference</span>
-              <label class="num" title="Every patch is SCORED. This sets how much of the file forms the 'normal' yardstick each keypoint is compared against — an even, per-video subsample, decorrelated so near-duplicate frames don't mask each other.">
-                <input type="number" min="5" max="100" step="5" disabled={busy}
-                       value={Math.round(es.referenceFraction * 100)} oninput={(e) => setRef(e.currentTarget.value)} />%
-                <span class="dim">of the file is the yardstick</span>
-              </label>
-            </div>
-          {/if}
         {/if}
 
         {#if es && appRun.gran === "node" && allNodes.length}
@@ -393,26 +389,14 @@
     background: color-mix(in srgb, var(--accent) 12%, transparent);
   }
   .fixed small { color: var(--dim); font-size: 0.55rem; }
-  .num {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    font-size: 0.66rem;
-    color: var(--muted);
+  .xroute {
+    background: none; border: none; padding: 0.1rem 0.2rem; cursor: pointer;
+    color: var(--accent); font-size: 0.62rem;
   }
-  .num input {
-    width: 4.4rem;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--r-xs);
-    color: var(--text);
-    font-size: 0.66rem;
-    padding: 0.15rem 0.3rem;
-  }
+  .xroute:hover { text-decoration: underline; }
   .note { margin: 0; font-size: 0.62rem; color: var(--dim); line-height: 1.4; }
   .kprow { align-items: flex-start; }
   .ksum { flex: none; font-size: 0.6rem; color: var(--dim); font-variant-numeric: tabular-nums; }
-  .num .dim { font-size: 0.6rem; }
   .chips { display: flex; flex-wrap: wrap; gap: 0.22rem; flex: 1 1 14rem; }
   /* Off is the LOUD state here: an un-embedded keypoint is one nothing will be known about, which is
      easier to miss than an extra one selected. */
