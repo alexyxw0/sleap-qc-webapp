@@ -30,12 +30,6 @@ function drawPatch(canvas, img, box) {
   ctx.drawImage(img, x, y, Math.min(box.side, W - x), Math.min(box.side, H - y), 0, 0, canvas.width, canvas.height);
 }
 
-const evenSample = (arr, cap) => {
-  if (arr.length <= cap) return arr;
-  const step = arr.length / cap, out = [];
-  for (let i = 0; i < cap; i++) out.push(arr[Math.floor(i * step)]);
-  return out;
-};
 
 export class NodeEmbeddingStore {
   status = $state("idle"); // idle | loading-model | running | scoring | done | error | aborted
@@ -44,7 +38,6 @@ export class NodeEmbeddingStore {
   modelInfo = $state(null);
   backend; // pinned at construction; "dino" is the only one built
   threshold = $state(3.5); // robust-z cutoff, shared across all node graphs
-  sampleCap = $state(null); // max INSTANCES to embed (each expands to its visible-node patches); null/0 => all
   referenceFraction = $state(0.2); // per-node kNN "normal" reference fraction (stratified by video)
   patchFraction = 0.3; // node patch side as a fraction of the instance's bbox max-side
   k = 6;
@@ -105,9 +98,8 @@ export class NodeEmbeddingStore {
    *  the EFFECTIVE cap — cap=5000 on a 1,500-instance file is the same pass as no cap at all, and a raw
    *  comparison would report "settings changed" when nothing did. */
   #configSig() {
-    const cap = this.sampleCap && this.sampleCap > 0 ? Math.min(this.sampleCap, this.instanceCount) : this.instanceCount;
     const sel = Array.isArray(this.nodes) ? [...this.nodes].sort((a, b) => a - b).join(",") : "all";
-    return `${cap}|${this.referenceFraction}|${this.patchFraction}|${sel}`;
+    return `${this.instanceCount}|${this.referenceFraction}|${this.patchFraction}|${sel}`;
   }
   #ranSig = null;
   /** Settings have moved since the run that produced these results. */
@@ -273,9 +265,7 @@ export class NodeEmbeddingStore {
       const n = frames[fi].lf?.instances?.length ?? 0;
       for (let ii = 0; ii < n; ii++) insts.push({ fi, ii });
     }
-    const cap = this.sampleCap && this.sampleCap > 0 ? this.sampleCap : insts.length;
-    const list = evenSample(insts, cap);
-    if (!list.length) { this.status = "error"; this.message = "No instances to embed."; return; }
+    if (!insts.length) { this.status = "error"; this.message = "No instances to embed."; return; }
 
     // Resolve the keypoint selection ONCE, here, and snapshot it: the results must keep describing the
     // run that made them even if the user re-ticks chips afterwards.
@@ -290,7 +280,7 @@ export class NodeEmbeddingStore {
     this.#ranSig = this.#configSig();
 
     const byFrame = new Map();
-    for (const it of list) { if (!byFrame.has(it.fi)) byFrame.set(it.fi, []); byFrame.get(it.fi).push(it.ii); }
+    for (const it of insts) { if (!byFrame.has(it.fi)) byFrame.set(it.fi, []); byFrame.get(it.fi).push(it.ii); }
     const vidx = new Map((store.labels?.videos ?? []).map((v, i) => [v, i]));
 
     // Plan every (instance, node) patch up front (pure point math) so fully-cached frames skip decode

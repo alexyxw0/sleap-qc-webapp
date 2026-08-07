@@ -33,12 +33,9 @@
   const busy = $derived(appRun.anyRunning); // the two stores share one worker
   const ready = $derived(qc.checkReady(appRun.checkKey));
 
-  // Coverage: default is EVERY instance (sampleCap null) — the sampling gap is exactly how a real outlier
-  // goes unscored. capVal remembers the last numeric cap across toggles of the "all" checkbox.
-  let capVal = $state(2000);
-  const capOn = $derived(es ? es.sampleCap != null && es.sampleCap > 0 : false);
-  function setCapOn(on) { if (es) es.sampleCap = on ? capVal : null; }
-  function setCapVal(v) { capVal = Math.max(100, Math.round(v) || 100); if (es) es.sampleCap = capVal; }
+  // Every instance, always. Subsampling left frames unexamined, which is the same "not looked at vs
+  // clean" ambiguity the keypoint coverage work exists to kill — and embeddings are cached, so the full
+  // pass is a one-time cost. The keypoint selector is the cost lever that survives.
   function setRef(v) {
     if (es) es.referenceFraction = Math.min(1, Math.max(0.05, (+v || 20) / 100));
   }
@@ -46,9 +43,8 @@
   // What a launch will actually chew through, so "all" is an informed choice rather than a shrug.
   const workload = $derived.by(() => {
     if (!es) return null;
-    const inst = es.instanceCount || 0;
-    const n = capOn ? Math.min(inst || Infinity, capVal) : inst;
-    if (!n || !Number.isFinite(n)) return null;
+    const n = es.instanceCount || 0;
+    if (!n) return null;
     if (appRun.gran !== "node") return { units: n, label: `${n.toLocaleString()} instance crops` };
     const nodes = store.skeleton?.nodeNames?.length ?? 0;
     // Without a node count the pass count is unknowable — say nothing rather than understate it.
@@ -69,8 +65,11 @@
   const noneSelected = $derived(picked != null && picked.length === 0);
   function toggleNode(ni) {
     if (!es) return;
+    // null means "all" in the store; materialise it on the first deselect, and collapse back to null
+    // when everything is on again so the config signature keeps one representation of the same pass.
     const cur = Array.isArray(es.nodes) ? es.nodes : allNodes.map((_, k) => k);
-    es.nodes = cur.includes(ni) ? cur.filter((k) => k !== ni) : [...cur, ni].sort((a, b) => a - b);
+    const next = cur.includes(ni) ? cur.filter((k) => k !== ni) : [...cur, ni].sort((a, b) => a - b);
+    es.nodes = next.length === allNodes.length ? null : next;
   }
   const covNote = $derived(appearanceCoverageNote(appRun.checkKey));
 
@@ -224,49 +223,30 @@
         </div>
 
         {#if es}
-          <div class="row">
-            <span class="lbl">Coverage</span>
-            <label class="chk" title="Embed EVERY instance — no frame is skipped. Embeddings are cached, so this is a one-time cost per file.">
-              <input type="checkbox" checked={!capOn} disabled={busy}
-                     onchange={(e) => setCapOn(!e.currentTarget.checked)} />
-              all{es.instanceCount ? ` (${es.instanceCount.toLocaleString()})` : ""}
-            </label>
-            {#if capOn}
-              <label class="num" title="Evenly subsample this many instances instead of embedding all of them">
-                cap
-                <input type="number" min="100" max={es.instanceCount || 100000} step="100"
-                       value={capVal} disabled={busy} oninput={(e) => setCapVal(+e.currentTarget.value)} />
-              </label>
-            {/if}
-            <!-- Reference only exists for the kNN route. Whole-instance is trained-SVM only, so showing
-                 this there is a control that changes nothing. -->
-            {#if appRun.gran === "node"}
-              <label class="num" title="Every patch is SCORED, but the 'normal' yardstick is an even, per-video subsample of this size — decorrelated so near-duplicate frames don't mask each other.">
-                reference
+          {#if appRun.gran === "node"}
+            <div class="row">
+              <span class="lbl">Reference</span>
+              <label class="num" title="Every patch is SCORED. This sets how much of the file forms the 'normal' yardstick each keypoint is compared against — an even, per-video subsample, decorrelated so near-duplicate frames don't mask each other.">
                 <input type="number" min="5" max="100" step="5" disabled={busy}
                        value={Math.round(es.referenceFraction * 100)} oninput={(e) => setRef(e.currentTarget.value)} />%
+                <span class="dim">of the file is the yardstick</span>
               </label>
-            {/if}
-          </div>
+            </div>
+          {/if}
         {/if}
 
         {#if es && appRun.gran === "node" && allNodes.length}
           <div class="row kprow">
             <span class="lbl">Keypoints</span>
-            <label class="chk" title="Embed a patch for every keypoint. Untick to choose a subset — this pass is instances × keypoints, so it is the biggest thing you control.">
-              <input type="checkbox" checked={picked == null} disabled={busy}
-                     onchange={(e) => (es.nodes = e.currentTarget.checked ? null : allNodes.map((_, k) => k))} />
-              all ({allNodes.length})
-            </label>
-            {#if picked}
-              <div class="chips">
-                {#each allNodes as nm, ni (nm)}
-                  <button type="button" class="kchip" class:on={picked.includes(ni)} disabled={busy}
-                          onclick={() => toggleNode(ni)}
-                          title={picked.includes(ni) ? `Embed ${nm}` : `${nm} will NOT be embedded — nothing will be known about it`}>{nm}</button>
-                {/each}
-              </div>
-            {/if}
+            <div class="chips">
+              {#each allNodes as nm, ni (nm)}
+                {@const on = picked == null || picked.includes(ni)}
+                <button type="button" class="kchip" class:on disabled={busy}
+                        onclick={() => toggleNode(ni)}
+                        title={on ? `${nm} will be embedded — click to skip it` : `${nm} will NOT be embedded, so nothing will be known about it`}>{nm}</button>
+              {/each}
+            </div>
+            <span class="ksum">{nSel} of {allNodes.length}</span>
           </div>
         {/if}
 
@@ -413,7 +393,7 @@
     background: color-mix(in srgb, var(--accent) 12%, transparent);
   }
   .fixed small { color: var(--dim); font-size: 0.55rem; }
-  .chk, .num {
+  .num {
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
@@ -431,6 +411,8 @@
   }
   .note { margin: 0; font-size: 0.62rem; color: var(--dim); line-height: 1.4; }
   .kprow { align-items: flex-start; }
+  .ksum { flex: none; font-size: 0.6rem; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .num .dim { font-size: 0.6rem; }
   .chips { display: flex; flex-wrap: wrap; gap: 0.22rem; flex: 1 1 14rem; }
   /* Off is the LOUD state here: an un-embedded keypoint is one nothing will be known about, which is
      easier to miss than an extra one selected. */
