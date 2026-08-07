@@ -34,7 +34,10 @@ const frame = (frameIdx, nInst) => ({
 });
 const fakeFrames = [frame(0, 2), frame(1, 2), frame(2, 2), frame(3, 2), frame(4, 2), frame(5, 2)];
 vi.mock("./labelsStore.svelte.js", () => ({
-  store: { labels: { videos: [vA] }, frames: fakeFrames, fileName: "test.pkg.slp", getFrameImage: async () => ({ width: 100, height: 100 }) },
+  // Node NAMES matter: keypoint labels are keyed by name, so training cannot join without them.
+  store: { labels: { videos: [vA] }, frames: fakeFrames, fileName: "test.pkg.slp",
+           skeleton: { nodeNames: ["nose", "ear", "tail"] },
+           getFrameImage: async () => ({ width: 100, height: 100 }) },
 }));
 
 const { nodeEmbeddingStores, NodeEmbeddingStore } = await import("./nodeEmbeddingStore.svelte.js");
@@ -157,6 +160,59 @@ describe("nodeEmbeddingStore.run() — runtime", () => {
     const st = new NodeEmbeddingStore("dino");
     expect(typeof st.cacheId).toBe("string");
     expect(st.cacheId).toContain("dino");
+  });
+
+  it("trains on EVERY judged patch of a keypoint — never a sample", async () => {
+    const { keypointLabels } = await import("./keypointLabels.svelte.js");
+    const st = new NodeEmbeddingStore("dino");
+    await st.run();
+    keypointLabels.clear();
+    // judge 8 of the 12 instances on node 0; leave 4 unjudged
+    for (let f = 0; f < 4; f++) {
+      for (let ii = 0; ii < 2; ii++) keypointLabels.markAt(`0:${f}`, ii, "nose", (f + ii) % 2 === 0);
+    }
+    const set = st.trainingSetFor(0);
+    expect(set.rows.length, "the training set is not every judged patch").toBe(8);
+    expect(set.y.filter((v) => v > 0).length).toBe(4);
+    // the 4 unjudged instances must be absent — "not looked at" is not a clean label
+    expect(set.rows.length).toBeLessThan(12);
+    const t = st.trainableFor(0);
+    expect(t).toMatchObject({ n: 8, pos: 4, neg: 4, enough: true });
+    keypointLabels.clear();
+  });
+
+  it("an unjudged file trains nothing, and says which half is missing", async () => {
+    const { keypointLabels } = await import("./keypointLabels.svelte.js");
+    const st = new NodeEmbeddingStore("dino");
+    await st.run();
+    keypointLabels.clear();
+    expect(st.trainableFor(0)).toMatchObject({ n: 0, pos: 0, enough: false });
+    expect(() => st.trainFor(0)).toThrow();
+    // one class only is still not trainable
+    for (let f = 0; f < 3; f++) keypointLabels.markAt(`0:${f}`, 0, "nose", true);
+    expect(st.trainableFor(0).enough, "one class cannot be learned").toBe(false);
+    keypointLabels.clear();
+  });
+
+  it("a trained model re-scores its keypoint on the SAME scale the threshold expects", async () => {
+    const { keypointLabels } = await import("./keypointLabels.svelte.js");
+    const st = new NodeEmbeddingStore("dino");
+    await st.run();
+    keypointLabels.clear();
+    for (let f = 0; f < 6; f++) {
+      for (let ii = 0; ii < 2; ii++) keypointLabels.markAt(`0:${f}`, ii, "nose", ii === 0);
+    }
+    const before = st.pointsForNode(0).map((p) => p.z);
+    const { clf, cv } = st.trainFor(0);
+    st.applyTrainedModel(0, clf);
+    const after = st.pointsForNode(0).map((p) => p.z);
+    expect(after).not.toEqual(before);              // it actually re-scored
+    expect(st.trainedNode(0)).toBe(true);
+    expect(st.trainedNode(1), "only the trained keypoint changed").toBe(false);
+    // robust-z, not probabilities: a 0..1 group would silently never clear the 3.5 cutoff
+    expect(Math.max(...after.map(Math.abs))).toBeGreaterThan(1);
+    expect(cv.nPos + cv.nNeg).toBe(12);
+    keypointLabels.clear();
   });
 
   it("the registry offers DINO only", () => {

@@ -7,6 +7,7 @@
   import { view as viewport } from "../viewStore.svelte.js";
   import { nodeEmbeddingStores } from "../nodeEmbeddingStore.svelte.js";
   import { nodePointBox } from "../qc/focusBox.js";
+  import { keypointLabels } from "../keypointLabels.svelte.js";
 
   let jumpPos = $state(0);
   const es = nodeEmbeddingStores.dino;
@@ -77,6 +78,32 @@
     });
   });
   const someAbsent = $derived(chips.some((c) => c.state === "absent"));
+
+  // ---- train an SVM on the judged patches of the viewed keypoint ---------------------------------
+  // The embeddings are already here and the labels are already here; this closes the loop without a
+  // round trip through the offline exporter. Fit on EVERY judged patch — never a sample.
+  let trained = $state(null);   // { node, cv, warning }
+  let trainErr = $state("");
+  let training = $state(false);
+  const trainable = $derived.by(() => {
+    void es.resultRev; void keypointLabels.rev;
+    const ni = es.selectedNode;
+    return ni == null ? null : es.trainableFor(ni);
+  });
+  function train() {
+    const ni = es.selectedNode;
+    if (ni == null) return;
+    training = true; trainErr = ""; trained = null;
+    try {
+      const { clf, cv, warning } = es.trainFor(ni);
+      es.applyTrainedModel(ni, clf);
+      trained = { node: ni, cv, warning };
+    } catch (e) {
+      trainErr = e?.message ?? String(e);
+    } finally {
+      training = false;
+    }
+  }
 </script>
 
 <div class="emb">
@@ -95,6 +122,39 @@
         </button>
       {/each}
     </div>
+    {#if es.selectedNode != null && trainable}
+      <div class="train">
+        <div class="t-row">
+          <span class="t-l">Train an SVM on <b>{nodeName(es.selectedNode)}</b></span>
+          <span class="t-n">{trainable.n} judged · {trainable.pos} faulty / {trainable.neg} clean</span>
+          <button class="t-go" disabled={!trainable.enough || training} onclick={train}
+                  title={trainable.enough
+                    ? "Fits on every judged patch of this keypoint — no sampling — and scores itself by stratified cross-validation"
+                    : "Needs at least one faulty AND one clean judged patch of this keypoint. Proofread a few frames first."}>
+            {training ? "fitting…" : "fit"}
+          </button>
+        </div>
+        {#if !trainable.enough}
+          <p class="t-warn">Needs at least one faulty and one clean judged <b>{nodeName(es.selectedNode)}</b> — one class cannot be learned.</p>
+        {:else if trainable.pos < trainable.floor}
+          <p class="t-warn">
+            ⚠ Only {trainable.pos} faulty example{trainable.pos === 1 ? "" : "s"}. Below {trainable.floor} the
+            cross-validated score is noise rather than a measurement — label more before trusting it.
+          </p>
+        {/if}
+        {#if trainErr}<p class="t-err">{trainErr}</p>{/if}
+        {#if trained && trained.node === es.selectedNode}
+          <p class="t-res">
+            ✓ fitted on {trained.cv.nPos + trained.cv.nNeg} judged patches ·
+            <b>CV ROC {trained.cv.roc == null ? "—" : trained.cv.roc.toFixed(3)}</b>
+            {#if trained.cv.pr != null}· PR {trained.cv.pr.toFixed(3)}{/if}
+            <span class="t-k">({trained.cv.folds}-fold, held out)</span>
+          </p>
+          {#if trained.warning}<p class="t-warn">⚠ {trained.warning}</p>{/if}
+          <p class="t-note">Scores below now come from this model. It is trained on <i>this</i> file — it is not the validated bundle, and its score is only as good as the labels behind it.</p>
+        {/if}
+      </div>
+    {/if}
     {#if someAbsent}
       <p class="cov">
         ✳ {chips.filter((c) => c.state !== "absent").length} of {chips.length} keypoints embedded —
@@ -164,6 +224,18 @@
   .emb { display: flex; flex-direction: column; gap: 0.5rem; }
   .hint { font-size: 0.66rem; color: var(--dim); margin: 0; }
   .cov { margin: 0; font-size: 0.6rem; color: #f0b47a; line-height: 1.4; }
+  .train { display: flex; flex-direction: column; gap: 0.25rem; padding: 0.4rem 0.5rem; border: 1px solid var(--border); border-radius: 7px; }
+  .t-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+  .t-l { font-size: 0.68rem; color: var(--text); }
+  .t-n { font-size: 0.6rem; color: var(--dim); font-variant-numeric: tabular-nums; margin-left: auto; }
+  .t-go { background: transparent; border: 1px solid var(--accent); border-radius: var(--r-xs); color: var(--accent); font-size: 0.64rem; padding: 0.15rem 0.6rem; cursor: pointer; }
+  .t-go:disabled { opacity: 0.4; border-color: var(--border); color: var(--dim); cursor: default; }
+  .t-warn { margin: 0; font-size: 0.6rem; color: #f0b47a; line-height: 1.4; }
+  .t-err { margin: 0; font-size: 0.6rem; color: #fca5a5; }
+  .t-res { margin: 0; font-size: 0.64rem; color: #6ee7a8; }
+  .t-res b { color: #6ee7a8; }
+  .t-k { color: var(--dim); font-size: 0.56rem; }
+  .t-note { margin: 0; font-size: 0.58rem; color: var(--dim); line-height: 1.4; }
   /* struck through, like the picker's off-state — the same keypoint in the same visual language */
   .nodechip.absent { text-decoration: line-through; opacity: 0.5; border-style: dashed; }
 
