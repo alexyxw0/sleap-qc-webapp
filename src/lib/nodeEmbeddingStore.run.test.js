@@ -139,20 +139,17 @@ describe("nodeEmbeddingStore.run() — runtime", () => {
     expect(st.configDirty).toBe(false);
   });
 
-  it("an equivalent cap is not a change — the EFFECTIVE cap is what ran", async () => {
+  it("a re-run with the same selection is not dirty", async () => {
     const st = new NodeEmbeddingStore("dino");
     await st.run();
     expect(st.configDirty).toBe(false);
-    // 5000 on a 12-instance file is the same pass as no cap at all; a raw comparison would cry wolf
-    st.sampleCap = 5000;
-    expect(st.configDirty, "an unreachable cap reported as a settings change").toBe(false);
-    st.sampleCap = 4;
-    expect(st.configDirty).toBe(true);
+    await st.run();
+    expect(st.configDirty).toBe(false);
   });
 
   it("nothing is dirty before a run — there is no run to disagree with", () => {
     const st = new NodeEmbeddingStore("dino");
-    st.sampleCap = 3;
+    st.nodes = [0];
     expect(st.configDirty).toBe(false);
   });
 

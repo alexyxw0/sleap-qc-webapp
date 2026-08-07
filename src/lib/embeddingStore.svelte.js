@@ -44,12 +44,6 @@ function drawCrop(canvas, img, sq) {
   ctx.drawImage(img, x, y, Math.min(sq.side, W - x), Math.min(sq.side, H - y), 0, 0, canvas.width, canvas.height);
 }
 
-const evenSample = (arr, cap) => {
-  if (arr.length <= cap) return arr;
-  const step = arr.length / cap, out = [];
-  for (let i = 0; i < cap; i++) out.push(arr[Math.floor(i * step)]);
-  return out;
-};
 
 class EmbeddingStore {
   status = $state("idle"); // idle | loading-model | running | scoring | done | error | aborted
@@ -65,7 +59,6 @@ class EmbeddingStore {
   // nothing selects it — per-keypoint patches are where the unsupervised route still discriminates.
   method = $state("trained");
   threshold = $state(classifierInfo()?.threshold ?? -0.67); // trained: SVM decision cutoff · knn: robust-z
-  sampleCap = $state(null); // max crops to EMBED; null/0 => ALL instances (full coverage, no sampling gap)
   referenceFraction = $state(0.2); // fraction of embedded instances forming the kNN "normal" reference
   k = 6;
   static REF_MIN_PER_VIDEO = 20; // per-video floor so every video has enough same-domain reference points
@@ -121,8 +114,7 @@ class EmbeddingStore {
   /** The settings this run used. referenceFraction is deliberately absent: the trained scorer — the only
    *  one the UI selects — returns before it is read, so including it would report a phantom change. */
   #configSig() {
-    const cap = this.sampleCap && this.sampleCap > 0 ? Math.min(this.sampleCap, this.instanceCount) : this.instanceCount;
-    return `${cap}|${this.method}`;
+    return `${this.instanceCount}|${this.method}`;
   }
   #ranSig = null;
   get configDirty() { this.rev; return this.#ranSig != null && this.#ranSig !== this.#configSig(); }
@@ -204,16 +196,14 @@ class EmbeddingStore {
       for (let ii = 0; ii < insts.length; ii++) items.push({ fi, ii });
     }
     // null/0/≥total => embed ALL instances (no sampling gap); a positive cap < total evenly subsamples.
-    const cap = this.sampleCap && this.sampleCap > 0 ? this.sampleCap : items.length;
-    const list = evenSample(items, cap);
-    if (!list.length) { this.status = "error"; this.message = "No instances to embed."; return; }
+    if (!items.length) { this.status = "error"; this.message = "No instances to embed."; return; }
 
     const byFrame = new Map();
-    for (const it of list) { if (!byFrame.has(it.fi)) byFrame.set(it.fi, []); byFrame.get(it.fi).push(it.ii); }
+    for (const it of items) { if (!byFrame.has(it.fi)) byFrame.set(it.fi, []); byFrame.get(it.fi).push(it.ii); }
 
     const vidx = new Map((store.labels?.videos ?? []).map((v, i) => [v, i]));
     this.status = "running";
-    this.progress = { done: 0, total: list.length, startedAt: performance.now() };
+    this.progress = { done: 0, total: items.length, startedAt: performance.now() };
     this.#ranSig = this.#configSig();
     const crop = document.createElement("canvas");
     crop.width = crop.height = be.MODEL.input;
@@ -225,7 +215,7 @@ class EmbeddingStore {
     const fresh = []; // [cropKey, { emb, thumb }] embedded this run — persisted to IndexedDB after
     const usedKeys = []; // crop keys, index-aligned with #recs — signs the embedding set for the scoring cache
     let lastYield = performance.now();
-    const setMsg = () => { this.message = `Embedding ${list.length} crops…${hits ? ` · ${hits} reused from cache` : ""}`; };
+    const setMsg = () => { this.message = `Embedding ${items.length} crops…${hits ? ` · ${hits} reused from cache` : ""}`; };
     setMsg();
 
     // Resolve every frame's crop boxes + cache keys up front (pure point math): fully-cached frames
