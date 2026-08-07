@@ -1,20 +1,19 @@
 // Per-KEYPOINT appearance-outlier analysis. Where embeddingStore embeds one whole-instance crop, this
 // embeds a small patch around EACH node and scores each keypoint type against ITS OWN kind (nose vs
 // noses) — a far more sensitive, localized signal for a single mis-placed / occluded keypoint, plus
-// per-node attribution. Two pinned backends (classical / dino), same as embeddingStore. It deliberately
+// per-node attribution. One pinned backend (dino), same as embeddingStore. It deliberately
 // exposes the SAME frame-level QC interface (hasResults / resultRev / threshold / frameZByKey /
 // flaggedFrameKeys / flaggedFrameCount) so qcStore folds it into the flagged union like any other
 // appearance check. The per-node graphs (one PCA scatter per keypoint) live behind the node-indexed
 // getters the panel reads.
 import { store } from "./labelsStore.svelte.js";
 import * as dinoBackend from "./qc/embedding/dinoRemote.js";
-import * as classicalBackend from "./qc/embedding/classical.js";
 import { l2norm, stratifiedReference, buildFrameZ } from "./qc/embedding/outlier.js";
 import { scoreEmbeddings } from "./qc/embedding/scoreRemote.js";
 import { nodePatchPlan } from "./qc/embedding/nodePatch.js";
 import { loadAll as loadCache, putMany as saveCache } from "./qc/embedding/embcache.js";
 
-const BACKENDS = { classical: classicalBackend, dino: dinoBackend };
+const BACKENDS = { dino: dinoBackend };
 
 // A node patch is fully determined by (video, frame, node, box) — round the box to keep the key stable
 // against sub-pixel jitter. `node:` distinguishes it from the instance-level cropKey (same cache store).
@@ -38,12 +37,12 @@ const evenSample = (arr, cap) => {
   return out;
 };
 
-class NodeEmbeddingStore {
+export class NodeEmbeddingStore {
   status = $state("idle"); // idle | loading-model | running | scoring | done | error | aborted
   message = $state("");
-  progress = $state({ done: 0, total: 0 });
+  progress = $state({ done: 0, total: 0, startedAt: 0 });
   modelInfo = $state(null);
-  backend; // pinned at construction: "classical" | "dino"
+  backend; // pinned at construction; "dino" is the only one built
   threshold = $state(3.5); // robust-z cutoff, shared across all node graphs
   sampleCap = $state(null); // max INSTANCES to embed (each expands to its visible-node patches); null/0 => all
   referenceFraction = $state(0.2); // per-node kNN "normal" reference fraction (stratified by video)
@@ -70,9 +69,9 @@ class NodeEmbeddingStore {
   #scoreSig = null;
   #scoreRes = null; // { z, coords, nodeIndex, nodeStats, frameZ } cached for an identical re-run
 
-  /** One store per backend so classical + DINO per-node analyses coexist (like embeddingStores). */
-  constructor(backend = "classical") { this.backend = BACKENDS[backend] ? backend : "classical"; }
-  #be() { return BACKENDS[this.backend] ?? classicalBackend; }
+  /** One store per backend, so a second encoder could coexist here (like embeddingStores). */
+  constructor(backend = "dino") { this.backend = BACKENDS[backend] ? backend : "dino"; }
+  #be() { return BACKENDS[this.backend] ?? dinoBackend; }
 
   // Namespaced by backend AND the "node" mode so per-node patches never collide with the instance-level
   // crop cache (different (video,frame,bbox) semantics) in the shared IndexedDB store.
@@ -180,6 +179,18 @@ class NodeEmbeddingStore {
     return { r, fi: rec.fi, ii: rec.ii, node: rec.node, thumb: rec.thumb, z: this.#z[r] ?? 0, xy: this.#coords[r] ?? [0, 0] };
   }
 
+  /** Throughput + ETA for the in-flight run, or null when there is not yet enough to say anything.
+   *  Read off progress.done, so it re-derives on every batch — `performance.now()` alone is not reactive.
+   *  `startedAt` is stamped AFTER the model is ready, so a one-time 90 MB download can't poison the rate. */
+  get pace() {
+    const { done, total, startedAt } = this.progress;
+    if (!startedAt || !total || done <= 0) return null;
+    const elapsed = (performance.now() - startedAt) / 1000;
+    if (elapsed < 0.75) return null; // the first fraction of a second says nothing useful
+    const rate = done / elapsed;
+    return { rate, elapsed, etaSec: done < total ? (total - done) / rate : 0, frac: done / total };
+  }
+
   abort() { this.#abort = true; }
 
   async run() {
@@ -237,7 +248,7 @@ class NodeEmbeddingStore {
     if (!total) { this.status = "error"; this.message = "No placed keypoints to embed (instances need ≥2 nodes)."; return; }
 
     this.status = "running";
-    this.progress = { done: 0, total };
+    this.progress = { done: 0, total, startedAt: performance.now() };
     const crop = document.createElement("canvas");
     crop.width = crop.height = be.MODEL.input;
     const cropCtx = crop.getContext("2d", { willReadFrequently: true });
@@ -367,6 +378,5 @@ class NodeEmbeddingStore {
 
 // One per-node store per backend, coexisting with the instance-level embeddingStores.
 export const nodeEmbeddingStores = {
-  classical: new NodeEmbeddingStore("classical"),
   dino: new NodeEmbeddingStore("dino"),
 };

@@ -107,3 +107,41 @@ export function confusion(pairs) {
   }
   return metrics({ both, qcOnly, manualOnly, neither });
 }
+
+/**
+ * Parse the PER-KEYPOINT rows of a reviewed `faulty_keypoints.csv` into the source-agnostic shape
+ * `keypointLabels.ingest()` wants: `[{ video, frameIdx, inst, bad: [nodeNames] }]`, one row per REVIEWED
+ * instance.
+ *
+ * `parseManualCheck` above is deliberately frame-level (it answers "is this frame faulty?"). This keeps the
+ * `bad_keypoints` column that one discards, which is what per-keypoint few-shot adaptation needs.
+ *
+ * Schema notes: `bad_keypoints` is a `;`-separated list of node NAMES ("" / absent = this instance was
+ * reviewed and found clean). Every row is a reviewed instance, so a node missing from `bad` is a genuine
+ * NEGATIVE for that node. Returns { rows, nodes, error? }.
+ */
+export function parseKeypointLabels(text) {
+  const lines = String(text ?? "").split(/\r?\n/).filter((l) => l.trim().length);
+  if (!lines.length) return { error: "Empty file.", rows: [], nodes: [] };
+  const header = splitCsvLine(lines[0]).map((h) => h.trim().toLowerCase().replace(/^﻿/, ""));
+  const vi = findCol(header, "video", "video_idx");
+  const fi = findCol(header, "frame_idx", "frameidx");
+  const ii = findCol(header, "instance", "instance_idx", "inst");
+  const bi = findCol(header, "bad_keypoints", "bad_nodes");
+  if (bi < 0) return { error: "No bad_keypoints column — this isn't a per-keypoint review export.", rows: [], nodes: [] };
+  if (fi < 0 || ii < 0) return { error: "Need frame_idx and instance columns.", rows: [], nodes: [] };
+
+  const rows = [];
+  const nodes = new Set();
+  for (let i = 1; i < lines.length; i++) {
+    const c = splitCsvLine(lines[i]);
+    const frameIdx = parseInt(c[fi], 10);
+    const inst = parseInt(c[ii], 10);
+    if (!Number.isFinite(frameIdx) || !Number.isFinite(inst)) continue;
+    const video = vi >= 0 ? parseInt(c[vi], 10) || 0 : 0;
+    const bad = String(c[bi] ?? "").split(";").map((s) => s.trim()).filter(Boolean);
+    for (const n of bad) nodes.add(n);
+    rows.push({ video, frameIdx, inst, bad });
+  }
+  return { rows, nodes: [...nodes] };
+}

@@ -86,15 +86,36 @@ function projectPointToPolyline(point, polyline, minNorm = 1e-6) {
   return bestTan == null ? null : { foot: bestFoot, tangent: bestTan };
 }
 
-/** Signed side (+1/-1/0) of the "left" member relative to the local midline tangent. */
-function signedSideLocal(leftPt, rightPt, polyline) {
+/** Signed side (+1/-1/0) of the "left" member relative to the local midline tangent. 0 = "no info":
+ *  excluded from both fit and score, so an ambiguous pose neither teaches nor triggers the check.
+ *
+ *  Two independent degeneracy gates, both needed on real data:
+ *
+ *  `minLateral` — SIGN CONFIDENCE. |cross| / |rel| is |sin θ| between the pair's offset and the midline
+ *  tangent: ~1 when the pair sits across the spine (normal), ~0 when the members are strung out one behind
+ *  the other along it, where the sign is noise.
+ *
+ *  `minStraddle` — the pair must actually STRADDLE the midline (opposite signed offsets, and neither member
+ *  essentially on the axis). A curled animal with its head turned foreshortens both ears onto ONE side of
+ *  the spine; "which side is the left ear on" is then undefined, and scoring it produced false flips
+ *  (observed: ear_l −15, ear_r −99 — both the same side, ear_l practically on the head→neck segment). The
+ *  balance is min(|sL|,|sR|) / |sL − sR|, which is 0.5 for a symmetric pair and → 0 as one member
+ *  approaches the axis. */
+function signedSideLocal(leftPt, rightPt, polyline, minLateral = 0.2, minStraddle = 0.15) {
   if (!isVisible(leftPt) || !isVisible(rightPt)) return null;
   const mid = [(leftPt[0] + rightPt[0]) / 2, (leftPt[1] + rightPt[1]) / 2];
   const proj = projectPointToPolyline(mid, polyline);
   if (!proj) return null;
-  const relx = leftPt[0] - proj.foot[0], rely = leftPt[1] - proj.foot[1];
-  const cross = proj.tangent[0] * rely - proj.tangent[1] * relx;
-  return Math.sign(cross);
+  const [tx, ty] = proj.tangent;
+  const perp = (p) => tx * (p[1] - proj.foot[1]) - ty * (p[0] - proj.foot[0]);
+  const sL = perp(leftPt), sR = perp(rightPt);
+
+  const relNorm = Math.hypot(leftPt[0] - proj.foot[0], leftPt[1] - proj.foot[1]);
+  if (relNorm < 1e-9 || Math.abs(sL) / relNorm < minLateral) return 0; // pair lies along the axis
+  if (sL * sR >= 0) return 0;                                          // both members on one side
+  const sep = Math.abs(sL - sR);
+  if (sep < 1e-9 || Math.min(Math.abs(sL), Math.abs(sR)) / sep < minStraddle) return 0; // one on the axis
+  return Math.sign(sL);
 }
 
 /** Resolve the midline polyline: ordered midline nodes -> axis anchors -> PCA fallback. */
@@ -145,11 +166,20 @@ export class ChiralityModel {
       this.canonicalSide.set(k, sideSums.get(k) / c >= 0 ? 1 : -1); // ties -> +1
       this.pairSupport.set(k, c);
     }
+    // How many pairs this SKELETON can ever contribute. A 9-node mouse (nose/head/neck/body_*/tail_base
+    // + ear_l/ear_r) has exactly ONE, so a hard >=2 floor would make the whole check unreachable.
+    this.nLearnedPairs = this.canonicalSide.size;
     return this;
   }
 
-  /** -> { wrongFraction:[0,1], nPairs, wrongPairs:Set(pairKey) }. Never NaN. */
-  scoreInstance(points, minPairs = 2) {
+  /** -> { wrongFraction:[0,1], nPairs, wrongPairs:Set(pairKey) }. Never NaN.
+   *
+   *  `minPairs` defaults to min(2, pairs the skeleton has). Rationale: the floor exists to stop ONE noisy
+   *  pair from flagging a whole instance, which is right when a multi-pair skeleton has pairs occluded --
+   *  but a skeleton with only one symmetric pair would never be scored at all, silently disabling the
+   *  check (exactly the 9-node mouse case: ear_l/ear_r swapped and nothing fired). Single-pair skeletons
+   *  are now scored, with signedSideLocal's confidence gate taking over the noise-rejection job. */
+  scoreInstance(points, minPairs = null) {
     const poly = resolveMidline(points, this.midlineIndices, this.axisIndices, this.excludeSet);
     if (!poly) return { wrongFraction: 0, nPairs: 0, wrongPairs: new Set() };
     let nPairs = 0, nWrong = 0;
@@ -164,8 +194,8 @@ export class ChiralityModel {
       nPairs++;
       if (side !== canonical) { nWrong++; wrongPairs.add(k); }
     }
-    // Safety floor: a genuine flip with < 2 visible pairs is intentionally NOT scored.
-    if (nPairs < minPairs) return { wrongFraction: 0, nPairs, wrongPairs: new Set() };
+    const floor = minPairs ?? Math.min(2, this.nLearnedPairs || 2);
+    if (nPairs < floor) return { wrongFraction: 0, nPairs, wrongPairs: new Set() };
     return { wrongFraction: nWrong / nPairs, nPairs, wrongPairs };
   }
 }
@@ -208,32 +238,46 @@ export function inferSymmetryPairsByName(nodeNames) {
   return pairs;
 }
 
-/** Order midline node indices nose->tail by mean PCA projection (axis sign is absorbed). */
+/** Order midline node indices along the spine (either direction — fit and score share the polyline).
+ *
+ *  NOT by mean raw projection: a 2x2 covariance is invariant under a 180-degree rotation, and the
+ *  eigenvector's sign is arbitrary, so the SAME body projects nose-first in one frame and tail-first in the
+ *  next. Averaging those projections cancels toward zero and the order comes out SCRAMBLED (observed:
+ *  tail_base, body_2, body_3, neck, body_1, nose, head) — which makes the "spine" polyline zigzag, so the
+ *  nearest-segment tangent (and therefore every side sign) is meaningless on real, variably-posed data.
+ *
+ *  Instead: order WITHIN each instance, canonicalize that order by reversal (orient it so the
+ *  lower-index endpoint comes first — the endpoints are geometrically determined, so this picks the same
+ *  direction every frame), then pool RANKS. */
 function orderMidlineByPca(instances, midlineIndices, minPoints = 2) {
   if (!midlineIndices || midlineIndices.length < 2) return midlineIndices;
   const empty = new Set();
-  const projSums = new Map(), projCounts = new Map();
-  for (const i of midlineIndices) { projSums.set(i, 0); projCounts.set(i, 0); }
+  const rankSums = new Map(), rankCounts = new Map();
+  for (const i of midlineIndices) { rankSums.set(i, 0); rankCounts.set(i, 0); }
   for (const points of instances) {
     const pca = pcaAxis(points, empty, minPoints);
     if (!pca) continue;
-    for (const i of midlineIndices) {
-      if (i >= 0 && i < points.length && isVisible(points[i])) {
-        const proj = (points[i][0] - pca.origin[0]) * pca.axis[0] + (points[i][1] - pca.origin[1]) * pca.axis[1];
-        projSums.set(i, projSums.get(i) + proj);
-        projCounts.set(i, projCounts.get(i) + 1);
-      }
-    }
+    const vis = midlineIndices.filter((i) => i >= 0 && i < points.length && isVisible(points[i]));
+    if (vis.length < 2) continue;
+    const proj = new Map(vis.map((i) => [i,
+      (points[i][0] - pca.origin[0]) * pca.axis[0] + (points[i][1] - pca.origin[1]) * pca.axis[1]]));
+    const order = [...vis].sort((a, b) => proj.get(a) - proj.get(b) || a - b);
+    if (order[0] > order[order.length - 1]) order.reverse(); // canonicalize direction
+    order.forEach((idx, r) => {
+      rankSums.set(idx, rankSums.get(idx) + r / Math.max(order.length - 1, 1)); // normalized rank
+      rankCounts.set(idx, rankCounts.get(idx) + 1);
+    });
   }
   let any = false;
-  for (const c of projCounts.values()) if (c > 0) { any = true; break; }
+  for (const c of rankCounts.values()) if (c > 0) { any = true; break; }
   if (!any) return midlineIndices;
-  const meanProj = (i) => (projCounts.get(i) ? projSums.get(i) / projCounts.get(i) : 0);
+  const meanRank = (i) => (rankCounts.get(i) ? rankSums.get(i) / rankCounts.get(i) : 0);
   return midlineIndices
-    .map((idx, orig) => ({ idx, orig, m: meanProj(idx) }))
+    .map((idx, orig) => ({ idx, orig, m: meanRank(idx) }))
     .sort((a, b) => a.m - b.m || a.orig - b.orig) // stable on ties
     .map((d) => d.idx);
 }
+
 
 /** Pick symmetry pairs + an ordered midline for the unit. Returns null when there's nothing to score. */
 export function resolveChiralityInputs(analyzer, nodeNames, allPoses) {

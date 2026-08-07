@@ -1,12 +1,11 @@
 // qcStore.svelte.js
 //
-// Runs the ported QC detection on demand and exposes results for the UI. Detection is split
-// into selectable "units" — anomaly (ZScore), gmm (GaussianMixture probability), chirality,
-// and the frame-level checks (count / negative / duplicates). The user picks which to run in
-// the sidebar; each unit's result is MEMOIZED, so re-selecting a previously-computed technique
-// never recomputes. The flagged set is the UNION of the enabled (and computed) checks.
-// (Pose-split / chimera is NOT a standalone check — it's the `pose_split_score` feature folded
-// into the anomaly/GMM vector, so it surfaces through those scores like the desktop GUI.)
+// Runs the ported QC detection on demand and exposes results for the UI. Detection is split into
+// selectable "units": anomaly (ZScore), gmm (GaussianMixture probability), chirality, ordering,
+// poseSplit, and one frame-level unit shared by count / sparse / confidence / instConfidence /
+// negative / outOfFrame / duplicates. The user picks which to run in the rail's Detection checks tab;
+// each unit's result is MEMOIZED, so re-selecting a previously-computed technique never recomputes.
+// The flagged set is the UNION of the enabled (and computed) checks.
 
 import {
   buildContext,
@@ -20,6 +19,7 @@ import {
   orderingScoreOne,
   computePoseSplitUnit,
   poseSplitScoreOne,
+  cleanFeatureRow,
 } from "./qc/checks/detector.js";
 import { makeQCConfig } from "./qc/checks/config.js";
 import { topIssue, confidence, withDirection, DIRECTIONAL_FEATURES, issueForFeature } from "./qc/checks/explain.js";
@@ -28,19 +28,18 @@ import { qcResultsCsv } from "./qc/csv.js";
 import { store } from "./labelsStore.svelte.js";
 import { embeddingStores } from "./embeddingStore.svelte.js";
 import { nodeEmbeddingStores } from "./nodeEmbeddingStore.svelte.js";
-import { noseEmbedding } from "./noseEmbeddingStore.svelte.js";
+import { keypointModels } from "./keypointModels.svelte.js";
+import { loadConfig, write as writeSetting, clear as clearSetting } from "./settings.js";
 
 // Appearance-outlier checks: one per embedding store, each reading its OWN precomputed store.
-// Two granularities × two backends: the INSTANCE-level crop (classical / dino) catches gross
-// whole-animal problems; the PER-NODE patch (nodeClassical / nodeDino) catches a single mis-placed /
-// occluded keypoint. Each is independently selectable and only "ready" once its backend has been run
+// The INSTANCE-level crop (dino) catches gross whole-animal problems; the PER-NODE patch (nodeDino)
+// catches a single mis-placed / occluded keypoint. Both are DINO — the classical pixel-feature backend
+// was dropped after the experiments, so there is no backend axis left, only granularity. Each is independently selectable and only "ready" once its backend has been run
 // in the matching panel; all fold into the same flagged union via per-frame keys ("videoIdx:frameIdx").
 const APPEARANCE_CHECKS = [
-  { key: "classical", store: embeddingStores.classical, label: "Classical appearance", chip: "Unusual appearance · pixels" },
   { key: "dino", store: embeddingStores.dino, label: "DINO appearance", chip: "Unusual appearance · DINO" },
-  { key: "nodeClassical", store: nodeEmbeddingStores.classical, label: "Per-node appearance (Classical)", chip: "Unusual keypoint · pixels" },
   { key: "nodeDino", store: nodeEmbeddingStores.dino, label: "Per-node appearance (DINO)", chip: "Unusual keypoint · DINO" },
-  { key: "noseAppearance", store: noseEmbedding, label: "Nose keypoint (trained)", chip: "Mislabeled nose · DINO" },
+  { key: "noseAppearance", store: keypointModels, label: "Keypoint (trained)", chip: "Mislabeled keypoint · DINO" },
 ];
 const APPEARANCE_BY_KEY = Object.fromEntries(APPEARANCE_CHECKS.map((a) => [a.key, a]));
 const isAppearanceCheck = (name) => name in APPEARANCE_BY_KEY;
@@ -57,6 +56,7 @@ const UNIT_OF = {
   confidence: "frame",
   instConfidence: "frame",
   negative: "frame",
+  outOfFrame: "frame", // computed by the frame unit (checkFrameBounds merged into each FrameQC)
   duplicates: "frame",
 };
 
@@ -92,14 +92,49 @@ const FRAME_SEVERITY = {
   sparse: 0.85, // an instance localized by too few visible nodes
   confidence: 0.6, // a weak predicted keypoint
   instConfidence: 0.62, // a low-confidence instance (whole-instance uncertainty)
+  outOfFrame: 0.7, // a keypoint outside the image rectangle — structural, but less damning than a bad count
   negative: 0.45, // a negative frame that still has instances
   duplicates: 0.4, // overlapping / duplicated instances
 };
 
 // Display label + stable ordering for the detector-overlap viz. Module-scope constants (were rebuilt
 // on every detectorSets() call — i.e. per rev bump while the overlap/manual panels are open).
-const DETECTOR_LABELS = { anomaly: "Anomaly", gmm: "GMM", chirality: "Chirality", ordering: "Ordering", poseSplit: "Pose split", count: "Count", sparse: "Sparse", confidence: "Confidence", instConfidence: "Inst conf", negative: "Negative", duplicates: "Duplicates", classical: "Classical appearance", dino: "DINO appearance", nodeClassical: "Per-node (Classical)", nodeDino: "Per-node (DINO)", noseAppearance: "Nose (trained)" };
-const DETECTOR_ORDER = ["anomaly", "gmm", "chirality", "ordering", "poseSplit", "count", "sparse", "confidence", "instConfidence", "negative", "duplicates", "classical", "dino", "nodeClassical", "nodeDino", "noseAppearance"];
+// The features the proofreading queue reads alongside Anomaly and GMM. Named once so the "run QC
+// first" gate and the ranking itself can never drift apart.
+const PROOFREAD_ANGLE = "max_angle_zscore";
+const PROOFREAD_MEAN_ANGLE = "mean_angle_zscore";
+
+// The ANGLE features are prioritised: a bent joint is the most direct evidence that a pose is wrong,
+// where Anomaly and GMM are diffuse "this looks unusual" signals. Priority is applied twice —
+//   1. an animal either angle check rates in its own top 5% sorts AHEAD of everything else, and
+//   2. within a tier the angle terms carry 3x the weight in the combined evidence.
+// A tier rather than weight alone, because "always sort them first" has to be a guarantee you can
+// check, not a tendency that a big enough anomaly score can overturn.
+const PF_SIGNALS = ["anomaly", "gmm", "angle", "meanAngle"];
+const PF_ANGLE_SIGNALS = ["angle", "meanAngle"];
+const PF_WEIGHT = { anomaly: 1, gmm: 1, angle: 3, meanAngle: 3 };
+const PF_HOT = 0.95; // "this detector is alarmed"
+
+const DETECTOR_LABELS = { anomaly: "Anomaly", gmm: "GMM", chirality: "Chirality", ordering: "Ordering", poseSplit: "Pose split", count: "Count", sparse: "Sparse", confidence: "Confidence", instConfidence: "Inst conf", negative: "Negative", outOfFrame: "Out of frame", duplicates: "Duplicates", dino: "DINO appearance", nodeDino: "Per-node (DINO)", noseAppearance: "Keypoint (trained)" };
+const DETECTOR_ORDER = ["anomaly", "gmm", "chirality", "ordering", "poseSplit", "count", "sparse", "confidence", "instConfidence", "negative", "outOfFrame", "duplicates", "dino", "nodeDino", "noseAppearance"];
+
+// Persisted user configuration: the detector selection + every threshold/mode. Results are NOT persisted
+// (they belong to a specific .slp and are cheap to recompute); this is only the settings the user tuned.
+// Defaults live here so `merge()` can reject stale keys and `resetConfig()` has something to restore.
+const CONFIG_KEY = "qc-config";
+const CONFIG_DEFAULTS = {
+  threshold: 0.7, gmmThreshold: 0.95, chiralityThreshold: 0.5, orderingThreshold: 0.3,
+  poseSplitThreshold: 0.9, sparseFraction: 0.5, confidenceThreshold: 0.3, confidenceMode: "avg",
+  instConfidenceThreshold: 0.3, baselineSource: "all", reviewOrder: "severity",
+  checks: { anomaly: true, gmm: true, chirality: true, ordering: false, poseSplit: true, count: false,
+    sparse: false, confidence: false, instConfidence: false, negative: false, outOfFrame: true, duplicates: true,
+    dino: false, nodeDino: false, noseAppearance: false },
+  // Custom per-feature |z| checks the user built off the GMM/Anomaly feature vector. Persisted WITHOUT
+  // their `id` (a session-local counter) — ids are regenerated on restore. A saved feature that the next
+  // file's vector doesn't contain is kept but stays inert: #deriveFeatureChecks skips an unknown name
+  // (indexOf -> -1), so it can never fire, and it reappears intact when that file is loaded again.
+  featureChecks: [],
+};
 
 class QCStore {
   status = $state("idle"); // idle | running | done | error
@@ -119,10 +154,11 @@ class QCStore {
   ranAtRev = -1; // store.rev at the time QC last ran (for staleness)
 
   // Which detection techniques to run / include. The flagged frames are the UNION of the
-  // enabled-and-computed checks. Defaults ON: anomaly, chirality, gmm, duplicates. The frame /
-  // structural checks (count, sparse, confidence, negative) default OFF — enable them as needed.
-  checks = $state({ anomaly: true, gmm: true, chirality: true, ordering: false, poseSplit: true, count: false, sparse: false, confidence: false, instConfidence: false, negative: false, duplicates: true, classical: false, dino: false, nodeClassical: false, nodeDino: false, noseAppearance: false });
-  // Appearance-outlier checks (classical / dino): NOT computed QC units — each reads precomputed
+  // enabled-and-computed checks. Defaults ON: anomaly, gmm, chirality, poseSplit, outOfFrame,
+  // duplicates. OFF: ordering, count, sparse, confidence, instConfidence, negative, and all three
+  // appearance checks (those need a compute pass or an uploaded bundle before they can even be armed).
+  checks = $state({ anomaly: true, gmm: true, chirality: true, ordering: false, poseSplit: true, count: false, sparse: false, confidence: false, instConfidence: false, negative: false, outOfFrame: true, duplicates: true, dino: false, nodeDino: false, noseAppearance: false });
+  // Appearance-outlier checks: NOT computed QC units — each reads precomputed
   // embeddings from its own embeddingStore, so a check is only "ready" once its backend has been run
   // in the appearance panel. #appZ respects the enabled flag; #appFlagged uses that store's own z-cutoff.
   #appZ(item, key) {
@@ -145,6 +181,67 @@ class QCStore {
   // where THAT single feature is an outlier (|z| >= its threshold). Each: { id, feature, threshold, on }.
   // They reuse the Anomaly unit's ZScore fit (means/stds) + per-instance contributions.
   featureChecks = $state([]);
+  configRestored = $state(null); // { restored:[], dropped:[] } from the last hydrate — surfaced in the UI
+
+  /** Values that persist across sessions. Reading every field here is also what registers the reactive
+   *  dependencies for the auto-save effect below, so this is deliberately explicit rather than a loop. */
+  configSnapshot() {
+    const c = this.checks;
+    return {
+      threshold: this.threshold, gmmThreshold: this.gmmThreshold,
+      chiralityThreshold: this.chiralityThreshold, orderingThreshold: this.orderingThreshold,
+      poseSplitThreshold: this.poseSplitThreshold, sparseFraction: this.sparseFraction,
+      confidenceThreshold: this.confidenceThreshold, confidenceMode: this.confidenceMode,
+      instConfidenceThreshold: this.instConfidenceThreshold, baselineSource: this.baselineSource,
+      reviewOrder: this.reviewOrder,
+      checks: Object.fromEntries(Object.keys(CONFIG_DEFAULTS.checks).map((k) => [k, c[k] === true])),
+      featureChecks: this.featureChecks.map((f) => ({ feature: f.feature, threshold: f.threshold, on: f.on })),
+    };
+  }
+
+  /** Apply a validated config object (used by hydrate + reset). Unknown keys can't reach here. */
+  applyConfig(cfg) {
+    for (const [k, v] of Object.entries(cfg)) {
+      if (k === "checks") { for (const [ck, cv] of Object.entries(v)) this.checks[ck] = cv; }
+      else if (k === "featureChecks") this.#applyFeatureChecks(v);
+      else this[k] = v;
+    }
+    this.rev++;
+  }
+
+  /** Rebuild the custom per-feature checks from a stored array. Elements are validated one by one (a
+   *  stored array is otherwise restored verbatim by settings.merge, which only shape-checks the top level),
+   *  duplicates per feature are collapsed to match addFeatureCheck's rule, and ids are re-issued so the
+   *  session counter never collides with a restored one. */
+  #applyFeatureChecks(list) {
+    const out = [], seen = new Set();
+    for (const f of Array.isArray(list) ? list : []) {
+      if (!f || typeof f.feature !== "string" || !f.feature) continue;
+      if (seen.has(f.feature)) continue;                       // one check per feature
+      const thr = Number(f.threshold);
+      seen.add(f.feature);
+      out.push({ id: ++this.#featureSeq, feature: f.feature,
+                 threshold: Number.isFinite(thr) ? thr : 3.0, on: f.on === true });
+    }
+    this.featureChecks = out;
+    if (this.checkReady("anomaly")) this.#deriveFeatureChecks(); // attach z-maps when a run already exists
+  }
+
+  /** Restore last session's settings. Called once at module load; safe when storage is unavailable. */
+  hydrateConfig() {
+    const { config, restored, dropped } = loadConfig(CONFIG_KEY, CONFIG_DEFAULTS);
+    if (restored.length) this.applyConfig(config);
+    this.configRestored = { restored, dropped };
+    return this.configRestored;
+  }
+
+  /** Back to shipped defaults, and forget the saved copy — the escape hatch if a persisted config
+   *  produces confusing behaviour (otherwise the only cure is clearing site data). */
+  resetConfig() {
+    clearSetting(CONFIG_KEY);
+    this.applyConfig(structuredClone(CONFIG_DEFAULTS));
+    this.configRestored = null;
+  }
 
   #ctx = null; // shared frame/pose/feature context for the current labels
   #ctxLabels = null; // identity of the labels #ctx was built for
@@ -164,6 +261,8 @@ class QCStore {
   #instFeatureZ = new Map(); // "v:f:i" -> { feature: |z| } for active feature-checks
   #frameFeatureZ = new Map(); // "v:f" -> { feature: max|z| over instances } for active feature-checks
   #frameAnom = new Map(); // "v:f" -> max anomaly score
+  #pfCache = null; // memoized proofreadRanked, keyed on the fitted anomaly/gmm models
+  #pfCounts = null; // memoized flag distribution, keyed on the rows array identity
   #frameGmm = new Map(); // "v:f" -> max GMM score
   #gmmWorst = new Map(); // "v:f:i" -> GMM leave-one-out worst node (computed lazily)
   #gmmWorstFeat = new Map(); // "v:f:i" -> GMM most-improbable feature NAME (computed lazily)
@@ -257,6 +356,13 @@ class QCStore {
 
   // ── selection / readiness ──
   /** Whether the unit backing a check has been computed (cached) for the current labels. */
+  /** Which computed unit satisfies `name` (undefined for appearance checks, which are precomputed
+   *  elsewhere). Exposed so the wiring invariant is testable: a non-appearance check with no unit can
+   *  never become ready, which makes App.svelte's auto-rerun effect loop forever. */
+  unitOf(name) {
+    return UNIT_OF[name];
+  }
+
   checkReady(name) {
     this.rev;
     if (isAppearanceCheck(name)) return APPEARANCE_BY_KEY[name].store.hasResults; // precomputed in the appearance panel, not by run()
@@ -427,6 +533,7 @@ class QCStore {
         (name === "confidence" && this.#kpConf(fq) < this.confidenceThreshold) ||
         (name === "instConfidence" && fq.minInstScore < this.instConfidenceThreshold) ||
         (name === "negative" && fq.isNegativeWithInstances) ||
+      (name === "outOfFrame" && fq.isOutOfFrame) ||
         (name === "duplicates" && (fq.duplicatePairs?.length ?? 0) > 0)
       ) {
         n++;
@@ -451,6 +558,7 @@ class QCStore {
       (c.confidence && this.#kpConf(fq) < this.confidenceThreshold) ||
       (c.instConfidence && fq.minInstScore < this.instConfidenceThreshold) ||
       (c.negative && fq.isNegativeWithInstances) ||
+      (c.outOfFrame && fq.isOutOfFrame) ||
       (c.duplicates && (fq.duplicatePairs?.length ?? 0) > 0)
     );
   }
@@ -491,6 +599,7 @@ class QCStore {
       isLowConf: c.confidence ? this.#kpConf(fq) < this.confidenceThreshold : false,
       isLowInstConf: c.instConfidence ? fq.minInstScore < this.instConfidenceThreshold : false,
       isNegativeWithInstances: c.negative ? fq.isNegativeWithInstances : false,
+      isOutOfFrame: c.outOfFrame ? fq.isOutOfFrame : false,
       duplicatePairs: c.duplicates ? fq.duplicatePairs : [],
       duplicateReasons: c.duplicates ? fq.duplicateReasons : [],
     };
@@ -539,6 +648,7 @@ class QCStore {
       }
       if (c.instConfidence && fq.minInstScore < this.instConfidenceThreshold) out.push({ key: "instConfidence", label: "Low instance conf", score: fq.minInstScore });
       if (c.negative && fq.isNegativeWithInstances) out.push({ key: "negative", label: "Negative", score: null });
+      if (c.outOfFrame && fq.isOutOfFrame) out.push({ key: "outOfFrame", label: `Out of frame (${fq.nOutOfFrame} kp)`, score: null });
       if (c.duplicates && (fq.duplicatePairs?.length ?? 0) > 0) out.push({ key: "duplicates", label: "Duplicate", score: null });
     }
     for (const a of APPEARANCE_CHECKS) if (this.#appFlagged(item, a.key)) out.push({ key: a.key, label: a.chip, score: this.#appZ(item, a.key) });
@@ -587,14 +697,16 @@ class QCStore {
   // return that node index for `item`'s instance `instIdx` (to ring it), or -1 if none flags it.
   #appInstFaultyNode(item, instIdx) {
     if (!item) return -1;
-    if (this.checks.noseAppearance && noseEmbedding.hasResults) {
-      const p = noseEmbedding.instProbByKey(`${this.#fkey(item)}:${instIdx}`);
-      if (p != null && p >= noseEmbedding.threshold) {
-        const ni = store.skeleton?.nodeNames?.indexOf("nose") ?? -1;
+    if (this.checks.noseAppearance && keypointModels.hasResults) {
+      // Several keypoint models can be loaded at once — attribute to the HIGHEST-scoring one, which is
+      // the whole point of running more than one (it names which keypoint is wrong, not just the frame).
+      const w = keypointModels.worstNodeAt(this.#fkey(item), instIdx);
+      if (w && w.prob >= keypointModels.threshold) {
+        const ni = store.skeleton?.nodeNames?.indexOf(w.node) ?? -1;
         if (ni >= 0) return ni;
       }
     }
-    for (const nk of ["nodeDino", "nodeClassical"]) {
+    for (const nk of ["nodeDino"]) {
       if (this.checks[nk] && APPEARANCE_BY_KEY[nk].store.hasResults) {
         const es = APPEARANCE_BY_KEY[nk].store;
         const w = es.worstNodeFor(store.frames.indexOf(item), instIdx);
@@ -611,6 +723,15 @@ class QCStore {
     this.rev;
     const frames = store.frames ?? [];
     const byKey = new Map();
+    // SEED every enabled + ready detector, even one that flags nothing. Building the map purely from the
+    // per-frame scan drops a zero-flag detector entirely, which reads as "this check isn't supported here"
+    // rather than "it ran and found nothing" — and it silently hid the precomputed appearance checks
+    // (the trained keypoint detector) from the overlap viz and the manual-check ranking.
+    for (const key of DETECTOR_ORDER) {
+      if (this.checks[key] && this.checkReady(key)) {
+        byKey.set(key, { id: key, label: DETECTOR_LABELS[key] ?? key, set: new Set() });
+      }
+    }
     for (let i = 0; i < frames.length; i++) {
       for (const f of this.frameFlaggingChecks(frames[i])) {
         let e = byKey.get(f.key);
@@ -698,7 +819,7 @@ class QCStore {
       this.#gmmWorst.set(key, -1);
       return -1;
     }
-    const clean = (row) => row.map((f) => (Number.isNaN(f) ? 0 : f === Infinity ? 10 : f === -Infinity ? -10 : f));
+    const clean = cleanFeatureRow; // the same substitution the detectors were FIT on
     // reuse the instance's NN distance across all masks (it is not node-specific) so each
     // leave-one-out only re-runs the cheap per-node features, not the O(n) NN search.
     const baseNN = fx.nn.score(pose).nnDistance;
@@ -735,7 +856,7 @@ class QCStore {
     const pose = item.lf?.instances?.[instIdx]?.numpy?.({ invisibleAsNaN: true });
     let name = null;
     if (pose) {
-      const clean = (row) => row.map((f) => (Number.isNaN(f) ? 0 : f === Infinity ? 10 : f === -Infinity ? -10 : f));
+      const clean = cleanFeatureRow; // the same substitution the detectors were FIT on
       const w = det.worstFeature(clean(fx.extractFeatures(pose)));
       name = w.index >= 0 ? fx.featureNames[w.index] ?? null : null;
     }
@@ -910,12 +1031,250 @@ class QCStore {
       if (c.count && fq.isWrongCount) bump(FRAME_SEVERITY.count);
       if (c.sparse && fq.minVisibleNodeCount < this.sparseThreshold) bump(FRAME_SEVERITY.sparse);
       if (c.confidence && this.#kpConf(fq) < this.confidenceThreshold) bump(FRAME_SEVERITY.confidence);
+      if (c.outOfFrame && fq.isOutOfFrame) bump(FRAME_SEVERITY.outOfFrame);
       if (c.instConfidence && fq.minInstScore < this.instConfidenceThreshold) bump(FRAME_SEVERITY.instConfidence);
       if (c.negative && fq.isNegativeWithInstances) bump(FRAME_SEVERITY.negative);
       if (c.duplicates && (fq.duplicatePairs?.length ?? 0) > 0) bump(FRAME_SEVERITY.duplicates);
     }
     for (const a of APPEARANCE_CHECKS) if (this.#appFlagged(item, a.key)) { const z = this.#appZ(item, a.key); bump(1 / (1 + Math.exp(-(z - a.store.threshold)))); } // appearance z -> [0,1]
     return best;
+  }
+
+  // ===== PROOFREADING QUEUE =========================================================================
+  // Proofreading needs an ORDER over the whole file, which is a different question from "what is
+  // flagged". Two deliberate differences from flaggedRanked:
+  //   · not threshold-gated — the frames sitting just under a threshold are exactly where a human
+  //     judgement is worth most; a pass that can't reach them is only re-reading the flags;
+  //   · not gated on which checks are ticked — the ordering is a property of the detectors that ran,
+  //     not of the current checklist, so unticking GMM must not silently reshuffle the queue.
+
+  /** Have the detectors the proofreading queue ranks by actually RUN? (Units computed — not ticked.) */
+  get proofreadReady() {
+    this.rev;
+    return this.proofreadMissing.length === 0;
+  }
+
+  /** Which of the three are missing, so the UI can say what to run rather than just "run QC". */
+  get proofreadMissing() {
+    this.rev;
+    const m = [];
+    if (!this.checkReady("anomaly")) m.push("Anomaly");
+    if (!this.checkReady("gmm")) m.push("GMM");
+    if (!this.vectorFeatures.includes(PROOFREAD_ANGLE)) m.push("max_angle");
+    if (!this.vectorFeatures.includes(PROOFREAD_MEAN_ANGLE)) m.push("mean_angle");
+    return m;
+  }
+
+  /** Per-INSTANCE |z| for one feature-vector entry ("v:f:i" -> |z|), using the Anomaly det's fitted
+   *  means/stds. Same math as #deriveFeatureChecks, but for a feature nobody added a check for. */
+  #instZFor(feature) {
+    const out = new Map();
+    const a = this.#computed.anomaly;
+    const j = a?.featureNames?.indexOf(feature) ?? -1;
+    if (!a?.det || j < 0) return out;
+    for (const [key, c] of this.#contributions) {
+      const raw = c[feature];
+      if (raw == null || !Number.isFinite(raw)) continue;
+      out.set(key, Math.abs((raw - a.det.means[j]) / (a.det.stds[j] || 1e-6)));
+    }
+    return out;
+  }
+
+  /**
+   * Which keypoint the driving signal blames on this instance, ignoring what is ticked.
+   *
+   * Resolved LAZILY — only for a frame you actually look at. Doing it inside proofreadRanked would mean
+   * a pose extraction + feature attribution for every frame in the file just to build a queue.
+   * -> node index, or -1 when the feature is a whole-instance one (areas, visibility) with no culprit.
+   */
+  proofreadNodeFor(item, instIdx, by = "angle") {
+    this.rev;
+    const fx = this.#computed.anomaly?.fx;
+    const pose = item?.lf?.instances?.[instIdx]?.numpy?.({ invisibleAsNaN: true });
+    if (!fx?.baseline || !pose) return -1;
+    // The angle signal names its own feature; anomaly and GMM share the vector, so ask which entry
+    // dominates this instance's contribution.
+    // mean_angle is a whole-pose statistic with no single culprit, so an angle-driven flag of either
+    // kind points at the most-deviant JOINT — the actionable thing to look at.
+    let feature = PROOFREAD_ANGLE;
+    if (by !== "angle" && by !== "meanAngle") {
+      const c = this.#contributions.get(`${this.#fkey(item)}:${instIdx}`);
+      feature = c ? topIssue(c).feature : null;
+    }
+    if (!feature) return -1;
+    try {
+      return fx.baseline.attribute(pose)?.[feature]?.nodes?.[0] ?? -1;
+    } catch {
+      return -1; // a whole-instance feature the attributor doesn't map
+    }
+  }
+
+  /**
+   * How many animals each detector is alarmed about — the shape of the queue in one line.
+   *
+   * Counted with the SAME top-5% rule the ranking uses for `agree`, so the numbers explain the order
+   * rather than describing some other notion of "flagged". Derived from the memoized rows, so it costs
+   * one pass per run rather than one per render.
+   *
+   * -> { total, priority, per: { angle, meanAngle, anomaly, gmm }, agree: [n0..n4] }
+   */
+  get proofreadFlagCounts() {
+    this.rev;
+    const rows = this.proofreadRanked;
+    if (this.#pfCounts?.rows === rows) return this.#pfCounts.out;
+    const per = { angle: 0, meanAngle: 0, anomaly: 0, gmm: 0 };
+    const agree = [0, 0, 0, 0, 0];
+    let priority = 0;
+    for (const r of rows) {
+      for (const k of PF_SIGNALS) if ((r.pct[k] ?? 0) >= PF_HOT) per[k]++;
+      agree[Math.min(4, r.agree)]++;
+      if (r.anglePriority) priority++;
+    }
+    const out = { total: rows.length, priority, per, agree };
+    this.#pfCounts = { rows, out };
+    return out;
+  }
+
+  /**
+   * Plain-language account of what the detectors dislike about one instance.
+   *
+   * Deliberately NOT `instanceIssue`: that one returns null unless a check is ticked AND its threshold
+   * is cleared. The proofreading queue reaches past both on purpose, so reusing it would leave exactly
+   * the frames that most need a human — the near-misses — with no explanation at all.
+   *
+   * -> { issue, feature, node, nodeName } | null
+   */
+  proofreadVerdict(item, instIdx, by = "angle") {
+    this.rev;
+    const a = this.#computed.anomaly;
+    if (!item || !a?.det) return null;
+    const contributions = this.#contributions.get(`${this.#fkey(item)}:${instIdx}`);
+    // Name the feature the WINNING signal is reacting to: the angle names itself, GMM reports its
+    // most-improbable dimension, and the anomaly's is whichever contribution dominates.
+    let feature = by === "angle" ? PROOFREAD_ANGLE
+      : by === "meanAngle" ? PROOFREAD_MEAN_ANGLE
+        : by === "gmm" ? this.gmmWorstFeature(item, instIdx)
+          : contributions ? topIssue(contributions).feature : null;
+    if (!feature && contributions) feature = topIssue(contributions).feature;
+    let issue = (feature && issueForFeature(feature)) || (by === "gmm" ? "Improbable pose" : "Unusual pose");
+    // "(increased)" / "(decreased)" straight from the signed deviation, so the wording doesn't depend
+    // on #anomalyAttribution, which is gated on the Anomaly check being ticked.
+    if (feature && DIRECTIONAL_FEATURES.has(feature) && contributions) {
+      const j = a.featureNames?.indexOf(feature) ?? -1;
+      if (j >= 0) issue = withDirection(issue, Math.sign((contributions[feature] ?? 0) - a.det.means[j]));
+    }
+    const node = this.proofreadNodeFor(item, instIdx, by);
+    return {
+      issue, feature, node,
+      nodeName: node >= 0 ? store.skeleton?.nodeNames?.[node] ?? `node ${node}` : null,
+    };
+  }
+
+  /**
+   * EVERY INSTANCE, worst-first, as the four automatic detectors see it.
+   *
+   * One row per ANIMAL, not per frame. Ranking by frame meant a frame with two bad animals was visited
+   * once and only its worst one was ever targeted — the second went unjudged with no way to reach it
+   * from the queue. Instances are also the unit the detectors actually score, so a per-frame row had to
+   * collapse them with an argmax and throw the rest away.
+   *
+   * The signals are on incomparable scales (two percentile-like scores and a raw z), so each is
+   * RANK-normalized across instances first. Combining them by MAX was wrong: it ignored agreement, so
+   * one detector at the 100th percentile outranked three at the 99th, and the queue interleaved
+   * 1-of-3 rows above 2-of-3 rows for no reason a user could see.
+   *
+   * They are combined with FISHER's method instead: each percentile becomes an upper-tail p-value and
+   * X = -2 Σ ln p. Evidence compounds, so three detectors that all dislike an animal outrank one that
+   * hates it — while a single extreme still beats three mediocre scores, which a plain mean would have
+   * thrown away. A signal that never scored contributes p = 0.5 (no evidence) rather than dragging the
+   * row down for being unmeasured.
+   *
+   * `evidence` is that raw statistic and it does the SORTING. `score` is the row's percentile in the
+   * finished queue — "more suspect than 97% of the animals in this file" — because the raw statistic is
+   * dominated by whichever row is most extreme, so scaling it against the worst made everything past
+   * the first few read as a low number with no interpretable meaning.
+   *
+   * Memoized on the fitted models, so the queue is a SNAPSHOT of the run behind it. That is deliberate
+   * twice over: reading it reactively on every rev bump would be an O(frames log frames) scan per
+   * keystroke, and a queue that reshuffled every time you corrected a keypoint would make a pass
+   * impossible to work through. rescoreInstance() updates a corrected instance's scores in place
+   * WITHOUT changing the fitted models, so the order (and the values shown against it) hold until the
+   * next run — which is the behaviour a proofreading pass wants.
+   *
+   * Percentiles are therefore taken across INSTANCES, which is also the honest denominator: "hotter
+   * than 95% of the animals in this file" is a claim about animals. Frames with no instances have
+   * nothing to judge and produce no rows. The culprit KEYPOINT is left to proofreadNodeFor, which is
+   * too expensive to resolve for every row up front.
+   *
+   * -> [{ i, inst, evidence (raw Fisher statistic — does the SORTING), score (percentile in the finished
+   *        queue), agree, by, anglePriority, anomaly, gmm, angle, meanAngle, pct }]  (i = store-frame index)
+   */
+  get proofreadRanked() {
+    this.rev;
+    if (!this.proofreadReady) return [];
+    const frames = store.frames ?? [];
+    const a = this.#computed.anomaly, g = this.#computed.gmm;
+    const c = this.#pfCache;
+    if (c && c.a === a && c.g === g && c.n === frames.length) return c.rows;
+
+    const angleInst = this.#instZFor(PROOFREAD_ANGLE);
+    const meanAngleInst = this.#instZFor(PROOFREAD_MEAN_ANGLE);
+    const rows = [];
+    for (let i = 0; i < frames.length; i++) {
+      const fk = this.#fkey(frames[i]);
+      const n = frames[i].lf?.instances?.length ?? 0;
+      for (let ii = 0; ii < n; ii++) {
+        const k = `${fk}:${ii}`;
+        rows.push({
+          i, inst: ii,
+          anomaly: this.#instanceScores.get(k) ?? null,
+          gmm: this.#gmmScores.get(k) ?? null,
+          angle: angleInst.get(k) ?? null,
+          meanAngle: meanAngleInst.get(k) ?? null,
+          score: 0, agree: 0, by: null, anglePriority: false,
+          pct: { anomaly: null, gmm: null, angle: null, meanAngle: null },
+        });
+      }
+    }
+    const MIN_P = 1e-4; // a percentile of exactly 1 would make ln(p) infinite
+    for (const key of PF_SIGNALS) {
+      const vs = rows.map((r) => r[key]).filter((v) => v != null).sort((x, y) => x - y);
+      if (!vs.length) continue;
+      const span = Math.max(1, vs.length - 1);
+      for (const r of rows) {
+        if (r[key] == null) continue;
+        // percentile = share of the file this instance is at or above, by binary search on sorted values
+        let lo = 0, hi = vs.length;
+        while (lo < hi) { const mid = (lo + hi) >> 1; if (vs[mid] < r[key]) lo = mid + 1; else hi = mid; }
+        const pct = lo / span;
+        r.pct[key] = pct;
+        if (pct >= PF_HOT) r.agree++;
+      }
+    }
+    for (const r of rows) {
+      r.anglePriority = PF_ANGLE_SIGNALS.some((k) => (r.pct[k] ?? 0) >= PF_HOT);
+      // The verdict should name why the row is where it is: an angle signal when that is what promoted
+      // it, otherwise whichever detector is loudest.
+      const pool = r.anglePriority ? PF_ANGLE_SIGNALS : PF_SIGNALS;
+      r.by = pool.reduce((best, k) => ((r.pct[k] ?? -1) > (r.pct[best] ?? -1) ? k : best), pool[0]);
+    }
+    // Fisher: sum the evidence, then normalise so the worst row reads 1.0.
+    for (const r of rows) {
+      let x = 0;
+      for (const key of PF_SIGNALS) {
+        const pct = r.pct[key];
+        const pv = pct == null ? 0.5 : Math.max(MIN_P, 1 - pct); // unmeasured = no evidence either way
+        x += PF_WEIGHT[key] * -2 * Math.log(pv);
+      }
+      r.evidence = x;
+    }
+    rows.sort((x, y) =>
+      (y.anglePriority ? 1 : 0) - (x.anglePriority ? 1 : 0) // the angle tier always leads
+      || y.evidence - x.evidence || y.agree - x.agree || x.i - y.i || x.inst - y.inst);
+    const span = Math.max(1, rows.length - 1);
+    rows.forEach((r, k) => { r.score = 1 - k / span; });
+    this.#pfCache = { a, g, n: frames.length, rows };
+    return rows;
   }
 
   /** Flagged frames as store-frame indices, ordered per `reviewOrder`:
@@ -954,7 +1313,7 @@ class QCStore {
     const fk = this.#fkey(item);
     const key = `${fk}:${instIdx}`;
     const raw = fx.extractFeatures(pose);
-    const clean = raw.map((f) => (Number.isNaN(f) ? 0 : f === Infinity ? 10 : f === -Infinity ? -10 : f));
+    const clean = cleanFeatureRow(raw);
 
     if (this.#computed.anomaly?.det) {
       const s = this.#computed.anomaly.det.scoreOne(clean);
@@ -1217,7 +1576,7 @@ class QCStore {
     // OR a baseline-source switch. Otherwise reuse the memoized context + already-computed units.
     const rebuild = store.labels !== this.#ctxLabels || store.rev !== this.#ctxRev || this.baselineSource !== this.#ctxBaselineSource;
     const need = new Set();
-    // Appearance checks (classical/dino) have NO computable unit — they read precomputed embeddings —
+    // Appearance checks have NO computable unit — they read precomputed embeddings —
     // so they must not map through UNIT_OF (undefined) into the run's unit set.
     for (const [name, on] of Object.entries(this.checks)) if (on && !isAppearanceCheck(name)) need.add(UNIT_OF[name]);
     if (this.featureCheckActive) need.add("anomaly"); // feature-checks reuse the anomaly ZScore fit
@@ -1381,6 +1740,7 @@ class QCStore {
       if (c.confidence) { const kp = this.#kpConf(fq); out.push({ key: "confidence", label: "Keypoint conf", score: kp, threshold: this.confidenceThreshold, flagged: kp < this.confidenceThreshold, lowerIsWorse: true }); }
       if (c.instConfidence) out.push({ key: "instConfidence", label: "Instance conf", score: fq.minInstScore, threshold: this.instConfidenceThreshold, flagged: fq.minInstScore < this.instConfidenceThreshold, lowerIsWorse: true });
       if (c.negative) out.push({ key: "negative", label: "Negative frame", flagged: fq.isNegativeWithInstances, detail: fq.isNegativeWithInstances ? "has instances" : "—" });
+      if (c.outOfFrame) out.push({ key: "outOfFrame", label: "Out of frame", flagged: fq.isOutOfFrame, detail: fq.isOutOfFrame ? `${fq.nOutOfFrame} keypoint(s) outside the image` : "—" });
       if (c.duplicates) out.push({ key: "duplicates", label: "Duplicates", flagged: (fq.duplicatePairs?.length ?? 0) > 0, detail: `${fq.duplicatePairs?.length ?? 0} pair(s)` });
     }
     for (const a of APPEARANCE_CHECKS) {
@@ -1408,7 +1768,7 @@ class QCStore {
 
 export function hasFrameIssue(fq) {
   if (!fq) return false;
-  return fq.isWrongCount || fq.isSparse || fq.isLowConf || fq.isLowInstConf || fq.isNegativeWithInstances || (fq.duplicatePairs?.length ?? 0) > 0;
+  return fq.isWrongCount || fq.isSparse || fq.isLowConf || fq.isLowInstConf || fq.isNegativeWithInstances || fq.isOutOfFrame || (fq.duplicatePairs?.length ?? 0) > 0;
 }
 
 // Bounding box (image space) over an instance's placed points — the zoom fallback when a
@@ -1434,3 +1794,23 @@ function instanceBox(pts) {
 export const heatColor = (score) => `hsl(${Math.round(140 * (1 - Math.max(0, Math.min(1, score))))}, 80%, 55%)`;
 
 export const qc = new QCStore();
+
+// Restore last session's settings, then keep them saved. `$effect.root` because this is module scope, not
+// a component — it creates an effect owner that lives for the page, which is exactly the lifetime we want.
+// `configSnapshot()` reads every persisted field, so the effect re-runs on any of them; the first run is
+// the post-hydrate state, so it simply rewrites what we just read (harmless, and it self-heals a payload
+// that was partially rejected). Guarded so a non-browser/test import can't blow up on load.
+qc.hydrateConfig();
+if (typeof window !== "undefined") {
+  try {
+    let saveTimer = null;
+    $effect.root(() => {
+      $effect(() => {
+        const snap = qc.configSnapshot();   // read here so the effect tracks every persisted field
+        // Debounced: dragging a threshold slider fires this on every tick and localStorage is synchronous.
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(() => writeSetting("qc-config", snap), 250);
+      });
+    });
+  } catch { /* no effect context (e.g. plain-node import) — config still loads, just won't auto-save */ }
+}

@@ -75,3 +75,55 @@ describe("chirality scoring", () => {
     expect(m.scoreInstance(rot(clean(true), 37, 100, -50)).wrongFraction).toBeCloseTo(1, 6);
   });
 });
+
+// ---------------------------------------------------------------------------------------------------
+// Regression: a 9-node mouse skeleton has exactly ONE symmetric pair (ear_l/ear_r), so the old hard
+// ">=2 co-visible pairs" floor made the whole check unreachable — an obviously swapped ear pair scored 0.
+// Coordinates below are read off the reported frame (nose at the bottom, body_3 up-left, ears swapped).
+describe("single-pair skeleton (9-node mouse: only ear_l/ear_r)", () => {
+  const NAMES = ["nose", "head", "neck", "body_1", "body_2", "body_3", "tail_base", "ear_l", "ear_r"];
+  const MIDLINE9 = [0, 1, 2, 3, 4, 5, 6];            // nose -> tail_base, ears excluded
+  const PAIRS9 = inferSymmetryPairsByName(NAMES);
+  // spine as in the frame; ears straddle the axis. `flip` swaps which side ear_l is on.
+  const pose = (flip = false) => {
+    const L = flip ? [568, 553] : [362, 530];
+    const R = flip ? [362, 530] : [568, 553];
+    return [[460, 730], [500, 627], [465, 490], [392, 332], [307, 190], [195, 65], [120, -10], L, R];
+  };
+
+  it("infers exactly one pair from the 9-node names", () => {
+    expect(PAIRS9).toEqual([[7, 8]]);
+  });
+
+  it("FLAGS a swapped ear pair (the reported failure)", () => {
+    const m = new ChiralityModel().fit(Array.from({ length: 8 }, () => pose()), {
+      symmetryPairs: PAIRS9, midlineIndices: MIDLINE9,
+    });
+    expect(m.nLearnedPairs).toBe(1);
+    expect(m.scoreInstance(pose()).wrongFraction).toBeCloseTo(0, 6);   // canonical orientation
+    const bad = m.scoreInstance(pose(true));
+    expect(bad.nPairs).toBe(1);
+    expect(bad.wrongFraction).toBeCloseTo(1, 6);                       // was 0 before the fix
+    expect([...bad.wrongPairs]).toEqual(["7,8"]);
+  });
+
+  it("still refuses to score when the single pair is near-collinear with the midline (sign is noise)", () => {
+    const m = new ChiralityModel().fit(Array.from({ length: 8 }, () => pose()), {
+      symmetryPairs: PAIRS9, midlineIndices: MIDLINE9,
+    });
+    // both ears strung along the spine direction rather than across it -> ambiguous side
+    const ambiguous = pose();
+    ambiguous[7] = [470, 560];
+    ambiguous[8] = [462, 610];
+    expect(m.scoreInstance(ambiguous).wrongFraction).toBe(0);
+  });
+
+  it("a MULTI-pair skeleton still needs 2 co-visible pairs (occlusion safety preserved)", () => {
+    const m = fitModel();                                             // 2-pair fixture from above
+    expect(m.nLearnedPairs).toBe(2);
+    const oneHidden = clean(true);
+    oneHidden[4] = NAN;
+    oneHidden[5] = NAN;
+    expect(m.scoreInstance(oneHidden).wrongFraction).toBe(0);
+  });
+});

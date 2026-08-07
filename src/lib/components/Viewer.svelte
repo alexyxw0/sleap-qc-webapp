@@ -6,6 +6,11 @@
   import { ui } from "../uiStore.svelte.js";
   import { toast } from "../toastStore.svelte.js";
   import { drawScene, frameDims, hitTestNode } from "../draw.js";
+  import { keypointLabels } from "../keypointLabels.svelte.js";
+  import { keypointModels } from "../keypointModels.svelte.js";
+  import { keybinds } from "../keybinds.svelte.js";
+  import { framePass } from "../framePass.svelte.js";
+  import { proofread } from "../proofreadSession.svelte.js";
   import HeatTimeline from "./HeatTimeline.svelte";
 
   let wrap = $state();
@@ -62,6 +67,12 @@
     store.syncFrameImage();
   });
 
+  // What is ACTUALLY on the canvas. `store.current` flips the instant you navigate; the decode lands
+  // ~50-100 ms later, and drawing the new pose over the old picture is what made the skeleton look like
+  // it arrived first. Everything that draws or computes canvas geometry reads this, so the overlay, the
+  // hit-test and the zoom maths can never disagree about which frame they are talking about.
+  const shown = $derived(store.shownItem ?? store.current);
+
   // (B) Draw image + overlay. The zoom/pan transform is applied *inside* the canvas
   // (not via CSS), so node markers and labels re-rasterize crisply at any zoom. Redraw
   // is one drawImage + a few shapes — cheap enough to run on every zoom/pan/edit frame.
@@ -80,9 +91,15 @@
     const py = view.panY;
     const W = vpW;
     const H = vpH;
-    const item = store.current;
+    const item = shown;
     const sk = store.skeleton;
     if (!ctx || !W || !H) return;
+
+    // Keypoints the user has labelled faulty in THIS frame (proofreading ground truth), as "inst:node".
+    // MUST come after `item`/`sk` are declared — reading them above put this in the temporal dead zone
+    // and the ReferenceError killed the whole draw effect (blank canvas: no image, no overlay).
+    void keypointLabels.rev;
+    const gtFaulty = keypointLabels.faultyKeySet(item?.fkey, item?.lf?.instances?.length ?? 0, sk?.nodeNames);
 
     // QC rings: red on the worst *geometric* node of flagged instances; amber on the
     // least-confident node of low-confidence instances. Both only when concerning, so normal
@@ -123,6 +140,7 @@
       selNode: selN,
       worstNodes,
       worstEdges,
+      gtFaulty,
       flaggedInstances,
       overlay: view.showOverlay,
     });
@@ -133,7 +151,7 @@
   $effect(() => {
     const box = view.focusBox;
     if (!box || !vpW || !vpH) return;
-    const dims = frameDims(store.current, store.frameImage);
+    const dims = frameDims(shown, store.frameImage);
     const fitCss = Math.min(vpW / dims.w, vpH / dims.h);
     const margin = 36; // image px of context around the box
     const bw = box.w + 2 * margin;
@@ -168,8 +186,17 @@
     };
   }
 
+  /** Label (or un-label) one keypoint as faulty, then re-score the trained detectors so the queue
+   *  re-ranks immediately — that live feedback is the point of labelling in-app. */
+  function labelNode(instIdx, nodeIdx) {
+    const it = store.current, nm = store.skeleton?.nodeNames?.[nodeIdx];
+    if (!it?.fkey || !nm) return;
+    keypointLabels.toggleAt(it.fkey, instIdx, nm);   // fkey is the numeric "videoIdx:frameIdx" everyone uses
+    for (const sl of keypointModels.slots) sl.store.rescore();
+  }
+
   function onPointerDown(e) {
-    const lf = store.current?.lf;
+    const lf = shown?.lf; // hit what is drawn, not what the index points at
     if (!lf) return;
     const { x, y, scale } = toImage(e);
     const hit = hitTestNode(lf, HIT_PX * scale)(x, y);
@@ -178,6 +205,15 @@
     if (hit && (e.ctrlKey || e.metaKey)) {
       edit.select(hit.instIdx, hit.nodeIdx);
       edit.toggleVisible(hit.instIdx, hit.nodeIdx);
+      e.preventDefault();
+      return;
+    }
+
+    // PROOFREADING MODE: a plain click labels the keypoint. Drag/edit is suppressed so rapid labelling
+    // can't nudge coordinates — the user is asserting ground truth, not editing the pose.
+    if (hit && keypointLabels.proofreading) {
+      edit.select(hit.instIdx, hit.nodeIdx);
+      labelNode(hit.instIdx, hit.nodeIdx);
       e.preventDefault();
       return;
     }
@@ -272,7 +308,7 @@
     if (!rect.width || !rect.height) return;
     const dpr = window.devicePixelRatio || 1;
     const cw = Math.round(rect.width * dpr), ch = Math.round(rect.height * dpr);
-    const dims = frameDims(store.current, store.frameImage);
+    const dims = frameDims(shown, store.frameImage);
     const fitCss = Math.min(rect.width / dims.w, rect.height / dims.h);
     const z0 = view.zoom, z1 = view.clampZoom(z0 * factor);
     if (z1 === z0) return;
@@ -306,6 +342,39 @@
   }
 
   function onKey(e) {
+    // PROOFREADING owns the keyboard while active: a pass is meant to run entirely on the home row, and
+    // the viewer's global keys (n/p seek, space play, v visibility) would otherwise fight the loop.
+    // Unbound keys still fall through to the normal handler below.
+    if (keypointLabels.proofreading) {
+      const a = keybinds.resolve(e);
+      if (a) {
+        e.preventDefault();
+        // Two passes share the keymap: the frame queue in the proofreading window, and the model's
+        // candidate queue. Routing here (rather than a second listener in the window) is what keeps a
+        // keystroke from firing twice.
+        (framePass.active ? framePass : proofread).dispatch(a);
+        return;
+      }
+    } else if (framePass.active) {
+      // The proofreading window can drive its queue with the mode OFF: navigating is not labelling.
+      // Without this, pressing n while looking at that window fell through to the viewer's own frame
+      // stepping — which walks the file numerically and makes the ranked queue look unsorted.
+      const a = keybinds.resolve(e);
+      if (a && framePass.isMove(a.id)) {
+        e.preventDefault();
+        framePass.dispatch(a);
+        return;
+      }
+    }
+    if (!keypointLabels.proofreading) {
+      // Entering the mode must ALSO be keyless-reachable, or the first step still needs the cursor.
+      const g = keybinds.resolveGlobal(e);
+      if (g) {
+        e.preventDefault();
+        proofread.dispatch(g);
+        return;
+      }
+    }
     if (ui.overlayOpen) return; // palette/help own the keyboard while up
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
     const mod = e.ctrlKey || e.metaKey;
@@ -345,6 +414,9 @@
       e.preventDefault();
     } else if (e.key === "p" || e.key === "P") {
       seekFlagged(-1);
+      e.preventDefault();
+    } else if ((e.key === "f" || e.key === "F") && edit.selInstance >= 0 && edit.selNode >= 0) {
+      labelNode(edit.selInstance, edit.selNode);   // works with or without proofreading mode
       e.preventDefault();
     } else if (e.key === "v" && edit.selInstance >= 0 && edit.selNode >= 0) {
       edit.toggleVisible(edit.selInstance, edit.selNode);

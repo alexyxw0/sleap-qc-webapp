@@ -82,6 +82,11 @@ function drawPlaceholder(ctx, item, dims = {}, scale = 1) {
   );
 }
 
+// A keypoint the USER has labelled faulty. Filled + haloed rather than outlined, which is what keeps it
+// apart from the detector's DASHED ring below even though both are red: a solid red dot is a fact you
+// recorded, a dashed ring is a guess the model made.
+const GT_FAULTY = "#ff3b30";
+
 const placed = (p) => p && !Number.isNaN(p.xy?.[0]) && p.xy?.[0] != null;
 
 function drawSkeleton(ctx, lf, skeleton, sel = {}) {
@@ -89,7 +94,7 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
   const edges = skeleton.edges ?? [];
   const instances = lf.instances ?? [];
   const names = skeleton.nodeNames ?? [];
-  const { editing = false, selInstance = -1, selNode = -1, scale = 1, worstNodes = null, worstEdges = null, flaggedInstances = null, hiddenAlpha = 0.28 } = sel;
+  const { editing = false, selInstance = -1, selNode = -1, scale = 1, worstNodes = null, worstEdges = null, flaggedInstances = null, gtFaulty = null, hiddenAlpha = 0.28 } = sel;
 
   // Sizes are specified in on-screen pixels and converted to image-space via `scale`
   // (image px per screen px), so the overlay + labels look consistent at any video
@@ -209,20 +214,47 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
     // can still be found and dragged); otherwise it isn't drawn at all.
     points.forEach((p, ni) => {
       if (!placed(p)) return;
-      if (!p.visible && !isSel) return; // hidden node: shown only when its instance is selected
+      const gtBad = !!gtFaulty?.has(`${idx}:${ni}`);
+      // A label YOU made outranks the hidden-node rule: an invisible keypoint you marked faulty was
+      // either not drawn at all, or drawn at 28% — the one mark that must never be missable.
+      if (!p.visible && !isSel && !gtBad) return;
       const [px, py] = p.xy;
       const focused = isSel && ni === selNode;
       const nodeAlpha = p.visible ? 1 : focused ? Math.max(0.6, hiddenAlpha) : hiddenAlpha;
+      const markAlpha = gtBad ? 1 : nodeAlpha;
 
-      ctx.globalAlpha = nodeAlpha;
+      // PROOFREADING: a keypoint you labelled faulty is unmistakable — a soft red halo under it, the dot
+      // itself shaded red instead of its track colour, and a solid red ring. Drawn as three layers so it
+      // still reads over a bright frame, a dark frame, or a tangle of overlapping bones.
+      if (gtBad) {
+        ctx.save();
+        ctx.globalAlpha = markAlpha * 0.3;
+        ctx.beginPath();
+        ctx.arc(px, py, r + 7.5 * s, 0, Math.PI * 2);
+        ctx.fillStyle = GT_FAULTY;
+        ctx.fill();
+        ctx.restore();
+      }
+
+      ctx.globalAlpha = markAlpha;
       ctx.beginPath();
-      ctx.arc(px, py, r, 0, Math.PI * 2);
-      ctx.fillStyle = color;
+      ctx.arc(px, py, gtBad ? r * 1.2 : r, 0, Math.PI * 2);
+      ctx.fillStyle = gtBad ? GT_FAULTY : color;
       ctx.fill();
       if (editing && isSel) {
         ctx.lineWidth = 1.5 * s;
         ctx.strokeStyle = "rgba(255,255,255,0.85)";
         ctx.stroke();
+      }
+      if (gtBad) {
+        ctx.save();
+        ctx.globalAlpha = markAlpha;
+        ctx.strokeStyle = GT_FAULTY;
+        ctx.lineWidth = 2.4 * s;
+        ctx.beginPath();
+        ctx.arc(px, py, r + 4 * s, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
       }
       // QC: a flagged instance's faulty node gets a DASHED red ring — same color / dash / weight as
       // the flagged-instance bounding box, so the node and its box read as one consistent treatment.

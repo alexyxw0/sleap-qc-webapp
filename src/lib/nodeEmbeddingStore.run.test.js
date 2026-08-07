@@ -37,7 +37,10 @@ vi.mock("./labelsStore.svelte.js", () => ({
   store: { labels: { videos: [vA] }, frames: fakeFrames, fileName: "test.pkg.slp", getFrameImage: async () => ({ width: 100, height: 100 }) },
 }));
 
-const { nodeEmbeddingStores } = await import("./nodeEmbeddingStore.svelte.js");
+const { nodeEmbeddingStores, NodeEmbeddingStore } = await import("./nodeEmbeddingStore.svelte.js");
+// A second instance, built directly rather than via the registry: the run loop is per-store, so this is
+// what proves one store's results survive another store's run.
+const second = new NodeEmbeddingStore("dino");
 
 function assertCompleted(es) {
   expect(es.status).toBe("done");
@@ -58,14 +61,18 @@ function assertCompleted(es) {
 }
 
 describe("nodeEmbeddingStore.run() — runtime", () => {
-  it("classical backend runs to completion with a scored graph per keypoint", async () => {
-    await nodeEmbeddingStores.classical.run();
-    assertCompleted(nodeEmbeddingStores.classical);
+  it("runs to completion with a scored graph per keypoint", async () => {
+    await second.run();
+    assertCompleted(second);
   });
 
-  it("dino backend runs to completion without clobbering the classical store", async () => {
+  it("a second store runs without clobbering the first", async () => {
     await nodeEmbeddingStores.dino.run();
     assertCompleted(nodeEmbeddingStores.dino);
-    assertCompleted(nodeEmbeddingStores.classical); // both per-node stores coexist
+    assertCompleted(second); // per-node stores hold their own results
+  });
+
+  it("the registry offers DINO only", () => {
+    expect(Object.keys(nodeEmbeddingStores)).toEqual(["dino"]);
   });
 });

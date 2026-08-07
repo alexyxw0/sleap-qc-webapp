@@ -12,3 +12,6 @@ __pycache__/
 # regenerable precomputed artifacts (rebuilt by dino_probe exporters)
 precomputed/
 public/nose_models/
+
+# hand-off archives dropped in the repo root
+*.tar.gz
