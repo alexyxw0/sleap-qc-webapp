@@ -378,3 +378,58 @@ describe("the scoring question asks itself and branches", () => {
     expect(r).toMatch(/this\.scoreChoice = null; this\.svmSource = null;\s*\n\s*this\.store\?\.run\(\);/);
   });
 });
+
+// Two things the flow got wrong once it existed: the question was below a fold of embed settings that
+// step ① had already finished with, and having FIT a model there was no way to turn the detector on
+// without leaving the window for the Appearance tab.
+describe("the question is the pane, and it can arm the check itself", () => {
+  const w = read("src/lib/components/AppearanceWindow.svelte");
+
+  it("the score pane is its own tab branch — no embed config above it", () => {
+    expect(w).toContain('{:else if appRun.tab === "score" && appRun.gran === "node"}');
+    // ...and it comes BEFORE the config section in the chain, so it is the first thing rendered
+    expect(w.indexOf('appRun.tab === "score"')).toBeLessThan(w.indexOf("1 — WHAT TO EMBED"));
+  });
+
+  it("picking the keypoint happens in the question, not in the graph below it", () => {
+    expect(w).toContain('<span class="kp-l">Keypoint</span>');
+    expect(w).toContain("(es.selectedNode = ch.node)");
+    expect(w).not.toContain("Pick a keypoint in the graph below");
+    // a keypoint already scored by something other than kNN says so on its chip
+    expect(w).toMatch(/ch\.mode === "svm" \? "SVM" : "FS"/);
+  });
+
+  it("a settled answer offers the check itself", () => {
+    expect(w).toContain("Use as a detection check");
+    expect(w).toContain('qc.toggleCheck("nodeDino")');
+    expect(w).toContain("checked={qc.checks.nodeDino}");
+    // shown once a technique is chosen — not before there is anything to arm
+    expect(w).toMatch(/\{#if appRun\.scoreChoice\}[\s\S]{0,400}Use as a detection check/);
+  });
+
+  it("toggleCheck really flips that check", async () => {
+    const { qc } = await import("./qcStore.svelte.js");
+    const before = qc.checks.nodeDino;
+    qc.toggleCheck("nodeDino");
+    expect(qc.checks.nodeDino).toBe(!before);
+    qc.toggleCheck("nodeDino");
+    expect(qc.checks.nodeDino).toBe(before);
+  });
+
+  it("the fit lives in ONE place — the results panel no longer has its own", () => {
+    const n = read("src/lib/components/NodeEmbeddingCheck.svelte");
+    expect(n).not.toContain("es.trainFor(");
+    expect(n).not.toMatch(/class="t-go"/);
+    expect(n).not.toMatch(/Train an SVM on/);
+    expect(n).not.toContain("keypointLabels"); // its only reason to be imported went with it
+  });
+
+  it("the check row reports what is actually scoring it, not a fixed word", () => {
+    const q = read("src/lib/components/QcChecks.svelte");
+    // the hint used to open with "Unsupervised kNN:" — untrue of a keypoint the user trained
+    expect(q).not.toMatch(/hint: "Unsupervised kNN/);
+    expect(q).toContain("const nodeScoring = $derived.by");
+    expect(q).toContain("es.scoringOf(ns.node)");
+    expect(q).toMatch(/\{#if c\.key === "nodeDino" && nodeScoring\}/);
+  });
+});

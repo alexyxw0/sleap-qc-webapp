@@ -4,6 +4,7 @@
   import DetectorOverlap from "./DetectorOverlap.svelte";
   import ManualCheckCompare from "./ManualCheckCompare.svelte";
   import { appRun } from "../appearanceRun.svelte.js";
+  import { nodeEmbeddingStores } from "../nodeEmbeddingStore.svelte.js";
   import RunProgress from "./RunProgress.svelte";
 
   // ONE component, three tabs (geometry / appearance / analysis). The split is by COST and by WHEN you
@@ -113,7 +114,10 @@
     {
       key: "nodeDino",
       label: "Per-node · DINO",
-      hint: "Unsupervised kNN: a single keypoint whose patch is unlike that keypoint elsewhere (DINOv2 ViT — slow). Needs embeddings.",
+      // Written when kNN was the only scorer. The Score step can now put a fitted SVM or a few-shot
+      // blend behind this same check, so the fixed word "unsupervised" would be a lie about a keypoint
+      // the user trained themselves — `nodeScoring` replaces it with what is actually scoring.
+      hint: "A single keypoint whose patch is unlike that keypoint elsewhere (DINOv2 ViT — slow). Needs embeddings.",
       info: "Per-keypoint check using the DINOv2 ViT embedding — most sensitive but slow (a pass per keypoint, minutes at full coverage). Run DINO → Per keypoint. Off by default.",
     },
     {
@@ -161,6 +165,20 @@
     noseAppearance: { mode: "Upload", upload: true },
   };
   const appLocked = $derived(Object.fromEntries(APPEARANCE_KEYS.map((k) => [k, !qc.checkReady(k)])));
+  /** How the per-node check is CURRENTLY scored, per keypoint — kNN unless the Score step changed it. */
+  const nodeScoring = $derived.by(() => {
+    const es = nodeEmbeddingStores.dino;
+    void es.resultRev;
+    if (!es.hasResults) return null;
+    const names = store.skeleton?.nodeNames ?? [];
+    const by = { knn: [], svm: [], fewshot: [] };
+    for (const ns of es.nodeStats) if (ns.scored) by[es.scoringOf(ns.node)].push(names[ns.node] ?? `node ${ns.node}`);
+    const parts = [];
+    if (by.svm.length) parts.push(`trained SVM on ${by.svm.join(", ")}`);
+    if (by.fewshot.length) parts.push(`few-shot on ${by.fewshot.join(", ")}`);
+    if (by.knn.length) parts.push(`unsupervised kNN on ${by.knn.length === es.nodeStats.filter((n) => n.scored).length ? "every scored keypoint" : by.knn.join(", ")}`);
+    return parts.join(" · ");
+  });
 
   // Groups start EXPANDED: the tab already scopes what you're looking at, so collapsing on top of that
   // just hides the tab's own content behind a second click. The genuinely optional detail below
@@ -274,6 +292,9 @@
               />
             </label>
           </div>
+          {#if c.key === "nodeDino" && nodeScoring}
+            <p class="scoring">scoring: {nodeScoring}</p>
+          {/if}
           {#if infoOpen[c.key]}
             <p class="info">{c.info}</p>
             {#if c.repro}
@@ -995,6 +1016,14 @@
     color: var(--accent);
   }
   /* long-form description, indented to line up with the threshold slider */
+  /* What is actually behind this check right now — kNN, a model the user fitted, or a blend. */
+  .scoring {
+    margin: -0.15rem 0 0.35rem;
+    padding: 0 0.2rem 0 1.35rem;
+    font-size: 0.63rem;
+    color: var(--dim);
+    letter-spacing: 0.01em;
+  }
   .info {
     margin: -0.05rem 0 0.5rem;
     padding: 0.1rem 0.2rem 0.4rem 1.35rem;
