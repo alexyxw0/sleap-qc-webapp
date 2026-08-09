@@ -24,7 +24,7 @@
   import FewShotPanel from "./FewShotPanel.svelte";
   import { keypointModels } from "../keypointModels.svelte.js";
   import { keypointLabels } from "../keypointLabels.svelte.js";
-  import { appearanceCoverageNote } from "../qcStore.svelte.js";
+  import { appearanceCoverageNote, APPEARANCE_LABELS } from "../qcStore.svelte.js";
   import { loadAll } from "../qc/embedding/embcache.js";
   import { proofreadWindow } from "../proofreadWindow.svelte.js";
   import { importModel, exportModel, modelFilename } from "../qc/embedding/svmIo.js";
@@ -351,7 +351,7 @@
               <p class="s-q">✓ Scoring <b>{nodeName}</b> with kNN</p>
               <p class="s-note dim">
                 Already applied to all {es.patchCount(ni).toLocaleString()} patches — the graph below is it.
-                Threshold and per-frame verdicts are live in the <b>Per-node · DINO</b> check.
+                Threshold and per-frame verdicts are live in the <b>{APPEARANCE_LABELS.nodeDino.full}</b> check.
               </p>
               <button class="back" onclick={() => appRun.unaskScore()}>‹ use a different technique</button>
 
@@ -456,7 +456,7 @@
               <label class="arm-row" class:on={qc.checks.nodeDino}>
                 <input type="checkbox" checked={qc.checks.nodeDino} onchange={() => qc.toggleCheck("nodeDino")} />
                 <span class="ar-b">
-                  <b>Use as a detection check</b> — <b>Per-node · DINO</b>
+                  <b>Use as a detection check</b> — <b>{APPEARANCE_LABELS.nodeDino.full}</b>
                   {#if qc.checks.nodeDino}<span class="ar-on">on</span>{/if}
                   <br />
                   <span class="dim">
@@ -569,7 +569,7 @@
           {/if}
 
           <p class="armed" class:on={ready}>
-            {ready ? "✓" : "○"} the <b>{appRun.checkKey === "dino" ? "Appearance · whole instance" : appRun.checkKey === "nodeDino" ? "Per-node · DINO" : "Keypoint (trained)"}</b> check
+            {ready ? "✓" : "○"} the <b>{APPEARANCE_LABELS[appRun.checkKey].full}</b> check
             {ready ? "is armed" : "unlocks once this has results"}{#if ready && covNote} · <b>{covNote}</b>{/if}{ready ? " — tick it in the Appearance tab" : ""}
           </p>
         </section>

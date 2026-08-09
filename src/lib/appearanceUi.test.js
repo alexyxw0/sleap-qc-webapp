@@ -64,11 +64,11 @@ describe("the classical backend is gone", () => {
     expect(read("src/lib/components/RailTabs.svelte")).toContain('["dino", "nodeDino", "noseAppearance"]');
     // the overlap chart / manual comparison read from these two — a stale key here is a phantom row
     const qs = read("src/lib/qcStore.svelte.js");
-    for (const list of ["DETECTOR_LABELS", "DETECTOR_ORDER"]) {
-      const line = qs.slice(qs.indexOf(`const ${list} =`), qs.indexOf("\n", qs.indexOf(`const ${list} =`)));
-      expect(line, list).toContain("dino");
-      expect(line, list).toContain("noseAppearance");
-    }
+    const order = qs.slice(qs.indexOf("const DETECTOR_ORDER ="), qs.indexOf("\n", qs.indexOf("const DETECTOR_ORDER =")));
+    for (const k of ["dino", "noseAppearance"]) expect(order, k).toContain(k);
+    // The labels the overlap chart and the manual comparison read now come from ONE map, so the three
+    // appearance keys are present by construction rather than by three hand-copied strings.
+    expect(qs).toMatch(/DETECTOR_LABELS = \{[^\n]*\.\.\.Object\.fromEntries\(Object\.entries\(APPEARANCE_LABELS\)/);
   });
 });
 
@@ -431,5 +431,41 @@ describe("the question is the pane, and it can arm the check itself", () => {
     expect(q).toContain("const nodeScoring = $derived.by");
     expect(q).toContain("es.scoringOf(ns.node)");
     expect(q).toMatch(/\{#if c\.key === "nodeDino" && nodeScoring\}/);
+  });
+});
+
+// The three appearance rows read as three overlapping detectors because each carried four hand-written
+// names — a checkbox label, a registry label, a frame chip and an overlap label — and no two agreed.
+// They are three GRANULARITIES of one idea, and they now say so in one place.
+describe("the appearance checks are named once", () => {
+  const qs = read("src/lib/qcStore.svelte.js");
+  const qcc2 = read("src/lib/components/QcChecks.svelte");
+
+  it("one exported map is the only place the names live", () => {
+    expect(qs).toContain("export const APPEARANCE_LABELS");
+    for (const k of ["dino", "nodeDino", "noseAppearance"]) expect(qs, k).toMatch(new RegExp(`${k}: \\{ short:`));
+    // the registry derives its label rather than repeating it
+    expect(qs).toMatch(/label: APPEARANCE_LABELS\[a\.key\]\.full/);
+  });
+
+  it("no component hand-writes one of the old names", () => {
+    const stale = ["Appearance · whole instance", "Per-node · DINO", "Keypoint (trained)", "Per-node (DINO)", "DINO appearance"];
+    const hits = sources()
+      .filter((p) => !p.endsWith(".test.js"))
+      .filter((p) => stale.some((n) => code(p).includes(n)));
+    expect(hits, `a hand-written appearance label survives in:\n${hits.join("\n")}`).toEqual([]);
+  });
+
+  it("short inside the Appearance group, qualified outside it", () => {
+    // in the group the heading already supplies the word; in the overlap chart it sits beside Chirality
+    for (const k of ["dino", "nodeDino", "noseAppearance"]) expect(qcc2, k).toContain(`APPEARANCE_LABELS.${k}.short`);
+    expect(qs).toMatch(/short: "Whole instance", full: "Appearance · instance"/);
+  });
+
+  it("each hint says only what distinguishes it — the rest is in the ⓘ", () => {
+    const hints = [...qcc2.matchAll(/hint: "([^"]+)"/g)].map((m) => m[1]);
+    const app = hints.filter((h) => /Run DINO →/.test(h));
+    expect(app.length, "each appearance hint names the pass that unlocks it").toBe(3);
+    for (const h of app) expect(h.length, h).toBeLessThan(110);
   });
 });

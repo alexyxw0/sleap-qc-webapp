@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 
 vi.mock("./labelsStore.svelte.js", () => ({ store: { frames: [], labels: null, skeleton: null } }));
 const { store } = await import("./labelsStore.svelte.js");
-const { qc } = await import("./qcStore.svelte.js");
+const { qc, APPEARANCE_LABELS } = await import("./qcStore.svelte.js");
 const { keypointModels } = await import("./keypointModels.svelte.js");
 
 /** A loaded keypoint slot whose scores all sit BELOW any threshold: ready, but flags nothing. */
@@ -37,7 +37,7 @@ describe("detectorSets includes enabled+ready detectors that flag nothing", () =
     const d = qc.detectorSets().sets.find((s) => s.id === "noseAppearance");
     expect(d).toBeDefined();                   // present...
     expect(d.set.size).toBe(0);                // ...at zero, rather than missing entirely
-    expect(d.label).toBe("Keypoint (trained)");
+    expect(d.label).toBe(APPEARANCE_LABELS.noseAppearance.full);
   });
 
   it("a disabled detector stays out", () => {

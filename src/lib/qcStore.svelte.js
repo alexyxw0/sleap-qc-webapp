@@ -36,11 +36,22 @@ import { loadConfig, write as writeSetting, clear as clearSetting } from "./sett
 // catches a single mis-placed / occluded keypoint. Both are DINO — the classical pixel-feature backend
 // was dropped after the experiments, so there is no backend axis left, only granularity. Each is independently selectable and only "ready" once its backend has been run
 // in the matching panel; all fold into the same flagged union via per-frame keys ("videoIdx:frameIdx").
+//
+// ONE name each, defined here. These three had four names apiece — a checkbox label, a registry label, a
+// frame-reason chip and an overlap-chart label — so "DINO appearance" / "Appearance · whole instance" /
+// "Unusual appearance · DINO" were the same detector, and the set read as more detectors than it is.
+// `short` is for inside the Appearance group, where the heading already supplies the word; `full` is for
+// the mixed lists (overlap chart, manual comparison) where it sits beside Chirality and GMM.
+export const APPEARANCE_LABELS = {
+  dino: { short: "Whole instance", full: "Appearance · instance" },
+  nodeDino: { short: "Per keypoint", full: "Appearance · keypoint" },
+  noseAppearance: { short: "Per keypoint · bundle", full: "Appearance · keypoint (bundle)" },
+};
 const APPEARANCE_CHECKS = [
-  { key: "dino", store: embeddingStores.dino, label: "DINO appearance", chip: "Unusual appearance · DINO" },
-  { key: "nodeDino", store: nodeEmbeddingStores.dino, label: "Per-node appearance (DINO)", chip: "Unusual keypoint · DINO" },
-  { key: "noseAppearance", store: keypointModels, label: "Keypoint (trained)", chip: "Mislabeled keypoint · DINO" },
-];
+  { key: "dino", store: embeddingStores.dino, chip: "Unusual instance · DINO" },
+  { key: "nodeDino", store: nodeEmbeddingStores.dino, chip: "Unusual keypoint · DINO" },
+  { key: "noseAppearance", store: keypointModels, chip: "Mislabeled keypoint · DINO" },
+].map((a) => ({ ...a, label: APPEARANCE_LABELS[a.key].full }));
 const APPEARANCE_BY_KEY = Object.fromEntries(APPEARANCE_CHECKS.map((a) => [a.key, a]));
 
 /** "3 of 13 keypoints" when a per-node pass covered a subset, else null. Read from the RESULT snapshot,
@@ -125,7 +136,7 @@ const PF_ANGLE_SIGNALS = ["angle", "meanAngle"];
 const PF_WEIGHT = { anomaly: 1, gmm: 1, angle: 3, meanAngle: 3 };
 const PF_HOT = 0.95; // "this detector is alarmed"
 
-const DETECTOR_LABELS = { anomaly: "Anomaly", gmm: "GMM", chirality: "Chirality", ordering: "Ordering", poseSplit: "Pose split", count: "Count", sparse: "Sparse", confidence: "Confidence", instConfidence: "Inst conf", negative: "Negative", outOfFrame: "Out of frame", duplicates: "Duplicates", dino: "DINO appearance", nodeDino: "Per-node (DINO)", noseAppearance: "Keypoint (trained)" };
+const DETECTOR_LABELS = { anomaly: "Anomaly", gmm: "GMM", chirality: "Chirality", ordering: "Ordering", poseSplit: "Pose split", count: "Count", sparse: "Sparse", confidence: "Confidence", instConfidence: "Inst conf", negative: "Negative", outOfFrame: "Out of frame", duplicates: "Duplicates", ...Object.fromEntries(Object.entries(APPEARANCE_LABELS).map(([k, v]) => [k, v.full])) };
 const DETECTOR_ORDER = ["anomaly", "gmm", "chirality", "ordering", "poseSplit", "count", "sparse", "confidence", "instConfidence", "negative", "outOfFrame", "duplicates", "dino", "nodeDino", "noseAppearance"];
 
 // Persisted user configuration: the detector selection + every threshold/mode. Results are NOT persisted
