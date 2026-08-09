@@ -40,6 +40,24 @@
   });
   // ---- the scoring branch's actions. Each one reports its own outcome in the pane: a fit that silently
   // did nothing, or an upload that silently failed, is the failure mode this whole flow exists to remove.
+  // The keypoint picker lives IN the question now. Scoring is chosen per keypoint, so sending the user
+  // down to the results graph to pick one and back up to answer split one decision across two places.
+  const nodeChips = $derived.by(() => {
+    void es?.resultRev;
+    if (!es?.hasResults) return [];
+    const names = store.skeleton?.nodeNames ?? [];
+    const by = new Map(es.nodeStats.map((n) => [n.node, n]));
+    const rows = names.length ? names.map((_, i) => i) : es.nodeStats.map((n) => n.node);
+    return rows.map((ni) => ({
+      node: ni,
+      name: names[ni] ?? `node ${ni}`,
+      // Only a SCORED keypoint can be answered about; embedded-but-too-few and never-embedded are shown
+      // rather than omitted, because an absent chip reads as "this skeleton has 3 keypoints".
+      state: !by.get(ni) ? "absent" : by.get(ni).scored ? "scored" : "few",
+      mode: es.scoringOf(ni),
+    }));
+  });
+
   let upErr = $state(null), upWarn = $state(null);
   let fitting = $state(false), fitMsg = $state(null);
   const lastFit = new Map(); // node -> { cv } from this session's fit, for the export header
@@ -286,120 +304,29 @@
         <section class="pane">
           <FewShotPanel />
         </section>
-      {:else}
-      <!-- 1 — WHAT TO EMBED ------------------------------------------------------------------ -->
-      <section class="cfg">
-        <div class="row">
-          <span class="lbl">Granularity</span>
-          <div class="seg">
-            {#each GRAN as [k, label, hint] (k)}
-              <button type="button" class:on={appRun.gran === k} disabled={busy}
-                      onclick={() => appRun.setGran(k)} title={hint}>{label}</button>
-            {/each}
-          </div>
-        </div>
-
-        <div class="row">
-          <span class="lbl">Scorer</span>
-          <!-- One scorer per granularity, so this states what will happen rather than asking. Whole
-               instance is the trained SVM (kNN was ~chance on a whole-animal crop); per keypoint is
-               unsupervised kNN, where the patch is small enough for it to discriminate. -->
-          <span class="fixed" title={appRun.gran === "instance"
-              ? "Bundled RBF-SVM trained on proofread labels. Unsupervised kNN at this granularity scored ~chance, so it is not offered."
-              : "Each patch vs the k nearest patches of the SAME keypoint (robust-z). No labels needed."}>
-            {appRun.scorer}{#if appRun.gran === "instance" && clf}<small> · cv roc {clf.cv_roc.toFixed(2)}</small>{/if}
-          </span>
-          {#if appRun.gran === "node"}
-            <!-- The SVM is now trained HERE, from these embeddings and your labels — so this must not
-                 send anyone to the upload route, which is only for models fitted elsewhere. -->
-            <span class="xnote" title="Run this pass, judge some keypoints in the proofreading window, then fit an SVM on them under the keypoint's graph below. It trains on the patches this run computed, so no upload and no crop-geometry mismatch.">
-              or fit an SVM on your labels — under the graph, after the run
-            </span>
-          {/if}
-        </div>
-
-        {#if es}
-        {/if}
-
-        {#if es && appRun.gran === "node" && allNodes.length}
-          <div class="row kprow">
-            <span class="lbl">Keypoints</span>
-            <div class="chips">
-              {#each allNodes as nm, ni (nm)}
-                {@const on = picked == null || picked.includes(ni)}
-                <button type="button" class="kchip" class:on disabled={busy}
-                        onclick={() => toggleNode(ni)}
-                        title={on ? `${nm} will be embedded — click to skip it` : `${nm} will NOT be embedded, so nothing will be known about it`}>{nm}</button>
-              {/each}
-            </div>
-            <span class="ksum">{nSel} of {allNodes.length}</span>
-          </div>
-        {/if}
-
-        <Explain>
-          {#if appRun.gran === "instance"}
-            <p class="note">One whole-instance crop per animal, embedded with DINOv2 ViT-S/14 (384-d) and scored by an RBF-SVM trained on proofread labels{#if clf} — <b>{clf.dataset}</b>, CV ROC {clf.cv_roc.toFixed(3)} / PR {clf.cv_pr.toFixed(3)}{/if}. Flags by SVM decision (0 = the boundary).</p>
-            <p class="note">Catches occlusion and appearance errors geometry misses, but not <i>which</i> keypoint is wrong — that is the per-keypoint granularity.</p>
-          {:else}
-            <p class="note">A patch around each keypoint, embedded with DINOv2 ViT-S/14 and scored <b>unsupervised</b>: robust-z of the distance to the k nearest patches of that <i>same</i> keypoint. No labels needed, and a flag names the keypoint responsible.</p>
-            <p class="note">One forward pass per keypoint per instance — many more crops than whole-instance, so expect minutes at full coverage. Cached after the first run. For a <i>supervised</i> per-keypoint score, judge some keypoints and fit an SVM on them under the graph below — it trains on these same patches. Bringing a bundle fitted elsewhere is the other option, back at <b>‹ start</b>.</p>
-          {/if}
-        </Explain>
-      </section>
-
-      <!-- 2 — LAUNCH + WATCH ------------------------------------------------------------------ -->
-      {#if es}
-        <section class="launch">
-          <div class="go">
-            {#if running}
-              <button class="big stop" onclick={() => appRun.abort()}>■ Stop</button>
-            {:else}
-              <button class="big" disabled={busy || !store.ready || noneSelected} onclick={() => appRun.run()}>
-                {es.hasResults ? "Re-run" : "Run"} DINO
-              </button>
-            {/if}
-            <div class="cost">
-              {#if running}
-                <RunProgress store={es} />
-              {:else if busy}
-                <span class="dim">The other granularity is running — they share one worker.</span>
-              {:else if noneSelected}
-                <span class="dim">Select at least one keypoint — an empty selection embeds nothing.</span>
-              {:else if workload}
-                <span class="dim">{workload.label}{workload.units ? ` · ${workload.units.toLocaleString()} forward passes` : ""}</span>
-              {:else}
-                <span class="dim">Load a file to see the workload.</span>
-              {/if}
-            </div>
-          </div>
-
-          {#if !running && es.status === "error"}
-            <p class="err">{es.message}</p>
-          {:else if !running && es.status === "aborted"}
-            <p class="dim">{es.message} {es.hasResults ? "Partial results are shown below." : ""}</p>
-          {:else if !running && !es.hasResults}
-            <p class="dim">
-              {#if !modelReady}The DINOv2 weights (~90 MB) download once, then embed.{:else}Weights already loaded.{/if}
-              {#if cached}<b>{cached.toLocaleString()} patches already cached</b> — reused, not re-embedded.{/if}
-              Results appear here.
-            </p>
-          {/if}
-
-          <p class="armed" class:on={ready}>
-            {ready ? "✓" : "○"} the <b>{appRun.checkKey === "dino" ? "Appearance · whole instance" : appRun.checkKey === "nodeDino" ? "Per-node · DINO" : "Keypoint (trained)"}</b> check
-            {ready ? "is armed" : "unlocks once this has results"}{#if ready && covNote} · <b>{covNote}</b>{/if}{ready ? " — tick it in the Appearance tab" : ""}
-          </p>
-        </section>
-      {/if}
-
-      {#if appRun.tab === "score" && appRun.gran === "node"}
+      {:else if appRun.tab === "score" && appRun.gran === "node"}
         <!-- The run used to just end. This is the rest of the workflow, asked as questions rather than
              left as tabs to discover: technique, then where the boundary comes from, then how to get the
              labels that boundary needs. One question on screen at a time, each answer routing the next. -->
         <section class="score">
+          <!-- Which keypoint, then what to do about it — the two halves of one decision, together. -->
+          <div class="kp">
+            <span class="kp-l">Keypoint</span>
+            <div class="kp-chips">
+              {#each nodeChips as ch (ch.node)}
+                <button class="kp-c" class:sel={es.selectedNode === ch.node} class:absent={ch.state === "absent"}
+                        disabled={ch.state !== "scored"} onclick={() => (es.selectedNode = ch.node)}
+                        title={ch.state === "scored" ? `scored by ${SCORE_LABEL[ch.mode]}`
+                          : ch.state === "few" ? "embedded, too few patches to score"
+                            : "not embedded in this run — nothing is known about it"}>
+                  {ch.name}{#if ch.state === "scored" && ch.mode !== "knn"}<span class="kp-b">{ch.mode === "svm" ? "SVM" : "FS"}</span>{/if}
+                </button>
+              {/each}
+            </div>
+          </div>
           {#if es?.selectedNode == null}
             <p class="s-q">How should these patches be scored?</p>
-            <p class="dim">Pick a keypoint in the graph below first — scoring is chosen per keypoint.</p>
+            <p class="dim">Pick a keypoint above — scoring is chosen per keypoint.</p>
           {:else}
             {@const ni = es.selectedNode}
             {@const t = es.trainableFor(ni)}
@@ -522,7 +449,129 @@
               {/if}
               <button class="back" onclick={() => appRun.unaskScore()}>‹ back</button>
             {/if}
+
+            <!-- Fitting a model and USING it are different acts, and the second one had no control here:
+                 the only way to arm the detector was to leave the window for the Appearance tab. -->
+            {#if appRun.scoreChoice}
+              <label class="arm-row" class:on={qc.checks.nodeDino}>
+                <input type="checkbox" checked={qc.checks.nodeDino} onchange={() => qc.toggleCheck("nodeDino")} />
+                <span class="ar-b">
+                  <b>Use as a detection check</b> — <b>Per-node · DINO</b>
+                  {#if qc.checks.nodeDino}<span class="ar-on">on</span>{/if}
+                  <br />
+                  <span class="dim">
+                    Flags every embedded keypoint, each by whatever is scoring it —
+                    {#each nodeChips.filter((c) => c.state === "scored") as c, i (c.node)}{i ? ", " : ""}<b>{c.name}</b> {SCORE_LABEL[c.mode]}{:else}nothing scored yet{/each}.
+                    Its threshold and per-frame counts live in the graph below.
+                  </span>
+                </span>
+              </label>
+            {/if}
           {/if}
+        </section>
+      {:else}
+      <!-- 1 — WHAT TO EMBED ------------------------------------------------------------------ -->
+      <section class="cfg">
+        <div class="row">
+          <span class="lbl">Granularity</span>
+          <div class="seg">
+            {#each GRAN as [k, label, hint] (k)}
+              <button type="button" class:on={appRun.gran === k} disabled={busy}
+                      onclick={() => appRun.setGran(k)} title={hint}>{label}</button>
+            {/each}
+          </div>
+        </div>
+
+        <div class="row">
+          <span class="lbl">Scorer</span>
+          <!-- One scorer per granularity, so this states what will happen rather than asking. Whole
+               instance is the trained SVM (kNN was ~chance on a whole-animal crop); per keypoint is
+               unsupervised kNN, where the patch is small enough for it to discriminate. -->
+          <span class="fixed" title={appRun.gran === "instance"
+              ? "Bundled RBF-SVM trained on proofread labels. Unsupervised kNN at this granularity scored ~chance, so it is not offered."
+              : "Each patch vs the k nearest patches of the SAME keypoint (robust-z). No labels needed."}>
+            {appRun.scorer}{#if appRun.gran === "instance" && clf}<small> · cv roc {clf.cv_roc.toFixed(2)}</small>{/if}
+          </span>
+          {#if appRun.gran === "node"}
+            <!-- The SVM is now trained HERE, from these embeddings and your labels — so this must not
+                 send anyone to the upload route, which is only for models fitted elsewhere. -->
+            <span class="xnote" title="Run this pass, judge some keypoints in the proofreading window, then fit an SVM on them under the keypoint's graph below. It trains on the patches this run computed, so no upload and no crop-geometry mismatch.">
+              or fit an SVM on your labels — under the graph, after the run
+            </span>
+          {/if}
+        </div>
+
+        {#if es}
+        {/if}
+
+        {#if es && appRun.gran === "node" && allNodes.length}
+          <div class="row kprow">
+            <span class="lbl">Keypoints</span>
+            <div class="chips">
+              {#each allNodes as nm, ni (nm)}
+                {@const on = picked == null || picked.includes(ni)}
+                <button type="button" class="kchip" class:on disabled={busy}
+                        onclick={() => toggleNode(ni)}
+                        title={on ? `${nm} will be embedded — click to skip it` : `${nm} will NOT be embedded, so nothing will be known about it`}>{nm}</button>
+              {/each}
+            </div>
+            <span class="ksum">{nSel} of {allNodes.length}</span>
+          </div>
+        {/if}
+
+        <Explain>
+          {#if appRun.gran === "instance"}
+            <p class="note">One whole-instance crop per animal, embedded with DINOv2 ViT-S/14 (384-d) and scored by an RBF-SVM trained on proofread labels{#if clf} — <b>{clf.dataset}</b>, CV ROC {clf.cv_roc.toFixed(3)} / PR {clf.cv_pr.toFixed(3)}{/if}. Flags by SVM decision (0 = the boundary).</p>
+            <p class="note">Catches occlusion and appearance errors geometry misses, but not <i>which</i> keypoint is wrong — that is the per-keypoint granularity.</p>
+          {:else}
+            <p class="note">A patch around each keypoint, embedded with DINOv2 ViT-S/14 and scored <b>unsupervised</b>: robust-z of the distance to the k nearest patches of that <i>same</i> keypoint. No labels needed, and a flag names the keypoint responsible.</p>
+            <p class="note">One forward pass per keypoint per instance — many more crops than whole-instance, so expect minutes at full coverage. Cached after the first run. For a <i>supervised</i> per-keypoint score, judge some keypoints and fit an SVM on them under the graph below — it trains on these same patches. Bringing a bundle fitted elsewhere is the other option, back at <b>‹ start</b>.</p>
+          {/if}
+        </Explain>
+      </section>
+
+      <!-- 2 — LAUNCH + WATCH ------------------------------------------------------------------ -->
+      {#if es}
+        <section class="launch">
+          <div class="go">
+            {#if running}
+              <button class="big stop" onclick={() => appRun.abort()}>■ Stop</button>
+            {:else}
+              <button class="big" disabled={busy || !store.ready || noneSelected} onclick={() => appRun.run()}>
+                {es.hasResults ? "Re-run" : "Run"} DINO
+              </button>
+            {/if}
+            <div class="cost">
+              {#if running}
+                <RunProgress store={es} />
+              {:else if busy}
+                <span class="dim">The other granularity is running — they share one worker.</span>
+              {:else if noneSelected}
+                <span class="dim">Select at least one keypoint — an empty selection embeds nothing.</span>
+              {:else if workload}
+                <span class="dim">{workload.label}{workload.units ? ` · ${workload.units.toLocaleString()} forward passes` : ""}</span>
+              {:else}
+                <span class="dim">Load a file to see the workload.</span>
+              {/if}
+            </div>
+          </div>
+
+          {#if !running && es.status === "error"}
+            <p class="err">{es.message}</p>
+          {:else if !running && es.status === "aborted"}
+            <p class="dim">{es.message} {es.hasResults ? "Partial results are shown below." : ""}</p>
+          {:else if !running && !es.hasResults}
+            <p class="dim">
+              {#if !modelReady}The DINOv2 weights (~90 MB) download once, then embed.{:else}Weights already loaded.{/if}
+              {#if cached}<b>{cached.toLocaleString()} patches already cached</b> — reused, not re-embedded.{/if}
+              Results appear here.
+            </p>
+          {/if}
+
+          <p class="armed" class:on={ready}>
+            {ready ? "✓" : "○"} the <b>{appRun.checkKey === "dino" ? "Appearance · whole instance" : appRun.checkKey === "nodeDino" ? "Per-node · DINO" : "Keypoint (trained)"}</b> check
+            {ready ? "is armed" : "unlocks once this has results"}{#if ready && covNote} · <b>{covNote}</b>{/if}{ready ? " — tick it in the Appearance tab" : ""}
+          </p>
         </section>
       {/if}
 
@@ -582,53 +631,89 @@
   .n-n { font-size: 0.56rem; color: var(--dim); padding: 0.02rem 0.3rem; border-radius: 999px; background: rgba(255, 255, 255, 0.06); }
   .n-arrow { color: var(--border); font-size: 0.7rem; }
   .lockmsg { margin: 0; font-size: 0.64rem; color: #f0b47a; }
-  .score { display: flex; flex-direction: column; gap: 0.5rem; }
-  .s-q { margin: 0; font-size: 0.8rem; font-weight: 600; color: var(--text); }
-  .s-opts { display: flex; flex-direction: column; gap: 0.4rem; }
+  /* This is the top of the pane and the thing to read first, so it gets the room: a panel with its own
+     surface, sized to fill rather than to fit, instead of a paragraph competing with the results graph. */
+  .score {
+    display: flex; flex-direction: column; gap: 0.7rem;
+    min-height: 19rem; padding: 0.9rem 1rem 1rem;
+    border: 1px solid var(--border); border-radius: 10px;
+    background: color-mix(in srgb, var(--accent) 4%, transparent);
+  }
+  .s-q { margin: 0; font-size: 1rem; font-weight: 650; color: var(--text); letter-spacing: -0.01em; }
+  .s-opts { display: flex; flex-direction: column; gap: 0.55rem; }
   /* Answering is a click, so an option is a button — not a div you have to discover is clickable. */
   .sopt {
-    display: flex; flex-direction: column; gap: 0.2rem; text-align: left;
-    padding: 0.55rem 0.7rem; border: 1px solid var(--border); border-radius: 8px;
-    background: transparent; cursor: pointer; font: inherit;
+    display: flex; flex-direction: column; gap: 0.3rem; text-align: left;
+    padding: 0.85rem 1rem; border: 1px solid var(--border); border-radius: 9px;
+    background: var(--bg); cursor: pointer; font: inherit;
+    transition: border-color 0.12s, background 0.12s;
   }
-  .sopt:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
-  .so-t { font-size: 0.75rem; font-weight: 600; color: var(--text); }
-  .so-d { font-size: 0.63rem; color: var(--dim); line-height: 1.5; }
+  .sopt:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, var(--bg)); }
+  .so-t { font-size: 0.86rem; font-weight: 600; color: var(--text); }
+  .so-d { font-size: 0.7rem; color: var(--dim); line-height: 1.55; }
+
+  /* Which keypoint — the other half of the same decision, so it sits inside the panel, above it. */
+  .kp { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+  .kp-l { font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); }
+  .kp-chips { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+  .kp-c {
+    display: inline-flex; align-items: center; gap: 0.25rem;
+    background: transparent; border: 1px solid var(--border); border-radius: 999px;
+    color: var(--dim); font-size: 0.65rem; padding: 0.1rem 0.5rem; cursor: pointer;
+  }
+  .kp-c:hover:not(:disabled) { border-color: var(--accent); color: var(--text); }
+  .kp-c.sel { border-color: var(--accent); background: var(--accent); color: #06281a; font-weight: 600; }
+  .kp-c:disabled { opacity: 0.45; cursor: default; }
+  .kp-c.absent { text-decoration: line-through; border-style: dashed; }
+  .kp-b { font-size: 0.52rem; font-weight: 700; letter-spacing: 0.04em; opacity: 0.85; }
+
+  /* Arming the detector is the last act of the flow, so it reads as a commitment, not a footnote. */
+  .arm-row {
+    display: grid; grid-template-columns: auto 1fr; gap: 0.55rem; align-items: start;
+    margin-top: auto; padding: 0.6rem 0.7rem;
+    border: 1px solid var(--border); border-radius: 8px; background: var(--bg); cursor: pointer;
+  }
+  .arm-row:hover { border-color: var(--accent); }
+  .arm-row.on { border-color: color-mix(in srgb, #6ee7a8 55%, var(--border)); }
+  .arm-row input { margin-top: 0.15rem; accent-color: var(--accent); }
+  .ar-b { font-size: 0.7rem; color: var(--text); line-height: 1.55; }
+  .ar-b .dim { font-size: 0.63rem; color: var(--dim); }
+  .ar-on { color: #6ee7a8; font-size: 0.6rem; font-weight: 700; text-transform: uppercase; }
   .back {
     align-self: flex-start; background: transparent; border: 0; padding: 0.1rem 0;
-    color: var(--dim); font-size: 0.65rem; cursor: pointer;
+    color: var(--dim); font-size: 0.68rem; cursor: pointer;
   }
   .back:hover { color: var(--accent); }
   .drop {
-    display: block; padding: 0.7rem; border: 1px dashed var(--border); border-radius: 8px;
-    text-align: center; font-size: 0.68rem; color: var(--dim); cursor: pointer;
+    display: block; padding: 1.4rem 0.7rem; border: 1px dashed var(--border); border-radius: 8px;
+    text-align: center; font-size: 0.74rem; color: var(--dim); cursor: pointer;
   }
   .drop:hover { border-color: var(--accent); color: var(--accent); }
   .drop input { display: none; }
-  .s-note { margin: 0; font-size: 0.63rem; color: #6ee7a8; line-height: 1.5; }
+  .s-note { margin: 0; font-size: 0.68rem; color: #6ee7a8; line-height: 1.5; }
   .s-note.dim { color: var(--dim); }
   .s-err { margin: 0; font-size: 0.65rem; color: #ff6b6b; line-height: 1.5; }
   .s-warn { margin: 0; font-size: 0.65rem; color: #f0b47a; line-height: 1.5; }
   .warn { color: #f0b47a; }
   .fs-msg { color: var(--accent); }
   /* The three moves of the few-shot branch, numbered — the order is the point. */
-  .fs-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+  .fs-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
   .fs-steps li {
-    display: grid; grid-template-columns: auto 1fr auto; align-items: start; gap: 0.5rem;
-    padding: 0.5rem 0.6rem; border: 1px solid var(--border); border-radius: 8px;
+    display: grid; grid-template-columns: auto 1fr auto; align-items: start; gap: 0.6rem;
+    padding: 0.65rem 0.75rem; border: 1px solid var(--border); border-radius: 8px;
   }
   .fs-steps li.locked { opacity: 0.5; }
   .fs-steps li.done { border-color: color-mix(in srgb, #6ee7a8 45%, var(--border)); }
   .fs-n {
-    display: grid; place-items: center; width: 1.15rem; height: 1.15rem; border-radius: 50%;
-    background: var(--border); color: var(--dim); font-size: 0.6rem; font-weight: 700;
+    display: grid; place-items: center; width: 1.35rem; height: 1.35rem; border-radius: 50%;
+    background: var(--border); color: var(--dim); font-size: 0.68rem; font-weight: 700;
   }
   .fs-steps li.done .fs-n { background: #6ee7a8; color: #06281a; }
-  .fs-b { font-size: 0.65rem; color: var(--dim); line-height: 1.55; }
+  .fs-b { font-size: 0.7rem; color: var(--dim); line-height: 1.55; }
   .fs-b b { color: var(--text); }
   .fs-go {
     background: transparent; border: 1px solid var(--accent); border-radius: var(--r-xs);
-    color: var(--accent); font-size: 0.64rem; padding: 0.2rem 0.6rem; cursor: pointer; white-space: nowrap;
+    color: var(--accent); font-size: 0.68rem; padding: 0.28rem 0.7rem; cursor: pointer; white-space: nowrap;
   }
   .fs-go:disabled { opacity: 0.4; border-color: var(--border); color: var(--dim); cursor: default; }
 
