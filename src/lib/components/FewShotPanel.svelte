@@ -5,9 +5,8 @@
   // real prerequisite chain (a bundle, then labels), which reads badly buried at the bottom of another
   // panel where the controls appeared and vanished depending on what was loaded.
   import { keypointLabels } from "../keypointLabels.svelte.js";
-  import { keypointModels } from "../keypointModels.svelte.js";
+  import { keypointModels, ingestLabelCsv } from "../keypointModels.svelte.js";
   import { proofreadWindow } from "../proofreadWindow.svelte.js";
-  import { parseKeypointLabels } from "../manualCheck.js";
   import Explain from "./Explain.svelte";
 
   let labelInput;
@@ -20,11 +19,7 @@
     const f = ev.currentTarget.files?.[0];
     ev.currentTarget.value = "";
     if (!f) return;
-    const r = parseKeypointLabels(await f.text());
-    if (r.error) { labelMsg = r.error; return; }
-    keypointLabels.ingest(r.rows, "review csv");
-    labelMsg = `${r.rows.length} reviewed instances · nodes: ${r.nodes.join(", ") || "none faulty"}`;
-    for (const sl of keypointModels.slots) sl.store.rescore(); // labels can adapt every keypoint
+    labelMsg = (await ingestLabelCsv(f)).msg;
   }
   function setAlpha(slot, v) { slot.store.fewShot = v; slot.store.rescore(); }
   function clearLabels() {

@@ -23,8 +23,15 @@ class AppearanceRun {
   // no file and no compute, and computing needs no bundle. Neither is ever gated on the other; the only
   // real prerequisites are inside a route, and those are the ones the steps lock on.
   route = $state(null); // null | "bundle" | "compute"
-  // "asked and declined" is not derivable from the stores, so few-shot's answer needs its own field.
+  // THE BUNDLE ROUTE'S SCORING QUESTION — the same shape as the compute route's, for the same reason:
+  // loading a bundle used to just end, with an "Adapt (few-shot)" tab you had to know to open.
+  //   adaptChoice "as-is"  -> the bundle's own calibrated boundary, unchanged
+  //               "adapt"  -> blend it toward this project, which needs labels…
+  //   labelSource "csv"    -> …imported from a faulty_keypoints.csv
+  //               "proofread" -> …made here, in the ranked queue
+  // "asked and declined" is not derivable from the stores, so each answer needs its own field.
   adaptChoice = $state(null); // null | "as-is" | "adapt"
+  labelSource = $state(null); // null | "csv" | "proofread"
   // Uploading a precomputed bundle is not a run — nothing launches, nothing has a rate, and it arms a
   // different check. Burying it under gran=node + model=pretrained made it look like a third way to
   // compute. It is a SUBTAB: "compute something here" vs "bring something you computed elsewhere".
@@ -120,6 +127,14 @@ class AppearanceRun {
   get adaptLive() {
     return keypointModels.slots.some((s) => s.store.hasResults && s.store.fewShotInfo != null);
   }
+
+  setAdaptChoice(c) {
+    this.adaptChoice = c === "as-is" || c === "adapt" ? c : null;
+    if (this.adaptChoice !== "adapt") this.labelSource = null; // an abandoned branch keeps no answer
+  }
+  setLabelSource(v) { this.labelSource = v === "csv" || v === "proofread" ? v : null; }
+  /** Back up one question on the bundle route. */
+  unaskAdapt() { if (this.labelSource) this.labelSource = null; else this.adaptChoice = null; }
 
   setScoreChoice(c) {
     this.scoreChoice = c === "knn" || c === "svm" ? c : null;

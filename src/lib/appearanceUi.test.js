@@ -187,7 +187,10 @@ describe("few-shot is its own tab", () => {
     expect(n).toContain('appRun.showTab("fewshot")');
     const f = read("src/lib/components/FewShotPanel.svelte");
     expect(f).toContain("setAlpha");
-    expect(f).toContain("parseKeypointLabels");
+    // The CSV import moved to a shared ingest — the bundle route's scoring prompt offers it too, and a
+    // second copy of "parse, ingest, rescore" is a second place to forget the rescore.
+    expect(f).toContain("ingestLabelCsv");
+    expect(read("src/lib/keypointModels.svelte.js")).toContain("export async function ingestLabelCsv");
   });
 
   it("the panel states its prerequisites instead of hiding the controls", () => {
@@ -467,5 +470,75 @@ describe("the appearance checks are named once", () => {
     const app = hints.filter((h) => /Run DINO →/.test(h));
     expect(app.length, "each appearance hint names the pass that unlocks it").toBe(3);
     for (const h of app) expect(h.length, h).toBeLessThan(110);
+  });
+});
+
+
+// Two gaps the flow left once it existed: the Appearance tab advertised three checks that could not be
+// ticked, and the BUNDLE route ended at "loaded" with an Adapt tab you had to know to open.
+describe("checks appear as they become available", () => {
+  const q = read("src/lib/components/QcChecks.svelte");
+
+  it("an appearance row renders only once its own data exists", () => {
+    expect(q).toMatch(/\.filter\(\(c\) => !isAppearance\(c\.key\) \|\| qc\.checkReady\(c\.key\)\)/);
+  });
+
+  it("and the empty tab explains itself rather than showing nothing", () => {
+    expect(q).toMatch(/isAppearMode && !APPEARANCE_KEYS\.some\(\(k\) => qc\.checkReady\(k\)\)/);
+    expect(q).toContain("No appearance checks yet");
+  });
+});
+
+describe("the bundle route is gated like the compute route", () => {
+  const w = read("src/lib/components/AppearanceWindow.svelte");
+  const r = read("src/lib/appearanceRun.svelte.js");
+
+  it("holds two levels of answer, each null until answered", () => {
+    expect(r).toContain("adaptChoice = $state(null);");
+    expect(r).toContain("labelSource = $state(null);");
+  });
+
+  it("step ② is Score, unlocked by the PAIR — not by labels, since as-is needs none", () => {
+    expect(w).toMatch(/id: "fewshot", label: "Score"[\s\S]{0,120}locked: !pair/);
+  });
+
+  it("Q1 is as-shipped vs adapt; Q2 only exists under adapt", () => {
+    expect(w).toContain("Use it as shipped");
+    expect(w).toContain("Adapt it to this project (few-shot)");
+    expect(w).toMatch(/appRun\.setAdaptChoice\("as-is"\)/);
+    expect(w).toMatch(/appRun\.setAdaptChoice\("adapt"\)/);
+    expect(w.indexOf('appRun.adaptChoice === "as-is"')).toBeLessThan(w.indexOf("Few-shot needs labels"));
+  });
+
+  it("the label question routes to a CSV or to the proofreader", () => {
+    expect(w).toContain("Import a faulty_keypoints.csv");
+    expect(w).toContain("onchange={onAdaptCsv}");
+    expect(w).toMatch(/appRun\.setLabelSource\("proofread"\); openProofreader\(\)/);
+    expect(w).toContain("disabled={!qc.proofreadReady}");
+  });
+
+  it("abandoning the adapt branch drops its answer", async () => {
+    const { appRun } = await import("./appearanceRun.svelte.js");
+    appRun.setAdaptChoice("adapt");
+    appRun.setLabelSource("csv");
+    appRun.setAdaptChoice("as-is");
+    expect(appRun.labelSource).toBeNull();
+    appRun.setAdaptChoice(null);
+  });
+
+  it("an answer cannot outlive the bundle it describes", () => {
+    expect(w).toMatch(/if \(!appRun\.pairLoaded && appRun\.adaptChoice\) appRun\.setAdaptChoice\(null\)/);
+  });
+
+  it("and it ends where the compute route does — arming the check", () => {
+    expect(w).toMatch(/qc\.toggleCheck\("noseAppearance"\)/);
+    expect(w).toContain("checked={qc.checks.noseAppearance}");
+  });
+
+  it("every branch that HAS somewhere to go back to offers it", () => {
+    // Three: as-shipped, the label question, and the blend. The fourth branch — no pair loaded — has
+    // no earlier answer to undo; it points at step ① instead, which is where the work actually is.
+    expect(w.match(/appRun\.unaskAdapt\(\)/g).length).toBe(3);
+    expect(w).toContain("go back to ① Load bundles");
   });
 });

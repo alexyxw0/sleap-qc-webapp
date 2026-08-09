@@ -200,7 +200,12 @@
 
   // a check is hidden when it can't apply (confidence needs predicted instances)
   const visibleInGroup = (g) =>
-    g.keys.map((k) => CHECK_BY_KEY[k]).filter((c) => (c.key !== "confidence" && c.key !== "instConfidence") || !qc.hasResults || qc.hasPredictions);
+    g.keys.map((k) => CHECK_BY_KEY[k])
+      .filter((c) => (c.key !== "confidence" && c.key !== "instConfidence") || !qc.hasResults || qc.hasPredictions)
+      // An appearance check with no embeddings behind it is not a control — it is an advertisement for
+      // one, and three permanently-greyed rows made the tab read as broken rather than as not-yet-run.
+      // Each appears the moment its own data exists, which is exactly when it becomes a real choice.
+      .filter((c) => !isAppearance(c.key) || qc.checkReady(c.key));
 </script>
 
 {#if store.labels}
@@ -621,6 +626,12 @@
     <!-- No `store.ready`: the bundle route needs no file at all (uploaded embeddings carry their own
          video/frame/inst), so gating the only way IN on a decodable video locked those users out of the
          window entirely. The compute card inside the window carries that requirement, where it is true. -->
+    {#if isAppearMode && !APPEARANCE_KEYS.some((k) => qc.checkReady(k))}
+      <p class="empty">
+        No appearance checks yet. Each one appears here the moment its embeddings exist — compute them
+        from this file, or load a precomputed bundle, and its checkbox arrives with the results.
+      </p>
+    {/if}
     {#if isAppearMode}
       <!-- ONE affordance. The tab is a checklist; configuring and launching an embedding run is a job,
            and a job belongs in its own window, not stacked down a 312 px rail. While a run is going the
@@ -1026,6 +1037,16 @@
     font-size: 0.63rem;
     color: var(--dim);
     letter-spacing: 0.01em;
+  }
+  /* Shown INSTEAD of the check rows before any appearance data exists — the tab's only content then. */
+  .empty {
+    margin: 0.1rem 0 0.7rem;
+    padding: 0.55rem 0.65rem;
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    font-size: 0.7rem;
+    line-height: 1.55;
+    color: var(--dim);
   }
   .info {
     margin: -0.05rem 0 0.5rem;

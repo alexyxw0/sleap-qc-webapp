@@ -154,3 +154,20 @@ class KeypointModels {
 }
 
 export const keypointModels = new KeypointModels();
+
+/**
+ * Ingest a faulty_keypoints.csv and re-score every loaded bundle with it.
+ *
+ * Lives here rather than in a panel because TWO places now offer it — the few-shot panel and the
+ * bundle route's scoring prompt — and a second copy of "parse, ingest, rescore" is a second place for
+ * the rescore to be forgotten, which shows up as labels that silently change nothing.
+ */
+export async function ingestLabelCsv(file) {
+  const { parseKeypointLabels } = await import("./manualCheck.js");
+  const { keypointLabels } = await import("./keypointLabels.svelte.js");
+  const r = parseKeypointLabels(await file.text());
+  if (r.error) return { ok: false, msg: r.error };
+  keypointLabels.ingest(r.rows, "review csv");
+  for (const sl of keypointModels.slots) sl.store.rescore(); // labels can adapt every keypoint
+  return { ok: true, msg: `${r.rows.length} reviewed instances · nodes: ${r.nodes.join(", ") || "none faulty"}` };
+}

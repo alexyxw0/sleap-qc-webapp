@@ -22,7 +22,7 @@
   import NodeEmbeddingCheck from "./NodeEmbeddingCheck.svelte";
   import NoseCheck from "./NoseCheck.svelte";
   import FewShotPanel from "./FewShotPanel.svelte";
-  import { keypointModels } from "../keypointModels.svelte.js";
+  import { keypointModels, ingestLabelCsv } from "../keypointModels.svelte.js";
   import { keypointLabels } from "../keypointLabels.svelte.js";
   import { appearanceCoverageNote, APPEARANCE_LABELS } from "../qcStore.svelte.js";
   import { loadAll } from "../qc/embedding/embcache.js";
@@ -61,6 +61,23 @@
   let upErr = $state(null), upWarn = $state(null);
   let fitting = $state(false), fitMsg = $state(null);
   const lastFit = new Map(); // node -> { cv } from this session's fit, for the export header
+
+  // The bundle route's CSV import. Routed through the shared ingest so the rescore can't be forgotten.
+  let csvMsg = $state(""), csvErr = $state(false);
+  async function onAdaptCsv(e) {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    const r = await ingestLabelCsv(f);
+    csvErr = !r.ok; csvMsg = r.msg;
+    if (r.ok) appRun.setLabelSource("csv");
+  }
+
+  // An answer about a bundle that is no longer loaded describes nothing. Clearing it here rather than
+  // in the store keeps the store's job to facts, and the pane's job to the question it is asking.
+  $effect(() => {
+    if (!appRun.pairLoaded && appRun.adaptChoice) appRun.setAdaptChoice(null);
+  });
 
   /** Straight into the ranked queue — the labels this branch needs are exactly what it produces. */
   function openProofreader() {
@@ -182,12 +199,18 @@
           note: appRun.bundleDone ? `${keypointModels.active.length} loaded`
             : keypointModels.slots.some((x) => x.store.info?.hasEmb && !x.store.info?.hasModel) ? "pick a model"
               : keypointModels.slots.some((x) => x.store.info?.hasModel && !x.store.info?.hasEmb) ? "add embeddings" : null },
-        { id: "fewshot", label: "Adapt (few-shot)", done: appRun.adaptLive,
-          locked: !appRun.canAdapt,
-          why: !pair ? "Load a keypoint's embeddings AND its model first — there is nothing to adapt yet."
-            : "No labels yet. Import a faulty_keypoints.csv, or proofread a few frames.",
-          hint: "Optional. Nudges a transferred model toward this project using your labels.",
-          note: appRun.canAdapt && !appRun.adaptLive ? "optional" : null },
+        // The bundle route gets the SAME second step as the compute route, and for the same reason:
+        // a loaded model still leaves a real choice — score with it as shipped, or bend it toward this
+        // project — and that choice was previously a tab you had to know to open. It unlocks on the
+        // pair being loaded, NOT on labels: "as-is" is a legitimate answer that needs none.
+        { id: "fewshot", label: "Score", done: appRun.adaptChoice != null,
+          locked: !pair,
+          why: "Load a keypoint's embeddings AND its model first — there is nothing to score with yet.",
+          hint: "Use the bundled boundary as-is, or adapt it to this project with your labels.",
+          note: appRun.adaptChoice === "as-is" ? "as shipped"
+            : appRun.adaptLive ? "few-shot applied"
+              : appRun.adaptChoice === "adapt" ? (appRun.hasLabels ? "set the blend" : "needs labels")
+                : pair ? "choose" : null },
       ];
     }
     // Per keypoint gets a SECOND step: once the embeddings exist there is a real choice about how to
@@ -301,8 +324,92 @@
           <NoseCheck />
         </section>
       {:else if appRun.tab === "fewshot"}
-        <section class="pane">
-          <FewShotPanel />
+        <!-- The bundle route's second step, mirroring the compute route's: one question at a time,
+             each answer routing the next, and every branch with a way back. -->
+        <section class="score">
+          {#if !appRun.pairLoaded}
+            <p class="s-q">How should the loaded model score this project?</p>
+            <p class="dim">Load a keypoint's embeddings <b>and</b> its model first — go back to ① Load bundles.</p>
+
+          <!-- Q1 ------------------------------------------------------------------------------ -->
+          {:else if !appRun.adaptChoice}
+            <p class="s-q">How should the loaded model score this project?</p>
+            <div class="s-opts">
+              <button class="sopt" onclick={() => appRun.setAdaptChoice("as-is")}>
+                <span class="so-t">Use it as shipped</span>
+                <span class="so-d">
+                  The bundle's own calibrated boundary, unchanged. Needs nothing from you — but transfer
+                  onto a new project is data-limited, and it is already scoring: this answer just says so.
+                </span>
+              </button>
+              <button class="sopt" onclick={() => appRun.setAdaptChoice("adapt")}>
+                <span class="so-t">Adapt it to this project (few-shot)</span>
+                <span class="so-d">
+                  Blend the boundary toward the patches marked faulty <i>here</i>. A handful of labels is
+                  enough — this is the cheap fix for a model that transferred imperfectly.
+                </span>
+              </button>
+            </div>
+
+          <!-- as-is: nothing to do, so say that rather than showing controls ------------------- -->
+          {:else if appRun.adaptChoice === "as-is"}
+            <p class="s-q">✓ Scoring with the bundle as shipped</p>
+            <p class="s-note dim">
+              {keypointModels.active.length} keypoint{keypointModels.active.length === 1 ? "" : "s"} scored by
+              their own bundled model. Thresholds and per-frame verdicts are live in the results below.
+            </p>
+            <button class="back" onclick={() => appRun.unaskAdapt()}>‹ adapt it instead</button>
+
+          <!-- Q2: where do the labels come from? ---------------------------------------------- -->
+          {:else if !appRun.hasLabels && !appRun.labelSource}
+            <p class="s-q">Few-shot needs labels — where from?</p>
+            <div class="s-opts">
+              <label class="sopt as-label">
+                <span class="so-t">Import a faulty_keypoints.csv</span>
+                <span class="so-d">A review you already did, in or out of this app.</span>
+                <input type="file" accept=".csv,text/csv" onchange={onAdaptCsv} />
+              </label>
+              <button class="sopt" disabled={!qc.proofreadReady} onclick={() => { appRun.setLabelSource("proofread"); openProofreader(); }}>
+                <span class="so-t">Proofread here</span>
+                <span class="so-d">
+                  {qc.proofreadReady
+                    ? "Walk the ranked queue and mark keypoints — the labels land straight back here."
+                    : "Run the automatic QC first — the queue is its ranking."}
+                </span>
+              </button>
+            </div>
+            {#if csvMsg}<p class="s-note" class:s-err={csvErr}>{csvMsg}</p>{/if}
+            <button class="back" onclick={() => appRun.unaskAdapt()}>‹ back</button>
+
+          <!-- The blend itself ---------------------------------------------------------------- -->
+          {:else}
+            <p class="s-q">Blend the bundled boundary toward your labels</p>
+            {#if !appRun.hasLabels}
+              <p class="s-note dim">
+                Waiting on labels{appRun.labelSource === "proofread" ? " from the proofreader" : ""} — the
+                sliders below arm themselves the moment any arrive.
+              </p>
+            {/if}
+            <FewShotPanel />
+            <button class="back" onclick={() => appRun.unaskAdapt()}>‹ back</button>
+          {/if}
+
+          <!-- Same commitment step the compute route ends on: fitting/choosing is not using. -->
+          {#if appRun.pairLoaded && appRun.adaptChoice}
+            <label class="arm-row" class:on={qc.checks.noseAppearance}>
+              <input type="checkbox" checked={qc.checks.noseAppearance}
+                     onchange={() => qc.toggleCheck("noseAppearance")} />
+              <span class="ar-b">
+                <b>Use as a detection check</b> — <b>{APPEARANCE_LABELS.noseAppearance.full}</b>
+                {#if qc.checks.noseAppearance}<span class="ar-on">on</span>{/if}
+                <br />
+                <span class="dim">
+                  {keypointModels.active.map((s) => s.store.info?.node ?? "?").join(", ") || "no keypoint"}
+                  · scored by {appRun.adaptLive ? "the adapted boundary" : "the bundled boundary"}.
+                </span>
+              </span>
+            </label>
+          {/if}
         </section>
       {:else if appRun.tab === "score" && appRun.gran === "node"}
         <!-- The run used to just end. This is the rest of the workflow, asked as questions rather than
@@ -649,6 +756,10 @@
     transition: border-color 0.12s, background 0.12s;
   }
   .sopt:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, var(--bg)); }
+  .sopt:disabled { opacity: 0.5; cursor: default; }
+  .sopt:disabled:hover { border-color: var(--border); background: var(--bg); }
+  /* One option opens a file picker rather than answering — same card, so the two read as one choice. */
+  .as-label input { display: none; }
   .so-t { font-size: 0.86rem; font-weight: 600; color: var(--text); }
   .so-d { font-size: 0.7rem; color: var(--dim); line-height: 1.55; }
 
