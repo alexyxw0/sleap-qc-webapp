@@ -1,5 +1,5 @@
 <script>
-  import { qc } from "../qcStore.svelte.js";
+  import { qc, APPEARANCE_LABELS } from "../qcStore.svelte.js";
   import { store } from "../labelsStore.svelte.js";
   import DetectorOverlap from "./DetectorOverlap.svelte";
   import ManualCheckCompare from "./ManualCheckCompare.svelte";
@@ -107,23 +107,26 @@
     },
     {
       key: "dino",
-      label: "Appearance · whole instance",
-      hint: "Instance crop that looks unlike the rest by the DINOv2 ViT embedding. Needs embeddings.",
+      // Short labels + one-line hints: the group heading already says "Appearance", every one of these
+      // is DINO, and the ⓘ below carries the full method. Repeating all three in every row made the set
+      // look like three overlapping detectors rather than three granularities of one.
+      label: APPEARANCE_LABELS.dino.short,
+      hint: "One crop per animal, scored by the bundled SVM. Run DINO → Whole instance.",
       info: "Image check using the DINOv2 ViT semantic embedding, scored by the bundled trained RBF-SVM (unsupervised kNN was ~chance on whole-animal crops, so it is offered only per keypoint). Run DINO → Whole instance; the threshold is its decision slider. Off by default.",
     },
     {
       key: "nodeDino",
-      label: "Per-node · DINO",
+      label: APPEARANCE_LABELS.nodeDino.short,
       // Written when kNN was the only scorer. The Score step can now put a fitted SVM or a few-shot
       // blend behind this same check, so the fixed word "unsupervised" would be a lie about a keypoint
       // the user trained themselves — `nodeScoring` replaces it with what is actually scoring.
-      hint: "A single keypoint whose patch is unlike that keypoint elsewhere (DINOv2 ViT — slow). Needs embeddings.",
+      hint: "A patch per keypoint, computed here — the most sensitive, and the slowest. Run DINO → Per keypoint.",
       info: "Per-keypoint check using the DINOv2 ViT embedding — most sensitive but slow (a pass per keypoint, minutes at full coverage). Run DINO → Per keypoint. Off by default.",
     },
     {
       key: "noseAppearance",
-      label: "Keypoint (trained)",
-      hint: "A mislabeled keypoint, from the trained DINO detector (per-project). Upload precomputed embeddings to enable.",
+      label: APPEARANCE_LABELS.noseAppearance.short,
+      hint: "A patch per keypoint, from a bundle trained offline on proofread labels. Run DINO → Upload.",
       repro: {
         what: "DINOv2 patch embedding + calibrated RBF-SVM, trained per project on proofread labels.",
         steps: [
@@ -153,7 +156,7 @@
     { id: "geometric", label: "Geometric", hint: "Structural checks: L/R flip + chain ordering (scale-invariant hard rules) and split-pose / chimera.", keys: ["chirality", "ordering", "poseSplit"] },
     { id: "statistical", label: "Statistical", hint: "Outlier detectors that score each instance against the file's distribution (shared feature vector + baseline control). Only GMM is non-deterministic (EM fit); the z-score is deterministic.", keys: ["anomaly", "gmm"] },
     { id: "frame", label: "Frame-level", hint: "Whole-frame consistency: count, sparsity, keypoint/instance confidence, negative frames, duplicates.", keys: ["count", "sparse", "confidence", "instConfidence", "negative", "outOfFrame", "duplicates"] },
-    { id: "appearance", label: "Appearance", hint: "DINOv2-embedding outliers geometry can't see — whole-instance or per-keypoint. Run DINO to compute one, or upload a precomputed bundle, to enable its check.", keys: ["dino", "nodeDino", "noseAppearance"] },
+    { id: "appearance", label: "Appearance", hint: "DINOv2-embedding outliers geometry can't see. Three granularities of one idea: a whole-animal crop, a per-keypoint patch computed here, or one from a bundle trained offline. Each unlocks once its embeddings exist.", keys: ["dino", "nodeDino", "noseAppearance"] },
   ];
   // Each appearance check can only run once ITS backend's embeddings are precomputed (Appearance-outliers panel).
   const APPEARANCE_KEYS = GROUPS.find((g) => g.id === "appearance").keys;

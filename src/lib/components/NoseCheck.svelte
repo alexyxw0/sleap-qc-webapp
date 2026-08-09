@@ -2,7 +2,7 @@
   // The validated PER-KEYPOINT trained check. In-browser DINO is too slow, so this scores PRECOMPUTED
   // keypoint embeddings (dino_probe/export_nose.py --split) with the ported calibrated RBF-SVM.
   // EMBEDDINGS and MODEL load SEPARATELY: upload this project's embeddings, then pick which trained model
-  // scores them — its own (default) or ANOTHER dataset's (transfer test). Once scored, "Keypoint (trained)"
+  // scores them — its own (default) or ANOTHER dataset's (transfer test). Once scored, the per-keypoint bundle check
   // unlocks in the list above.
   //
   // MULTIPLE keypoints at once: one SLOT per keypoint, each an independent (embeddings + model) pair.
@@ -15,6 +15,7 @@
   import { remember } from "../bundlePrefs.js";
   import { proofread } from "../proofreadSession.svelte.js";
   import { appRun } from "../appearanceRun.svelte.js";
+  import { APPEARANCE_LABELS } from "../qcStore.svelte.js";
   import { keymapLegend } from "../qc/proofreadKeymap.js";
   import { keybinds } from "../keybinds.svelte.js";
   import Explain from "./Explain.svelte";
@@ -91,7 +92,7 @@
 
 <div class="det">
   <div class="head">
-    <span class="ttl">Keypoint (trained){#if nodes.length}<span class="node"> · {nodes.join(", ")}</span>{/if}</span>
+    <span class="ttl">{APPEARANCE_LABELS.noseAppearance.short}{#if nodes.length}<span class="node"> · {nodes.join(", ")}</span>{/if}</span>
     <span class="meta">{keypointModels.active.length}/{keypointModels.slots.length} loaded</span>
   </div>
   <Explain label="Bundle format & transfer">
