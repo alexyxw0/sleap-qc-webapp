@@ -197,11 +197,25 @@
     lt = { s: vs, offX, offY };
 
     const insts = item.lf?.instances ?? [];
-    const worstEdges = insts.map((_, i) => (qc.instanceFlagged(item, i) ? qc.faultyEdgeFor(item, i) : null));
-    const worstNodes = insts.map((_, i) => (qc.instanceFlagged(item, i) && !worstEdges[i] ? qc.faultyNodeFor(item, i) : -1));
+    // See Viewer: one pass, one shape per instance (angle > edge > node), and instanceFlagged
+    // evaluated once instead of three times per instance.
+    const worstEdges = [], worstNodes = [], worstAngles = [], worstNodeVariants = [];
+    for (let i = 0; i < insts.length; i++) {
+      if (!qc.instanceFlagged(item, i)) {
+        worstEdges.push(null); worstNodes.push(-1); worstAngles.push(null); worstNodeVariants.push(null);
+        continue;
+      }
+      const ang = qc.faultyAngleFor(item, i);
+      const edge = ang ? null : qc.faultyEdgeFor(item, i);
+      worstAngles.push(ang);
+      worstEdges.push(edge);
+      worstNodes.push(ang || edge ? -1 : qc.faultyNodeFor(item, i));
+      worstNodeVariants.push(ang || edge ? null : qc.faultyNodeVariantFor(item, i));
+    }
     drawScene(ctx, store.frameImage, item, store.skeleton, {
       transform: { s: vs, offX, offY }, dims: dimsNow(), scale: dpr / vs,
-      editing: true, selInstance: selI, selNode: selN, worstNodes, worstEdges, uncertainNodes: null,
+      editing: true, selInstance: selI, selNode: selN, worstNodes, worstEdges, worstAngles,
+      worstNodeVariants, uncertainNodes: null,
       hiddenAlpha: 0.55, // hidden/occluded nodes are correction targets here — keep them grabbable
     });
   });

@@ -10,7 +10,7 @@ import { mean, std, visibilityMask } from "./util.js";
 import { GMMDetector } from "./gmm.js";
 import { makeQCConfig, shouldUseCurvature } from "./config.js";
 import { BaselineFeatureExtractor, BASELINE_FEATURE_NAMES } from "./features/baseline.js";
-import { computeCurvature, computeConvexHull } from "./features/structural.js";
+import { computeCurvature, computeConvexHull, worstCurvatureVertex } from "./features/structural.js";
 import { VisibilityModel } from "./features/visibility.js";
 import { NearestNeighborScorer } from "./features/reference.js";
 import { analyzerFromSkeleton } from "./features/skeleton.js";
@@ -146,6 +146,19 @@ export class LabelQCDetector {
     v3.push((hull.hullArea - this._hullStats.mean) / Math.max(this._hullStats.std, 1e-6), hull.compactness);
 
     return [...baseline, ...v3];
+  }
+
+  /**
+   * Culprit for `max_curvature` — the chain vertex whose bend drives the feature. Lives here rather
+   * than on the baseline extractor because curvature is a V3 feature and needs the skeleton's chains,
+   * which only the analyzer has. Same `{ nodes, kind }` shape as baseline.attribute()'s entries.
+   */
+  attributeCurvature(pose) {
+    if (!shouldUseCurvature(this.config, this.analyzer?.maxChainLength ?? 0)) return null;
+    const chains = this.analyzer?.getCurvatureChains?.() ?? [];
+    if (!chains.length) return null;
+    const w = worstCurvatureVertex(pose, chains[0]); // extractFeatures scores chains[0] only
+    return w ? { kind: "angle", nodes: w.nodes, dir: Math.sign(w.curvature) } : null;
   }
 
   /** Anomaly score (0..1) + raw feature contributions for a pose. */

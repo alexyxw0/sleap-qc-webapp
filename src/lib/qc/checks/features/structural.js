@@ -38,6 +38,27 @@ export function computeCurvature(pose, chain) {
   };
 }
 
+/**
+ * The chain vertex that OWNS `maxCurvature` — the argmax that computeCurvature's reduction discards.
+ *
+ * Curvature is measured at a vertex between its two chain neighbours, so the culprit is not a node OR
+ * an edge but both: the bend itself. Returns the vertex plus the two arms that form it, in the order
+ * the UI wants for drawing an angle — `[vertex, armA, armB]` — or null when no vertex is measurable.
+ */
+export function worstCurvatureVertex(pose, chain) {
+  if (!chain || chain.length < 3) return null;
+  const { curvatures } = computeCurvature(pose, chain);
+  let best = -1, bestAbs = -Infinity;
+  for (let k = 0; k < curvatures.length; k++) {
+    const a = Math.abs(curvatures[k]);
+    if (Number.isNaN(a) || a <= bestAbs) continue;
+    bestAbs = a; best = k;
+  }
+  if (best < 0) return null;
+  // curvatures[k] is measured at chain[k+1], between chain[k] and chain[k+2].
+  return { nodes: [chain[best + 1], chain[best], chain[best + 2]], curvature: curvatures[best] };
+}
+
 // Andrew's monotone chain convex hull -> ordered hull vertices (CCW).
 function convexHull(points) {
   const pts = [...points].sort((p, q) => (p[0] - q[0]) || (p[1] - q[1]));

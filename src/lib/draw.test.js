@@ -142,3 +142,77 @@ describe("nothing leaks between nodes", () => {
     expect(new Set(reds.map((p) => p.x))).toEqual(new Set([100])); // only at the labelled node
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// A flag names a SHAPE, and the canvas has to draw that shape. Before this, every geometric check
+// — max_edge, max_angle, curvature, visibility — landed on the same dashed ring around one node, so
+// "the neck angle is wrong" and "the nose is misplaced" looked identical. These pin each mark.
+const PINK = "#ff2d55";
+const TRI = {
+  video: { shape: [1, 300, 400, 1] }, frameIdx: 0,
+  lf: { instances: [{ points: [
+    { xy: [100, 100], visible: true }, { xy: [200, 100], visible: true }, { xy: [200, 200], visible: true },
+  ] }] },
+};
+const SK3 = { edges: [], nodeNames: ["a", "b", "c"], index: (n) => SK3.nodeNames.indexOf(n) };
+
+describe("an ANGLE flag draws the angle, not a node", () => {
+  const { ctx, paints } = recorder();
+  // vertex = node 1, arms to nodes 0 and 2 — the shape max_angle_zscore / max_curvature blame.
+  drawScene(ctx, null, TRI, SK3, { ...OPTS, worstAngles: { 0: [1, 0, 2] } });
+
+  it("arcs the bend at the VERTEX, at a radius clear of the joint's own dot", () => {
+    const arc = paints.find((p) => p.kind === "arc" && p.op === "stroke" && p.color === PINK && p.r >= 10);
+    expect(arc, "no angle arc drawn").toBeTruthy();
+    expect([arc.x, arc.y], "the arc must sit on the vertex, not an arm").toEqual([200, 100]);
+  });
+
+  it("draws both arms, cased so they read over a same-coloured bone", () => {
+    const arms = paints.filter((p) => p.kind === "line" && p.x === 100 && p.y === 100);
+    expect(arms.map((a) => a.color).sort()).toEqual(["#0b0e13", PINK]); // casing pass + dashed pass
+    expect(arms.find((a) => a.color === PINK).dashed, "the guess must stay dashed").toBe(true);
+    expect(arms.find((a) => a.color === "#0b0e13").width)
+      .toBeGreaterThan(arms.find((a) => a.color === PINK).width);
+  });
+
+  it("does not fall back to ringing a node", () => {
+    expect(paints.some((p) => p.kind === "arc" && p.op === "stroke" && p.dashed)).toBe(false);
+  });
+
+  it("is skipped when any of the three points is unplaced, rather than drawing a wild arc", () => {
+    const gap = { ...TRI, lf: { instances: [{ points: [
+      { xy: [Number.NaN, Number.NaN], visible: true }, { xy: [200, 100], visible: true }, { xy: [200, 200], visible: true },
+    ] }] } };
+    const { ctx: c2, paints: p2 } = recorder();
+    drawScene(c2, null, gap, SK3, { ...OPTS, worstAngles: { 0: [1, 0, 2] } });
+    expect(p2.some((p) => p.kind === "arc" && p.op === "stroke" && p.color === PINK && p.r >= 10)).toBe(false);
+  });
+});
+
+describe("the visibility flag says WHICH WAY the node is wrong", () => {
+  const marksAt = (variant) => {
+    const { ctx, paints } = recorder();
+    drawScene(ctx, null, TRI, SK3, { ...OPTS, worstNodes: { 0: 0 }, worstNodeVariants: { 0: variant } });
+    return paints;
+  };
+
+  it('"absent" — expected here, not labelled — gets a cross-hair', () => {
+    const p = marksAt("absent");
+    const bars = p.filter((q) => q.kind === "line" && q.color === PINK);
+    expect(bars.length, "no cross-hair").toBeGreaterThan(0);
+    expect(bars.every((b) => !b.dashed), "the cross-hair is solid; the ring carries the dashes").toBe(true);
+  });
+
+  it('"present" — labelled where it almost never co-occurs — gets a filled centre dot instead', () => {
+    const p = marksAt("present");
+    expect(p.some((q) => q.kind === "line" && q.color === PINK), "cross-hair on the wrong variant").toBe(false);
+    expect(p.some((q) => q.op === "fill" && q.color === PINK && q.x === 100)).toBe(true);
+  });
+
+  it("with no variant it stays the plain dashed ring every other check uses", () => {
+    const p = marksAt(null);
+    expect(p.some((q) => q.op === "stroke" && q.kind === "arc" && q.color === PINK && q.dashed)).toBe(true);
+    expect(p.some((q) => q.kind === "line" && q.color === PINK)).toBe(false);
+    expect(p.some((q) => q.op === "fill" && q.color === PINK && q.x === 100)).toBe(false);
+  });
+});

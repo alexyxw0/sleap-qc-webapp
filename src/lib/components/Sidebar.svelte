@@ -16,6 +16,17 @@
   const TITLE = Object.fromEntries(ui.constructor.BLOCKS.map((b) => [b.id, b.title]));
 
   // Click a flagged problem -> select its faulty node(s) and zoom the canvas to them.
+  /** Jump to whatever instance a frame-level indicator is actually about. Returns false when the
+   *  check has no single instance to blame (instance count, negative frame), so the caller can render
+   *  the row as plain text rather than a button that does nothing. */
+  function jumpToCheck(checkKey) {
+    const i = qc.blamedInstanceFor(store.current, checkKey);
+    if (i < 0) return false;
+    focusFaulty(i);
+    return true;
+  }
+  const blamed = (checkKey) => qc.blamedInstanceFor(store.current, checkKey);
+
   function focusFaulty(instIdx) {
     const item = store.current;
     const t = qc.faultyTarget(item, instIdx);
@@ -216,13 +227,28 @@
         {/if}
       {/if}
       {#if hasFrameIssue(fq)}
+        <!-- Every line that CAN name an instance is a button to it. The two that genuinely describe
+             the frame (instance count, negative frame) stay as text — a button that goes nowhere is
+             worse than no button. -->
         <ul class="issues">
           {#if fq.isWrongCount}<li>{fq.isEmpty ? "empty frame — no instances" : `${fq.actualInstanceCount} / ${fq.expectedInstanceCount} expected instances (${fq.isOvercount ? "extra" : "missing"})`}</li>{/if}
-          {#if fq.isSparse}<li>sparse instance — only {fq.minVisibleNodeCount} visible node{fq.minVisibleNodeCount === 1 ? "" : "s"}</li>{/if}
-          {#if fq.isLowConf}<li>low keypoint confidence — {qc.confidenceMode === "avg" ? `mean ${fq.avgPointScore.toFixed(2)}` : `weakest ${fq.minPointScore.toFixed(2)}`}</li>{/if}
-          {#if fq.isLowInstConf}<li>low instance confidence — score {fq.minInstScore.toFixed(2)}</li>{/if}
+          {#if fq.isSparse}
+            {@const bi = blamed("sparse")}
+            <li>{#if bi >= 0}<button type="button" class="golink" onclick={() => focusFaulty(bi)} title="Go to instance {bi + 1}">sparse instance — only {fq.minVisibleNodeCount} visible node{fq.minVisibleNodeCount === 1 ? "" : "s"} · #{bi + 1}<span class="zico">⤢</span></button>{:else}sparse instance — only {fq.minVisibleNodeCount} visible node{fq.minVisibleNodeCount === 1 ? "" : "s"}{/if}</li>
+          {/if}
+          {#if fq.isLowConf}
+            {@const bi = blamed("confidence")}
+            <li>{#if bi >= 0}<button type="button" class="golink" onclick={() => focusFaulty(bi)} title="Go to instance {bi + 1}">low keypoint confidence — {qc.confidenceMode === "avg" ? `mean ${fq.avgPointScore.toFixed(2)}` : `weakest ${fq.minPointScore.toFixed(2)}`} · #{bi + 1}<span class="zico">⤢</span></button>{:else}low keypoint confidence — {qc.confidenceMode === "avg" ? `mean ${fq.avgPointScore.toFixed(2)}` : `weakest ${fq.minPointScore.toFixed(2)}`}{/if}</li>
+          {/if}
+          {#if fq.isLowInstConf}
+            {@const bi = blamed("instConfidence")}
+            <li>{#if bi >= 0}<button type="button" class="golink" onclick={() => focusFaulty(bi)} title="Go to instance {bi + 1}">low instance confidence — score {fq.minInstScore.toFixed(2)} · #{bi + 1}<span class="zico">⤢</span></button>{:else}low instance confidence — score {fq.minInstScore.toFixed(2)}{/if}</li>
+          {/if}
           {#if fq.isNegativeWithInstances}<li>negative frame has instances</li>{/if}
-          {#if fq.duplicatePairs?.length}<li>{fq.duplicatePairs.length} duplicate pair(s): {fq.duplicateReasons.join(", ")}</li>{/if}
+          {#if fq.duplicatePairs?.length}
+            {@const bi = blamed("duplicates")}
+            <li>{#if bi >= 0}<button type="button" class="golink" onclick={() => focusFaulty(bi)} title="Go to instance {bi + 1}">{fq.duplicatePairs.length} duplicate pair(s): {fq.duplicateReasons.join(", ")} · #{bi + 1}<span class="zico">⤢</span></button>{:else}{fq.duplicatePairs.length} duplicate pair(s): {fq.duplicateReasons.join(", ")}{/if}</li>
+          {/if}
         </ul>
       {/if}
       {#if dets.length}
@@ -232,10 +258,21 @@
         {#if allChecksOpen}
           <ul class="allchk">
             {#each dets as d (d.key)}
-              <li class:on={d.flagged} title="{d.flagged ? 'flagged' : 'passed'}{d.score != null ? ` · ${d.score.toFixed(2)} vs ${d.lowerIsWorse ? 'min' : 'max'} ${d.threshold.toFixed(2)}` : d.detail ? ` · ${d.detail}` : ''}">
-                <span class="ac-dot" class:on={d.flagged}></span>
-                <span class="ac-name">{d.label}</span>
-                <span class="ac-val">{#if d.score != null}<b>{d.score.toFixed(2)}{d.unit ?? ""}</b><span class="ac-thr">· {d.threshold.toFixed(2)}</span>{:else}{d.detail ?? ""}{/if}</span>
+              {@const bi = d.flagged ? blamed(d.key) : -1}
+              <li class:on={d.flagged} class:go={bi >= 0}
+                  title="{d.flagged ? 'flagged' : 'passed'}{d.score != null ? ` · ${d.score.toFixed(2)} vs ${d.lowerIsWorse ? 'min' : 'max'} ${d.threshold.toFixed(2)}` : d.detail ? ` · ${d.detail}` : ''}{bi >= 0 ? ` — click to go to instance ${bi + 1}` : ''}">
+                {#if bi >= 0}
+                  <button type="button" class="ac-hit" onclick={() => focusFaulty(bi)}>
+                    <span class="ac-dot on"></span>
+                    <span class="ac-name">{d.label}</span>
+                    <span class="ac-val">{#if d.score != null}<b>{d.score.toFixed(2)}{d.unit ?? ""}</b><span class="ac-thr">· #{bi + 1}</span>{:else}{d.detail ?? ""}<span class="ac-thr">· #{bi + 1}</span>{/if}</span>
+                    <span class="zico">⤢</span>
+                  </button>
+                {:else}
+                  <span class="ac-dot" class:on={d.flagged}></span>
+                  <span class="ac-name">{d.label}</span>
+                  <span class="ac-val">{#if d.score != null}<b>{d.score.toFixed(2)}{d.unit ?? ""}</b><span class="ac-thr">· {d.threshold.toFixed(2)}</span>{:else}{d.detail ?? ""}{/if}</span>
+                {/if}
               </li>
             {/each}
           </ul>
@@ -585,6 +622,27 @@
     color: #d9b25c;
     line-height: 1.5;
   }
+  /* An issue line that knows which instance it means, styled as text so the list still reads as a
+     list — it announces itself as a target on hover, not by shouting in the resting state. */
+  .golink {
+    display: inline;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .golink:hover,
+  .golink:focus-visible {
+    color: var(--accent);
+    text-decoration: underline;
+  }
+  .golink:hover .zico,
+  .golink:focus-visible .zico {
+    opacity: 1;
+  }
   /* "what's flagging this frame": one badge per enabled check that fired. */
   .flaggers {
     display: flex;
@@ -702,6 +760,32 @@
   }
   .allchk li.on {
     color: #e7c08a;
+  }
+  /* The whole row is the hit target, laid out exactly like the non-clickable one so a mixed list
+     stays aligned. */
+  .ac-hit {
+    display: flex;
+    align-items: center;
+    gap: 0.42rem;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .allchk li.go:hover,
+  .allchk li:focus-within {
+    color: var(--accent);
+  }
+  .allchk li.go:hover .zico,
+  .allchk li:focus-within .zico {
+    opacity: 1;
+  }
+  .ac-hit .zico {
+    margin-left: auto;
   }
   .ac-dot {
     width: 7px;

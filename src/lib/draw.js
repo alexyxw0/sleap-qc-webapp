@@ -94,7 +94,8 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
   const edges = skeleton.edges ?? [];
   const instances = lf.instances ?? [];
   const names = skeleton.nodeNames ?? [];
-  const { editing = false, selInstance = -1, selNode = -1, scale = 1, worstNodes = null, worstEdges = null, flaggedInstances = null, gtFaulty = null, hiddenAlpha = 0.28 } = sel;
+  const { editing = false, selInstance = -1, selNode = -1, scale = 1, worstNodes = null, worstEdges = null,
+    worstAngles = null, worstNodeVariants = null, flaggedInstances = null, gtFaulty = null, hiddenAlpha = 0.28 } = sel;
 
   // Sizes are specified in on-screen pixels and converted to image-space via `scale`
   // (image px per screen px), so the overlay + labels look consistent at any video
@@ -188,6 +189,42 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
     // anomaly edge), highlight that edge in place of the ring. A dark casing UNDER the red dashes
     // keeps them legible where they overlay a same-warm-colored bone; drawn before the nodes so the
     // endpoints stay clean.
+    // QC: when the flag is an ANGLE — a deviant joint, or a deviant bend along the body chain — the
+    // culprit is neither a node nor an edge. Highlight both arms and arc the angle between them, so
+    // "which bend" is answered on the canvas instead of in the sidebar text.
+    const ang = worstAngles?.[idx];
+    if (ang) {
+      const [pv, pa, pb] = [points[ang[0]], points[ang[1]], points[ang[2]]];
+      if (placed(pv) && placed(pa) && placed(pb)) {
+        ctx.save();
+        ctx.lineCap = "round";
+        for (const pass of [{ c: "#0b0e13", w: 5, dash: [] }, { c: "#ff2d55", w: 2.2, dash: [6, 4] }]) {
+          ctx.beginPath();
+          ctx.moveTo(pa.xy[0], pa.xy[1]);
+          ctx.lineTo(pv.xy[0], pv.xy[1]);
+          ctx.lineTo(pb.xy[0], pb.xy[1]);
+          ctx.globalAlpha = pass.c === "#0b0e13" ? 0.85 : 1;
+          ctx.strokeStyle = pass.c;
+          ctx.lineWidth = pass.w * s;
+          ctx.setLineDash(pass.dash.map((d) => d * s));
+          ctx.stroke();
+        }
+        // the arc itself, at a radius that clears the joint's own dot
+        const a0 = Math.atan2(pa.xy[1] - pv.xy[1], pa.xy[0] - pv.xy[0]);
+        const a1 = Math.atan2(pb.xy[1] - pv.xy[1], pb.xy[0] - pv.xy[0]);
+        let d = a1 - a0;
+        while (d > Math.PI) d -= 2 * Math.PI;
+        while (d < -Math.PI) d += 2 * Math.PI;
+        ctx.beginPath();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 0.95;
+        ctx.lineWidth = 1.6 * s;
+        ctx.strokeStyle = "#ff2d55";
+        ctx.arc(pv.xy[0], pv.xy[1], 13 * s, a0, a0 + d, d < 0);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
     if (worstEdges?.[idx]) {
       const pa = points[worstEdges[idx][0]], pb = points[worstEdges[idx][1]];
       if (placed(pa) && placed(pb)) {
@@ -259,6 +296,7 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
       // QC: a flagged instance's faulty node gets a DASHED red ring — same color / dash / weight as
       // the flagged-instance bounding box, so the node and its box read as one consistent treatment.
       if (worstNodes && worstNodes[idx] === ni) {
+        const variant = worstNodeVariants?.[idx] ?? null;
         ctx.save();
         ctx.globalAlpha = 0.9;
         ctx.strokeStyle = "#ff2d55";
@@ -267,6 +305,25 @@ function drawSkeleton(ctx, lf, skeleton, sel = {}) {
         ctx.beginPath();
         ctx.arc(px, py, r + 5 * s, 0, Math.PI * 2);
         ctx.stroke();
+        // The visibility check flags a node two opposite ways, so the ring says which. "absent" —
+        // expected here and not labelled — gets a hollow cross-hair, the mark for something that
+        // should be here; "present" — labelled where it almost never co-occurs — gets a filled
+        // centre dot, the mark for something that should not.
+        if (variant === "absent") {
+          ctx.setLineDash([]);
+          ctx.lineWidth = 1.4 * s;
+          const k = r + 2.5 * s;
+          ctx.beginPath();
+          ctx.moveTo(px - k, py); ctx.lineTo(px + k, py);
+          ctx.moveTo(px, py - k); ctx.lineTo(px, py + k);
+          ctx.stroke();
+        } else if (variant === "present") {
+          ctx.setLineDash([]);
+          ctx.fillStyle = "#ff2d55";
+          ctx.beginPath();
+          ctx.arc(px, py, 2.2 * s, 0, Math.PI * 2);
+          ctx.fill();
+        }
         ctx.restore();
       }
       if (focused) {

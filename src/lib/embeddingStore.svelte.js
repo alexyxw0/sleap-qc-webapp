@@ -5,7 +5,7 @@
 // acting on.) Kept fully inspectable — every crop, neighbourhood, and score is UI-visible.
 import { store } from "./labelsStore.svelte.js";
 import * as dinoBackend from "./qc/embedding/dinoRemote.js";
-import { l2norm, stratifiedReference, nearestNeighbors, buildFrameZ, pca2 } from "./qc/embedding/outlier.js";
+import { l2norm, stratifiedReference, nearestNeighbors, buildScoreMaps, pca2 } from "./qc/embedding/outlier.js";
 import { scoreEmbeddings } from "./qc/embedding/scoreRemote.js";
 import { classifyDecisions, classifierInfo } from "./qc/embedding/appearanceClf.js";
 import { loadAll as loadCache, putMany as saveCache, requestPersist } from "./qc/embedding/embcache.js";
@@ -69,6 +69,7 @@ class EmbeddingStore {
   #embs = []; // Float32Array (L2-normalized) per record, index-aligned with #recs
   #res = null; // { scores, z, coords }
   #frameZ = new Map(); // "videoIdx:frameIdx" -> max embedding z over that frame's instances
+  #instZ = new Map();  // "videoIdx:frameIdx:instIdx" -> that instance's z (one record per instance here)
   #refCount = 0; // size of the kNN reference used for the current results
   #abort = false;
   // Embedding cache: cropKey -> { emb, thumb }. Persists across runs; a crop's DINO embedding never
@@ -142,6 +143,10 @@ class EmbeddingStore {
   get flaggedCount() { this.rev; return this.#res ? this.#res.z.reduce((a, z) => a + (z >= this.threshold), 0) : 0; }
   /** Max embedding z for a frame, by "videoIdx:frameIdx" key (the DINO QC check reads this), or null. */
   frameZByKey(key) { this.resultRev; return this.#frameZ.get(key) ?? null; }
+  /** This instance's embedding z, by "videoIdx:frameIdx" + index — the attribution behind a frame's
+   *  flag. Each record here IS an instance, so the per-frame max always comes from exactly one of
+   *  these; the map was already built alongside #frameZ and thrown away. */
+  instZAtKey(key, ii) { this.resultRev; return this.#instZ.get(`${key}:${ii}`)?.z ?? null; }
   /** Frames flagged at the current threshold (frame-level, for the check count). */
   get flaggedFrameCount() {
     this.resultRev;
@@ -190,7 +195,7 @@ class EmbeddingStore {
     // Best-effort: without this the origin is evictable, and a large embedding cache is exactly
     // the kind of thing a browser drops under disk pressure.
     requestPersist();
-    this.#abort = false; this.#recs = []; this.#embs = []; this.#res = null; this.#frameZ = new Map(); this.rev++; this.resultRev++;
+    this.#abort = false; this.#recs = []; this.#embs = []; this.#res = null; this.#frameZ = new Map(); this.#instZ = new Map(); this.rev++; this.resultRev++;
     const be = this.#be();
     this.status = "loading-model"; this.message = `Loading ${be.MODEL.name}…`;
     try {
@@ -335,7 +340,7 @@ class EmbeddingStore {
         this.#scoreSig = sig; this.#scoreRes = this.#res;
       }
       // Per-frame max z, keyed like qcStore's #fkey (videoIdx:frameIdx), so the appearance check can join.
-      this.#frameZ = buildFrameZ(this.#recs, this.#res.z, store.frames, vidx);
+      ({ frameZ: this.#frameZ, worstByInst: this.#instZ } = buildScoreMaps(this.#recs, this.#res.z, store.frames, vidx));
       this.status = "done"; this.message = ""; this.rev++; this.resultRev++;
     } catch (e) {
       this.status = "error"; this.message = `Scoring failed — ${e?.message ?? e}`; this.rev++; this.resultRev++;
@@ -368,7 +373,7 @@ class EmbeddingStore {
     try {
       this.#res = await this.#computeRes(vidx);
       this.#scoreSig = null; this.#scoreRes = this.#res;
-      this.#frameZ = buildFrameZ(this.#recs, this.#res.z, store.frames, vidx);
+      ({ frameZ: this.#frameZ, worstByInst: this.#instZ } = buildScoreMaps(this.#recs, this.#res.z, store.frames, vidx));
       this.status = "done"; this.message = ""; this.rev++; this.resultRev++;
     } catch (e) {
       this.status = "error"; this.message = `Scoring failed — ${e?.message ?? e}`; this.rev++; this.resultRev++;
