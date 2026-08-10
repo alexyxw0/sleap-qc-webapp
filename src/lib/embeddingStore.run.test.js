@@ -22,11 +22,17 @@ globalThis.requestAnimationFrame = (cb) => { cb(performance.now()); return 0; };
 
 // Mock the DINO backend (the worker-client module): no CDN, no network, no real inference. The store
 // hands it BATCHES of raw RGBA crops; return a distinct vector per crop.
+import { tokenCount } from "./qc/embedding/patchTokens.js";
 let embN = 0;
 vi.mock("./qc/embedding/dinoRemote.js", () => ({
   MODEL: { id: "test", name: "DINO(test)", dim: 384, patch: 14, input: 224, batch: 8 },
   ensureModel: async () => ({ id: "test", name: "DINO(test)", dim: 384, input: 224 }),
-  embedBatch: async (images) => images.map(() => { embN++; const v = new Float32Array(384); for (let i = 0; i < 384; i++) v[i] = Math.sin(i * 0.1 + embN); return v; }),
+  // The real backend returns BOTH products of one forward pass. The instance store asks for no patch
+  // descriptors (patchCfg null), so `patches` is null here exactly as it is in production.
+  embedBatch: async (images, patchCfg) => ({
+    embs: images.map(() => { embN++; const v = new Float32Array(384); for (let i = 0; i < 384; i++) v[i] = Math.sin(i * 0.1 + embN); return v; }),
+    patches: patchCfg ? images.map(() => new Int8Array(tokenCount(patchCfg) * patchCfg.dim)) : null,
+  }),
   isLoaded: () => true,
 }));
 

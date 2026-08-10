@@ -40,10 +40,11 @@ class AppearanceRun {
   // levels, each null until answered, for the same reason `route` is: nothing may answer on the user's
   // behalf, and an unanswered question is the only state that renders as a question.
   //   scoreChoice "knn"    -> already applied, nothing more to do
+  //                "anomalyDino" -> the other unsupervised scorer; re-scores in place, no re-embed
   //                "svm"   -> where does the boundary come from?
   //   svmSource   "upload" -> a model fitted in an earlier session (svmIo.js)
   //                "fewshot" -> label ground truth here, in the proofreader, then fit
-  scoreChoice = $state(null); // null | "knn" | "svm"
+  scoreChoice = $state(null); // null | "knn" | "anomalyDino" | "svm"
   svmSource = $state(null);   // null | "upload" | "fewshot"
   gran = $state("instance"); // compute only: "instance" (one crop per animal) | "node" (a patch per keypoint)
 
@@ -137,8 +138,13 @@ class AppearanceRun {
   unaskAdapt() { if (this.labelSource) this.labelSource = null; else this.adaptChoice = null; }
 
   setScoreChoice(c) {
-    this.scoreChoice = c === "knn" || c === "svm" ? c : null;
+    this.scoreChoice = ["knn", "anomalyDino", "svm"].includes(c) ? c : null;
     if (this.scoreChoice !== "svm") this.svmSource = null; // an abandoned branch keeps no answer
+    // The two unsupervised answers are not just labels — they select a scorer, and picking one is the
+    // act of applying it. Re-scoring reuses the embeddings, so this is arithmetic, not inference.
+    if (this.scoreChoice === "knn" || this.scoreChoice === "anomalyDino") {
+      this.store?.setScorer?.(this.scoreChoice);
+    }
   }
   setSvmSource(s) { this.svmSource = s === "upload" || s === "fewshot" ? s : null; }
   /** Back up one question. The only way out of a branch, so it is never a dead end. */

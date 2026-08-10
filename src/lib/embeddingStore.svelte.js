@@ -262,7 +262,7 @@ class EmbeddingStore {
     const flush = async () => {
       if (!queue.length) return;
       const batch = queue; queue = [];
-      const embs = await be.embedBatch(batch.map((b) => b.img)); // buffers may be transferred — consumed
+      const { embs } = await be.embedBatch(batch.map((b) => b.img), null); // buffers may be transferred — consumed
       for (let i = 0; i < batch.length; i++) {
         const { r, key } = batch[i];
         const emb = l2norm(embs[i]);

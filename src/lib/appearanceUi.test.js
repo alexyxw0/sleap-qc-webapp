@@ -400,8 +400,11 @@ describe("the question is the pane, and it can arm the check itself", () => {
     expect(w).toContain('<span class="kp-l">Keypoint</span>');
     expect(w).toContain("(es.selectedNode = ch.node)");
     expect(w).not.toContain("Pick a keypoint in the graph below");
-    // a keypoint already scored by something other than kNN says so on its chip
-    expect(w).toMatch(/ch\.mode === "svm" \? "SVM" : "FS"/);
+    // a keypoint already scored by something other than the default kNN says so on its chip
+    expect(w).toContain("SCORE_BADGE[ch.mode]");
+    // ...and every non-default scorer has a badge, or a chip would silently claim to be kNN
+    expect(w).toMatch(/SCORE_BADGE = \{[^}]*anomalyDino:[^}]*svm:[^}]*fewshot:/);
+    expect(w).not.toMatch(/SCORE_BADGE = \{[^}]*\bknn:/); // kNN is the default: no badge
   });
 
   it("a settled answer offers the check itself", () => {

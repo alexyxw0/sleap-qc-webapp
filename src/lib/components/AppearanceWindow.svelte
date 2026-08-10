@@ -31,7 +31,8 @@
 
   const clf = classifierInfo();
   const es = $derived(appRun.store); // null for the pretrained (upload-only) route
-  const SCORE_LABEL = { knn: "unsupervised", svm: "trained SVM", fewshot: "few-shot" };
+  const SCORE_LABEL = { knn: "unsupervised kNN", anomalyDino: "AnomalyDINO", svm: "trained SVM", fewshot: "few-shot" };
+  const SCORE_BADGE = { anomalyDino: "AD", svm: "SVM", fewshot: "FS" };
   /** What is scoring the inspected keypoint right now — kNN unless the user chose otherwise. */
   const scoredMode = $derived.by(() => {
     void es?.resultRev;
@@ -239,7 +240,7 @@
       // which one is live, which is the part that actually varies.
       done: appRun.nodeDone, locked: !appRun.nodeDone,
       why: "Embed the patches first — there is nothing to score yet.",
-      hint: "Unsupervised by default. Fit an SVM on your labels, or nudge the ranking with few-shot.",
+      hint: "Unsupervised by default — kNN, or AnomalyDINO for locally-wrong keypoints. Or fit an SVM on your labels.",
       note: appRun.nodeDone ? SCORE_LABEL[scoredMode] : null,
     }];
   });
@@ -444,7 +445,7 @@
                         title={ch.state === "scored" ? `scored by ${SCORE_LABEL[ch.mode]}`
                           : ch.state === "few" ? "embedded, too few patches to score"
                             : "not embedded in this run — nothing is known about it"}>
-                  {ch.name}{#if ch.state === "scored" && ch.mode !== "knn"}<span class="kp-b">{ch.mode === "svm" ? "SVM" : "FS"}</span>{/if}
+                  {ch.name}{#if ch.state === "scored" && SCORE_BADGE[ch.mode]}<span class="kp-b">{SCORE_BADGE[ch.mode]}</span>{/if}
                 </button>
               {/each}
             </div>
@@ -465,19 +466,43 @@
                   <span class="so-t">kNN · unsupervised</span>
                   <span class="so-d">Each patch against the k most similar patches of this keypoint elsewhere in the file. No labels, already applied — choose this to keep it.</span>
                 </button>
+                <button class="sopt" disabled={!es.canAnomalyDino} onclick={() => appRun.setScoreChoice("anomalyDino")}>
+                  <span class="so-t">AnomalyDINO · unsupervised, patch-level</span>
+                  <span class="so-d">
+                    Same embeddings, read differently: the patch's own DINOv2 <i>patch tokens</i> against a memory
+                    bank of normal ones, scored by its worst quarter. Catches a keypoint that is only <i>locally</i>
+                    wrong — where kNN sees one averaged vector that still looks like a {nodeName}.
+                    {#if !es.canAnomalyDino}<b>This run kept no patch features — re-run to compute them.</b>
+                    {:else}No labels, and no re-embedding: it re-scores what is already here.{/if}
+                  </span>
+                </button>
                 <button class="sopt" onclick={() => appRun.setScoreChoice("svm")}>
                   <span class="so-t">SVM · supervised</span>
                   <span class="so-d">A fitted boundary between faulty and clean appearance. Needs labels — bring a model you fitted before, or make them here.</span>
                 </button>
               </div>
 
-            <!-- kNN: the default, so this confirms rather than acts ------------------------------ -->
-            {:else if appRun.scoreChoice === "knn"}
-              <p class="s-q">✓ Scoring <b>{nodeName}</b> with kNN</p>
+            <!-- Either unsupervised scorer: applied on selection, so this confirms rather than acts -->
+            {:else if appRun.scoreChoice === "knn" || appRun.scoreChoice === "anomalyDino"}
+              {@const cov = es.patchCoverage}
+              {@const ad = appRun.scoreChoice === "anomalyDino"}
+              <p class="s-q">✓ Scoring <b>{nodeName}</b> with {ad ? "AnomalyDINO" : "kNN"}</p>
               <p class="s-note dim">
-                Already applied to all {es.patchCount(ni).toLocaleString()} patches — the graph below is it.
+                Applied to all {es.patchCount(ni).toLocaleString()} patches — the graph below is it.
                 Threshold and per-frame verdicts are live in the <b>{APPEARANCE_LABELS.nodeDino.full}</b> check.
+                {#if ad}Each patch is {cov.tokens} pooled DINOv2 patch tokens ({cov.dim}-d) against a memory bank
+                  drawn from this keypoint's reference patches.{/if}
               </p>
+              <!-- Partial coverage is the one thing that must not be quiet: those patches score 0, i.e.
+                   perfectly clean, for a bookkeeping reason and not an appearance one. -->
+              {#if ad && !cov.full}
+                <p class="s-warn">
+                  {(cov.total - cov.have).toLocaleString()} of {cov.total.toLocaleString()} patches came from a
+                  cache written before patch features existed. <b>They score 0 — clean — because nothing is
+                  known about them</b>, not because they look right.
+                  <label class="s-req"><input type="checkbox" bind:checked={es.requirePatches} /> re-embed those on the next run</label>
+                </p>
+              {/if}
               <button class="back" onclick={() => appRun.unaskScore()}>‹ use a different technique</button>
 
             <!-- Q2 ------------------------------------------------------------------------------ -->
@@ -649,7 +674,7 @@
             <p class="note">One whole-instance crop per animal, embedded with DINOv2 ViT-S/14 (384-d) and scored by an RBF-SVM trained on proofread labels{#if clf} — <b>{clf.dataset}</b>, CV ROC {clf.cv_roc.toFixed(3)} / PR {clf.cv_pr.toFixed(3)}{/if}. Flags by SVM decision (0 = the boundary).</p>
             <p class="note">Catches occlusion and appearance errors geometry misses, but not <i>which</i> keypoint is wrong — that is the per-keypoint granularity.</p>
           {:else}
-            <p class="note">A patch around each keypoint, embedded with DINOv2 ViT-S/14 and scored <b>unsupervised</b>: robust-z of the distance to the k nearest patches of that <i>same</i> keypoint. No labels needed, and a flag names the keypoint responsible.</p>
+            <p class="note">A patch around each keypoint, embedded with DINOv2 ViT-S/14 and scored <b>unsupervised</b>. Two ways, both label-free and both on the same robust-z scale: <b>kNN</b> — distance to the k nearest patches of that <i>same</i> keypoint, which asks whether the whole patch is wrong; or <b>AnomalyDINO</b> (Damm et al., WACV 2025) — the patch's own DINOv2 patch tokens against a memory bank of normal ones, averaged over its worst quarter, which asks whether any <i>part</i> of it is. Either way a flag names the keypoint responsible.</p>
             <p class="note">One forward pass per keypoint per instance — many more crops than whole-instance, so expect minutes at full coverage. Cached after the first run. For a <i>supervised</i> per-keypoint score, judge some keypoints and fit an SVM on them under the graph below — it trains on these same patches. Bringing a bundle fitted elsewhere is the other option, back at <b>‹ start</b>.</p>
           {/if}
         </Explain>
@@ -824,6 +849,23 @@
   }
   .drop:hover { border-color: var(--accent); color: var(--accent); }
   .drop input { display: none; }
+  .s-warn {
+    margin: 0.5rem 0 0;
+    padding: 0.5rem 0.6rem;
+    border: 1px solid #7a5a20;
+    border-radius: 5px;
+    background: #2a2113;
+    color: #e7c08a;
+    font-size: 0.76rem;
+    line-height: 1.5;
+  }
+  .s-req {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin-top: 0.4rem;
+    cursor: pointer;
+  }
   .s-note { margin: 0; font-size: 0.68rem; color: #6ee7a8; line-height: 1.5; }
   .s-note.dim { color: var(--dim); }
   .s-err { margin: 0; font-size: 0.65rem; color: #ff6b6b; line-height: 1.5; }
