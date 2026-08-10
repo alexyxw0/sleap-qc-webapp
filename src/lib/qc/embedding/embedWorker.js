@@ -6,7 +6,7 @@
 import * as dino from "./dino.js";
 
 self.onmessage = async (ev) => {
-  const { type, id, images } = ev.data;
+  const { type, id, images, patchCfg } = ev.data;
   try {
     if (type === "init") {
       const info = await dino.ensureModel((p) => {
@@ -15,8 +15,12 @@ self.onmessage = async (ev) => {
       });
       self.postMessage({ type: "ready", info: { ...info } });
     } else if (type === "embed") {
-      const embs = await dino.embedBatchImages(images);
-      self.postMessage({ type: "embs", id, embs }, embs.map((v) => v.buffer));
+      const { embs, patches } = await dino.embedBatchImages(images, patchCfg ?? undefined);
+      // Transfer both: at batch 8 that is ~12 KB of vectors and ~8 KB of descriptors per message, and
+      // a structured clone of either would be pure copying on the hot path.
+      const xfer = embs.map((v) => v.buffer);
+      for (const p of patches ?? []) if (p) xfer.push(p.buffer);
+      self.postMessage({ type: "embs", id, embs, patches }, xfer);
     }
   } catch (e) {
     self.postMessage({ type: "error", id, message: e?.message ?? String(e) });

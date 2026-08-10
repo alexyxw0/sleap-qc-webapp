@@ -18,11 +18,27 @@ globalThis.document = {
 };
 globalThis.requestAnimationFrame = (cb) => { cb(performance.now()); return 0; };
 
+import { tokenCount } from "./qc/embedding/patchTokens.js";
 let embN = 0;
+let ptN = 0;
+let givePatches = true; // false = a backend/cache that yields no patch tokens
 vi.mock("./qc/embedding/dinoRemote.js", () => ({
   MODEL: { id: "test", name: "DINO(test)", dim: 384, patch: 14, input: 224, batch: 8 },
   ensureModel: async () => ({ id: "test", name: "DINO(test)", dim: 384, input: 224 }),
-  embedBatch: async (images) => images.map(() => { embN++; const v = new Float32Array(384); for (let i = 0; i < 384; i++) v[i] = Math.sin(i * 0.1 + embN); return v; }),
+  // The real backend returns BOTH products of one forward pass: the CLS vector and the compacted
+  // patch descriptor. The patch tokens vary with the crop, so AnomalyDINO has something to score —
+  // a mock that returned identical descriptors would make every patch its own nearest neighbour.
+  embedBatch: async (images, patchCfg) => ({
+    embs: images.map(() => { embN++; const v = new Float32Array(384); for (let i = 0; i < 384; i++) v[i] = Math.sin(i * 0.1 + embN); return v; }),
+    patches: patchCfg && givePatches
+      ? images.map(() => {
+          ptN++;
+          const T = tokenCount(patchCfg), P = patchCfg.dim, d = new Int8Array(T * P);
+          for (let t = 0; t < T; t++) for (let p = 0; p < P; p++) d[t * P + p] = Math.round(120 * Math.sin(p * 0.4 + t + ptN * 0.13));
+          return d;
+        })
+      : null,
+  }),
   isLoaded: () => true,
 }));
 
@@ -336,5 +352,122 @@ describe("worst-node lookup is O(1), not a scan of every patch", () => {
       const zs = st.pointsForNode(viaKey.node).filter((p) => p.fi === 0 && p.ii === 0).map((p) => p.z);
       expect(Math.max(...zs)).toBeCloseTo(viaKey.z, 10);
     }
+  });
+});
+
+// ── AnomalyDINO as the second unsupervised scorer ───────────────────────────────────────────────
+// The whole selling point is that switching to it costs arithmetic, not another inference run. That
+// only holds if the embedding pass keeps patch features whatever the scorer is, and if the switch
+// re-scores in place instead of quietly re-running. Both are load-bearing and both are cheap to break.
+describe("AnomalyDINO scorer", () => {
+  const fresh = () => new NodeEmbeddingStore("dino");
+
+  it("keeps patch features on a kNN run, so choosing AnomalyDINO later needs no re-embed", async () => {
+    const es = fresh();
+    expect(es.scorer).toBe("knn");
+    await es.run();
+    expect(es.status).toBe("done");
+    const cov = es.patchCoverage;
+    expect(cov.total).toBe(36);
+    expect(cov.have, "the pass dropped the patch tokens it had already computed").toBe(36);
+    expect(cov.full).toBe(true);
+    expect(es.canAnomalyDino).toBe(true);
+  });
+
+  it("switching the scorer re-scores without embedding anything again", async () => {
+    const es = fresh();
+    await es.run();
+    const before = [...Array(3).keys()].map((n) => es.scoringOf(n));
+    expect(before).toEqual(["knn", "knn", "knn"]);
+    const knnZ = es.nodeStats.map((s) => s.node);
+
+    const embedsBefore = embN;
+    await es.setScorer("anomalyDino");
+    expect(embN, "it re-ran inference — the one thing this must not do").toBe(embedsBefore);
+    expect(es.status).toBe("done");
+    for (const n of knnZ) expect(es.scoringOf(n)).toBe("anomalyDino");
+  });
+
+  it("produces DIFFERENT scores from kNN — otherwise it is an option that does nothing", async () => {
+    const es = fresh();
+    await es.run();
+    const knn = es.nodeStats.map((s) => s.node).map((n) => es.worstNodeFor(0, 0));
+    const knnFrameZ = es.frameZByKey("0:0");
+    await es.setScorer("anomalyDino");
+    const adFrameZ = es.frameZByKey("0:0");
+    expect(adFrameZ).not.toBe(null);
+    expect(adFrameZ).not.toBeCloseTo(knnFrameZ, 6);
+    void knn;
+  });
+
+  it("switching back to kNN restores the kNN scores exactly", async () => {
+    const es = fresh();
+    await es.run();
+    const before = es.frameZByKey("0:0");
+    await es.setScorer("anomalyDino");
+    await es.setScorer("knn");
+    expect(es.frameZByKey("0:0")).toBeCloseTo(before, 10);
+    expect(es.scoringOf(0)).toBe("knn");
+  });
+
+  it("keeps the per-frame QC interface intact under the new scorer", async () => {
+    const es = fresh();
+    await es.run();
+    await es.setScorer("anomalyDino");
+    es.threshold = -Infinity; // flag everything, so the maps have to be populated to say so
+    expect(es.hasResults).toBe(true);
+    expect(es.flaggedFrameKeys().length).toBe(6);
+    expect(es.worstNodeAtKey("0:0", 0)).toMatchObject({ node: expect.any(Number), z: expect.any(Number) });
+  });
+
+  it("falls back to kNN, and SAYS so, when there are no patch features to score", async () => {
+    // A file embedded before patch features existed re-serves its CLS vectors from cache and has no
+    // patch tokens to give. Scoring that group with AnomalyDINO would return 0 for EVERY patch — a
+    // silent "your file is clean", the worst possible failure for a QC check. It must fall back and
+    // report kNN, not report AnomalyDINO over a bank of nothing.
+    givePatches = false;
+    try {
+      const es = fresh();
+      await es.run();
+      expect(es.patchCoverage).toMatchObject({ have: 0, total: 36, full: false });
+      expect(es.canAnomalyDino).toBe(false);
+      const knnZ = es.frameZByKey("0:0");
+
+      await es.setScorer("anomalyDino");
+      expect(es.status).toBe("done");
+      expect(es.scoringOf(0), "claimed a scorer it could not run").toBe("knn");
+      expect(es.frameZByKey("0:0"), "scores drifted despite falling back").toBeCloseTo(knnZ, 10);
+    } finally {
+      givePatches = true;
+    }
+  });
+
+  it("re-embeds cache entries that predate patch features only when asked", async () => {
+    // Turning a warm cache back into a full inference run is the user's call, so it is a flag, and it
+    // is part of the config signature — a finished run made the other way is genuinely stale.
+    const es = fresh();
+    expect(es.requirePatches).toBe(false);
+    await es.run();
+    expect(es.configDirty).toBe(false);
+    es.requirePatches = true;
+    expect(es.configDirty, "flipping it left the old results looking current").toBe(true);
+  });
+
+  it("the graph keeps its shape — the scatter is the same map whichever scorer ran", async () => {
+    const es = fresh();
+    await es.run();
+    const pts = es.pointsForNode(0);
+    await es.setScorer("anomalyDino");
+    const after = es.pointsForNode(0);
+    expect(after.length).toBe(pts.length);
+    // Coords come from the CLS PCA either way: re-projecting per scorer would move every dot on
+    // screen for a reason unrelated to what changed.
+    expect([after[0].x, after[0].y]).toEqual([pts[0].x, pts[0].y]);
+  });
+
+  it("the scorer is part of the score memo — a switch cannot be served a cached kNN result", () => {
+    const src = readFileSync(new URL("./nodeEmbeddingStore.svelte.js", import.meta.url), "utf8");
+    const sig = src.slice(src.indexOf("const sig = `"), src.indexOf("`;", src.indexOf("const sig = `")));
+    expect(sig).toContain("this.scorer");
   });
 });

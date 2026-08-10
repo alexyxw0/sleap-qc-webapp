@@ -5,6 +5,7 @@
 // postMessage clone of the vectors (~4 MB at 2700 crops) costs a few ms — noise next to the pass
 // itself. One request at a time (the store awaits each run).
 import { knnOutlierScoresRef, robustZ, pca2 } from "./outlier.js";
+import { anomalyDinoScores } from "./anomalyDino.js";
 
 let _worker = null;
 let _seq = 0;
@@ -32,23 +33,35 @@ function ensureWorker() {
   return _worker;
 }
 
-function scoreSync(embs, refIdx, k) {
-  const scores = knnOutlierScoresRef(embs, refIdx, k);
+function scoreSync(msg) {
+  const { embs, refIdx, k, scorer, patches, P, opts } = msg;
+  const scores = scorer === "anomalyDino"
+    ? anomalyDinoScores(patches, refIdx, P, opts ?? {})
+    : knnOutlierScoresRef(embs, refIdx, k);
   return { scores: Array.from(scores), z: robustZ(scores), coords: pca2(embs).coords };
 }
 
-/** Score embeddings (mean-kNN outlier vs the reference, robust-z, 2-D PCA coords) without blocking
- *  the UI thread. Same result shape and values as the synchronous path. */
-export async function scoreEmbeddings(embs, refIdx, k) {
+/**
+ * Score embeddings without blocking the UI thread — mean-kNN outlier by default, AnomalyDINO when
+ * `extra.scorer` says so. Both return the SAME shape (raw scores, robust-z, 2-D PCA coords) and both
+ * put z on the same robust-z scale, because everything downstream — the threshold slider, frameZByKey,
+ * the QC union, the per-node counts — is written against that scale and would silently never flag if
+ * a scorer handed back its own units.
+ *
+ * `extra` for AnomalyDINO: { scorer:"anomalyDino", patches: Int8Array[], P, opts:{ q, bankTokens } }.
+ * The PCA coords still come from `embs`, so the graph is the same map whichever scorer ran.
+ */
+export async function scoreEmbeddings(embs, refIdx, k, extra = null) {
+  const msg = { embs, refIdx, k, ...(extra ?? {}) };
   const w = ensureWorker();
-  if (!w) return scoreSync(embs, refIdx, k);
+  if (!w) return scoreSync(msg);
   const id = ++_seq;
   try {
     return await new Promise((resolve, reject) => {
       _pending.set(id, { resolve, reject });
-      w.postMessage({ id, embs, refIdx, k });
+      w.postMessage({ id, ...msg });
     });
   } catch {
-    return scoreSync(embs, refIdx, k); // worker died mid-request — degrade, don't fail the run
+    return scoreSync(msg); // worker died mid-request — degrade, don't fail the run
   }
 }

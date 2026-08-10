@@ -41,7 +41,7 @@ export async function ensureModel(onProgress) {
             const p = _pending.get(m.id);
             if (!p) return;
             _pending.delete(m.id);
-            if (m.type === "embs") p.resolve(m.embs);
+            if (m.type === "embs") p.resolve({ embs: m.embs, patches: m.patches ?? null });
             else p.reject(new Error(m.message ?? "embedding failed"));
           };
           _worker.onerror = (e) => failAll(e.message || "embed worker crashed");
@@ -65,14 +65,15 @@ export function isLoaded() {
   return _direct ? dino.isLoaded() : !!MODEL.backend;
 }
 
-/** Embed RGBA crops ({ data, width, height }) → Float32Array vectors. Crop buffers are TRANSFERRED
- *  to the worker (zero-copy) — callers must treat the passed images as consumed. */
-export async function embedBatch(images) {
-  if (_direct) return dino.embedBatchImages(images);
+/** Embed RGBA crops ({ data, width, height }) → { embs, patches }: one CLS Float32Array and one
+ *  compacted patch descriptor per crop (patches is null when `patchCfg` is null). Crop buffers are
+ *  TRANSFERRED to the worker (zero-copy) — callers must treat the passed images as consumed. */
+export async function embedBatch(images, patchCfg = undefined) {
+  if (_direct) return dino.embedBatchImages(images, patchCfg);
   if (!_worker) throw new Error("call ensureModel() first");
   const id = ++_seq;
   return new Promise((resolve, reject) => {
     _pending.set(id, { resolve, reject });
-    _worker.postMessage({ type: "embed", id, images }, images.map((im) => im.data.buffer));
+    _worker.postMessage({ type: "embed", id, images, patchCfg }, images.map((im) => im.data.buffer));
   });
 }

@@ -8,6 +8,8 @@
 // DOM-free on purpose: the normal path runs this module inside embedWorker.js (see dinoRemote.js),
 // so crops arrive as raw RGBA buffers, not canvases.
 
+import { packPatchTokens, PATCH } from "./patchTokens.js";
+
 export const MODEL = {
   id: "Xenova/dinov2-small",
   name: "DINOv2 ViT-S/14",
@@ -80,7 +82,7 @@ export async function ensureModel(onProgress) {
         try {
           if (onProgress) onProgress({ status: `init ${a.label}` });
           _model = await _tf.AutoModel.from_pretrained(MODEL.id, { device: a.device, dtype: a.dtype, progress_callback: onProgress });
-          await embedBatchImages([dummy]); // warmup + validation: rejects a backend that loads but can't run
+          await embedBatchImages([dummy], null); // warmup + validation: rejects a backend that loads but can't run
           const threads = wasmEnv.numThreads ?? 1; // ORT rewrites this to the pool size it actually got
           MODEL.backend = `${a.label} · SIMD · ${threads} thread${threads === 1 ? "" : "s"}${caps.isolated ? "" : " — no cross-origin isolation"}`;
           console.info(`[dino] ${MODEL.backend} · relaxed-SIMD ${caps.relaxedSimd ? "in browser but not in the ORT build" : "unsupported"} · crossOriginIsolated=${caps.isolated}`);
@@ -98,11 +100,22 @@ export function isLoaded() {
   return !!_model;
 }
 
-/** Embed a batch of RGBA crops ({ data, width, height } — e.g. an ImageData) → one CLS appearance
- *  vector per crop (Float32Array, length MODEL.dim; caller normalizes). One forward pass for the whole
- *  batch: amortizes the JS↔WASM round-trip and keeps the thread pool fed between layers, which is
- *  markedly faster per crop than calling the model once per crop. */
-export async function embedBatchImages(images) {
+/**
+ * Embed a batch of RGBA crops ({ data, width, height } — e.g. an ImageData). One forward pass for the
+ * whole batch: amortizes the JS↔WASM round-trip and keeps the thread pool fed between layers, which is
+ * markedly faster per crop than calling the model once per crop.
+ *
+ * Returns BOTH products of that pass:
+ *   embs    — the CLS token per crop (Float32Array, length MODEL.dim; caller normalizes)
+ *   patches — the compacted patch-token descriptor per crop (int8; see patchTokens.js), or null when
+ *             `patchCfg` is null or the output is not a patch grid
+ *
+ * The patch descriptors are the expensive-to-get, cheap-to-keep half: the model already computed
+ * every patch token to produce CLS, so taking them costs one pooling pass, while asking for them
+ * later would cost the entire half-hour inference run again. That is why the default is to build them
+ * even when nothing is scoring with them yet.
+ */
+export async function embedBatchImages(images, patchCfg = PATCH) {
   if (!_model) throw new Error("call ensureModel() first");
   const raws = images.map((im) => new _tf.RawImage(im.data, im.width, im.height, 4)); // processor: resize + normalize
   const inputs = await _processor(raws);
@@ -110,6 +123,12 @@ export async function embedBatchImages(images) {
   const t = out.last_hidden_state ?? out.pooler_output ?? out.logits;
   const dims = t.dims;
   const D = dims[dims.length - 1];
-  const stride = dims.length >= 3 ? dims[1] * D : D; // [B, tokens, D] → CLS = token 0 of each item
-  return images.map((_, b) => t.data.slice(b * stride, b * stride + D));
+  const nTok = dims.length >= 3 ? dims[1] : 1; // [B, tokens, D] → token 0 is CLS, 1.. are the patches
+  const stride = nTok * D;
+  const embs = images.map((_, b) => t.data.slice(b * stride, b * stride + D));
+  // pooler_output / logits have no token axis, so there is no patch grid to take.
+  const patches = patchCfg && nTok > 1
+    ? images.map((_, b) => packPatchTokens(t.data.subarray(b * stride + D, (b + 1) * stride), nTok - 1, D, patchCfg))
+    : null;
+  return { embs, patches };
 }
