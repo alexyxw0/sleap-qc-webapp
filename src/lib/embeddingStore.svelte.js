@@ -8,7 +8,7 @@ import * as dinoBackend from "./qc/embedding/dinoRemote.js";
 import { l2norm, stratifiedReference, nearestNeighbors, buildFrameZ, pca2 } from "./qc/embedding/outlier.js";
 import { scoreEmbeddings } from "./qc/embedding/scoreRemote.js";
 import { classifyDecisions, classifierInfo } from "./qc/embedding/appearanceClf.js";
-import { loadAll as loadCache, putMany as saveCache } from "./qc/embedding/embcache.js";
+import { loadAll as loadCache, putMany as saveCache, requestPersist } from "./qc/embedding/embcache.js";
 
 const BACKENDS = { dino: dinoBackend };
 
@@ -74,7 +74,22 @@ class EmbeddingStore {
   // Embedding cache: cropKey -> { emb, thumb }. Persists across runs; a crop's DINO embedding never
   // changes unless the crop does, so re-running the same file skips decode + inference for hits.
   #cache = new Map();
+  cacheNote = $state(null); // set when persisting the embedding cache failed (e.g. quota)
   #cacheLabels = null; // the labels the cache was built for (cleared when a new file loads)
+
+  /** Write-behind for the embedding cache. Fire-and-forget on purpose — the run is done and the user
+   *  should not wait on a large write — but a FAILED write is reported, because a quota wall used to
+   *  be indistinguishable from success and showed up later as "the cache disappeared". */
+  #persist(fileId, fresh) {
+    saveCache(fileId, fresh).then((r) => {
+      if (r?.error) {
+        this.cacheNote = `Could not cache ${(r.failed ?? 0).toLocaleString()} of ${fresh.length.toLocaleString()} crops (${r.error}) — they will be re-embedded next run.`;
+        this.rev++;
+      } else if (r?.wrote) {
+        this.cacheNote = null;
+      }
+    });
+  }
   #loadedFileId = null; // fileId the in-memory cache was hydrated from IndexedDB for (once per file)
   // Scoring cache: kNN+PCA are a pure function of the embedding set (O(N²)), independent of the
   // threshold, so an identical re-run reuses the result instead of recomputing.
@@ -172,6 +187,9 @@ class EmbeddingStore {
   async run() {
     if (this.status === "running" || this.status === "loading-model" || this.status === "scoring") return;
     if (store.labels !== this.#cacheLabels) { this.#cache.clear(); this.#scoreSig = null; this.#scoreRes = null; this.#cacheLabels = store.labels; this.#loadedFileId = null; } // new file -> drop stale cache
+    // Best-effort: without this the origin is evictable, and a large embedding cache is exactly
+    // the kind of thing a browser drops under disk pressure.
+    requestPersist();
     this.#abort = false; this.#recs = []; this.#embs = []; this.#res = null; this.#frameZ = new Map(); this.rev++; this.resultRev++;
     const be = this.#be();
     this.status = "loading-model"; this.message = `Loading ${be.MODEL.name}…`;
@@ -291,13 +309,13 @@ class EmbeddingStore {
       // Persist first: a partially-embedded set is exactly as reusable as a complete one, and throwing
       // away a long DINO pass because someone pressed Stop is the most expensive bug on this path.
       // (nodeEmbeddingStore already does this; this route was still discarding it.)
-      if (fresh.length) saveCache(fileId, fresh);
+      if (fresh.length) this.#persist(fileId, fresh);
       this.status = "aborted"; this.message = "Stopped."; this.rev++; return;
     }
 
     // Persist crops embedded this run so a future run — even after a page reload — reuses them
     // (fire-and-forget; failures are swallowed inside embcache).
-    if (fresh.length) saveCache(fileId, fresh);
+    if (fresh.length) this.#persist(fileId, fresh);
 
     if (!this.#embs.length) { this.status = "error"; this.message = "No crops could be embedded (no frame images?)."; return; }
     // Everything past here is wrapped so a throw can NEVER leave the panel wedged in "scoring" with a

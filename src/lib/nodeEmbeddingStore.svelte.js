@@ -8,14 +8,14 @@
 // getters the panel reads.
 import { store } from "./labelsStore.svelte.js";
 import * as dinoBackend from "./qc/embedding/dinoRemote.js";
-import { l2norm, stratifiedReference, buildFrameZ, robustZ } from "./qc/embedding/outlier.js";
+import { l2norm, stratifiedReference, buildScoreMaps, robustZ } from "./qc/embedding/outlier.js";
 import { scoreEmbeddings } from "./qc/embedding/scoreRemote.js";
 import { nodePatchPlan } from "./qc/embedding/nodePatch.js";
 import { rbfDecision } from "./qc/embedding/svm.js";
 import { prototypeDirection, prototypeScores, blendByRank } from "./qc/embedding/fewshot.js";
 import { fitSvm, MIN_POSITIVES } from "./qc/embedding/svmFit.js";
 import { keypointLabels } from "./keypointLabels.svelte.js";
-import { loadAll as loadCache, putMany as saveCache } from "./qc/embedding/embcache.js";
+import { loadAll as loadCache, putMany as saveCache, requestPersist } from "./qc/embedding/embcache.js";
 
 const BACKENDS = { dino: dinoBackend };
 
@@ -73,13 +73,31 @@ export class NodeEmbeddingStore {
   #nodeIndex = new Map(); // node -> [record indices] for that node
   #nodeStats = []; // [{ node, count, scored, refCount }] sorted by node
   #frameZ = new Map(); // "videoIdx:frameIdx" -> max node-patch z over that frame
+  // "videoIdx:frameIdx:instIdx" -> { node, z } for that instance's worst patch. Built in the same pass
+  // as #frameZ because the alternative — scanning #recs per call — is O(58,000) on the render path.
+  #worstByInst = new Map();
   #scored = false;
   #abort = false;
   #cache = new Map(); // patchKey -> { emb, thumb }
+  cacheNote = $state(null); // set when persisting the embedding cache failed (e.g. quota)
   #cacheLabels = null;
   #loadedFileId = null;
   #scoreSig = null;
   #scoreRes = null; // { z, coords, nodeIndex, nodeStats, frameZ } cached for an identical re-run
+
+  /** Write-behind for the embedding cache. Fire-and-forget on purpose — the run is done and the
+   *  user should not wait on a 200 MB write — but a FAILED write is reported, because a quota wall
+   *  used to be indistinguishable from success and showed up later as "the cache disappeared". */
+  #persist(fileId, fresh) {
+    saveCache(fileId, fresh).then((r) => {
+      if (r?.error) {
+        this.cacheNote = `Could not cache ${(r.failed ?? 0).toLocaleString()} of ${fresh.length.toLocaleString()} patches (${r.error}) — they will be re-embedded next run.`;
+        this.rev++;
+      } else if (r?.wrote) {
+        this.cacheNote = null;
+      }
+    });
+  }
 
   /** One store per backend, so a second encoder could coexist here (like embeddingStores). */
   constructor(backend = "dino") { this.backend = BACKENDS[backend] ? backend : "dino"; }
@@ -196,7 +214,7 @@ export class NodeEmbeddingStore {
     this.#fewShot.delete(ni); this.#fsBase.delete(ni);
     // frameZ is the max over a frame's patches, so it has to be rebuilt from every group, not this one.
     const vidx = new Map((store.labels?.videos ?? []).map((v, i) => [v, i]));
-    this.#frameZ = buildFrameZ(this.#recs, this.#z, store.frames, vidx);
+    ({ frameZ: this.#frameZ, worstByInst: this.#worstByInst } = buildScoreMaps(this.#recs, this.#z, store.frames, vidx));
     // The memo describes the unsupervised pass; a trained group is no longer it.
     this.#scoreSig = null; this.#scoreRes = null;
     this.rev++; this.resultRev++;
@@ -246,7 +264,7 @@ export class NodeEmbeddingStore {
     idxs.forEach((r, k) => { this.#z[r] = z[k]; });
     this.#fewShot.set(ni, { alpha, ...proto });
     const vidx = new Map((store.labels?.videos ?? []).map((v, i) => [v, i]));
-    this.#frameZ = buildFrameZ(this.#recs, this.#z, store.frames, vidx);
+    ({ frameZ: this.#frameZ, worstByInst: this.#worstByInst } = buildScoreMaps(this.#recs, this.#z, store.frames, vidx));
     this.#scoreSig = null; this.#scoreRes = null;
     this.rev++; this.resultRev++;
     return this.#fewShot.get(ni);
@@ -318,16 +336,20 @@ export class NodeEmbeddingStore {
   }
   /** The most-outlier node of one instance among the keypoints THIS RUN EMBEDDED, or null. Under a
    *  subset that is not the worst node of the instance — see `coverage` before presenting it as one. */
+  /** Worst-scoring node of one instance, by the SAME "videoIdx:frameIdx" key the QC store already
+   *  holds. O(1) — this is called once per instance per render, and the scan it replaces was over
+   *  every embedded patch in the file. */
+  worstNodeAtKey(fkey, ii) {
+    this.resultRev;
+    return this.#worstByInst.get(`${fkey}:${ii}`) ?? null;
+  }
+  /** Same, addressed by index into store.frames. Kept for callers that only have the index. */
   worstNodeFor(fi, ii) {
-    this.rev;
-    let best = null;
-    for (let r = 0; r < this.#recs.length; r++) {
-      const rec = this.#recs[r];
-      if (rec.fi !== fi || rec.ii !== ii) continue;
-      const z = this.#z[r] ?? 0;
-      if (!best || z > best.z) best = { node: rec.node, z };
-    }
-    return best;
+    this.resultRev;
+    const f = store.frames?.[fi];
+    if (!f) return null;
+    const vidx = (store.labels?.videos ?? []).indexOf(f.video);
+    return this.worstNodeAtKey(f.fkey ?? `${vidx < 0 ? 0 : vidx}:${f.frameIdx}`, ii);
   }
   /** Nearest neighbours of record `r` WITHIN its own node group (what a normal <that node> looks like). */
   neighborsInNode(r, k = 5) {
@@ -378,7 +400,10 @@ export class NodeEmbeddingStore {
       if (hadFile) { this.nodes = null; this.#ranNodes = null; }
     }
     this.#abort = false;
-    this.#recs = []; this.#embs = []; this.#z = []; this.#coords = []; this.#nodeIndex = new Map(); this.#nodeStats = []; this.#frameZ = new Map(); this.#scored = false;
+    // Best-effort: without this the origin is evictable, and a 200 MB embedding cache is
+    // exactly the kind of thing a browser drops under disk pressure.
+    requestPersist();
+    this.#recs = []; this.#embs = []; this.#z = []; this.#coords = []; this.#nodeIndex = new Map(); this.#nodeStats = []; this.#frameZ = new Map(); this.#worstByInst = new Map(); this.#scored = false;
     // The scoring choices describe the patches that are about to be thrown away: a model fitted on the
     // old embeddings, and a blend over scores that no longer exist. Keeping them would make the next run
     // report "trained SVM" for a group the kNN pass just scored, and hand out that stale model on export.
@@ -481,7 +506,8 @@ export class NodeEmbeddingStore {
         this.#cache.set(key, hit);
         fresh.push([key, hit]);
       }
-      this.progress = { ...this.progress, done: this.progress.done + batch.length };
+      this.progress.done += batch.length; // in-place: progress is a deep $state proxy, so this is
+      // reactive without allocating a new object (and a new proxy) per flush.
     };
 
     let imgP = decode(0);
@@ -494,7 +520,7 @@ export class NodeEmbeddingStore {
           const hit = this.#cache.get(key);
           hits++;
           this.#recs.push({ fi, ii, node, thumb: hit.thumb }); this.#embs.push(hit.emb); usedKeys.push(key);
-          this.progress = { ...this.progress, done: this.progress.done + 1 };
+          this.progress.done += 1; // in-place — see the flush above; this one runs once per PATCH
         } else if (img?.width) {
           drawPatch(crop, img, box);
           const id = cropCtx.getImageData(0, 0, crop.width, crop.height);
@@ -507,7 +533,7 @@ export class NodeEmbeddingStore {
             try { await flush(); } catch (e) { this.status = "error"; this.message = `Embedding failed — ${e.message}`; return; }
           }
         } else {
-          this.progress = { ...this.progress, done: this.progress.done + 1 };
+          this.progress.done += 1; // in-place — see the flush above; this one runs once per PATCH
         }
         const now = performance.now();
         if (now - lastYield > 40) { setMsg(); this.rev++; await new Promise((res) => requestAnimationFrame(res)); lastYield = now; }
@@ -517,7 +543,7 @@ export class NodeEmbeddingStore {
     // Persist BEFORE the abort check: a partially-embedded set is exactly as reusable as a complete one
     // (each entry is keyed by file/video/frame/node/box), and throwing away twenty minutes of DINO
     // because someone pressed Stop is the most expensive bug in this file.
-    if (fresh.length) saveCache(fileId, fresh);
+    if (fresh.length) this.#persist(fileId, fresh);
     if (this.#abort) {
       for (let r = this.#recs.length - 1; r >= 0; r--) if (!this.#embs[r]) { this.#recs.splice(r, 1); this.#embs.splice(r, 1); usedKeys.splice(r, 1); }
       this.status = "aborted"; this.message = "Stopped."; this.rev++; return;
@@ -528,12 +554,12 @@ export class NodeEmbeddingStore {
     try {
       const sig = `${this.k}|${this.referenceFraction}|${this.patchFraction}|${usedKeys.join("|")}`;
       if (this.#scoreSig === sig && this.#scoreRes) {
-        ({ z: this.#z, coords: this.#coords, nodeIndex: this.#nodeIndex, nodeStats: this.#nodeStats, frameZ: this.#frameZ } = this.#scoreRes);
+        ({ z: this.#z, coords: this.#coords, nodeIndex: this.#nodeIndex, nodeStats: this.#nodeStats, frameZ: this.#frameZ, worstByInst: this.#worstByInst } = this.#scoreRes);
       } else {
         this.status = "scoring"; this.rev++;
         await this.#scoreAllNodes(vidx);
         this.#scoreSig = sig;
-        this.#scoreRes = { z: this.#z, coords: this.#coords, nodeIndex: this.#nodeIndex, nodeStats: this.#nodeStats, frameZ: this.#frameZ };
+        this.#scoreRes = { z: this.#z, coords: this.#coords, nodeIndex: this.#nodeIndex, nodeStats: this.#nodeStats, frameZ: this.#frameZ, worstByInst: this.#worstByInst };
       }
       this.#scored = true;
       // Default the panel's viewed node to the SCORED node with the most patches (a useful graph); if
@@ -579,7 +605,7 @@ export class NodeEmbeddingStore {
       nodeStats.push({ node: ni, count: idxs.length, scored: true, refCount: refIdx.length });
     }
     this.#z = z; this.#coords = coords; this.#nodeIndex = nodeIndex; this.#nodeStats = nodeStats;
-    this.#frameZ = buildFrameZ(this.#recs, z, store.frames, vidx);
+    ({ frameZ: this.#frameZ, worstByInst: this.#worstByInst } = buildScoreMaps(this.#recs, z, store.frames, vidx));
   }
 }
 

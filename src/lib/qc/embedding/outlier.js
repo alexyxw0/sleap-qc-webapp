@@ -92,14 +92,36 @@ export function nearestNeighbors(embs, i, k = 5) {
  *  video object to its index. Kept a pure function with EXPLICIT params so the z-scores can never be
  *  dropped by a scoping slip (the bug this replaced: `z` was block-scoped and undefined here). */
 export function buildFrameZ(recs, zArr, frames, vidx) {
+  return buildScoreMaps(recs, zArr, frames, vidx).frameZ;
+}
+
+/**
+ * Both per-frame and per-INSTANCE worst-z lookups, in one pass over the records.
+ *
+ * The per-instance map exists because the QC store asks "which node of this instance is worst?" once
+ * per instance per render, and answering it by scanning every record was O(#recs) — ~58,000 patches on
+ * a full per-keypoint run, on the frame-navigation path. Keyed the same way as frameZ
+ * ("videoIdx:frameIdx", plus ":instIdx") so the caller can use the frame key it already has instead of
+ * an index it has to search `frames` for.
+ *
+ * The value is threshold-INDEPENDENT — the worst node is the worst node whatever the cutoff — so this
+ * survives a threshold change and only needs rebuilding when the scores themselves do.
+ */
+export function buildScoreMaps(recs, zArr, frames, vidx) {
   const frameZ = new Map();
+  const worstByInst = new Map();
   for (let r = 0; r < recs.length; r++) {
-    const f = frames[recs[r].fi];
+    const rec = recs[r];
+    const f = frames[rec.fi];
     if (!f) continue;
-    const key = `${vidx.get(f.video) ?? 0}:${f.frameIdx}`;
-    if (zArr[r] > (frameZ.get(key) ?? -Infinity)) frameZ.set(key, zArr[r]);
+    const fk = `${vidx.get(f.video) ?? 0}:${f.frameIdx}`;
+    const z = zArr[r];
+    if (z > (frameZ.get(fk) ?? -Infinity)) frameZ.set(fk, z);
+    const ik = `${fk}:${rec.ii}`;
+    const cur = worstByInst.get(ik);
+    if (!cur || z > cur.z) worstByInst.set(ik, { node: rec.node, z });
   }
-  return frameZ;
+  return { frameZ, worstByInst };
 }
 
 /** Robust z-score (median / 1.4826·MAD) of an array — outlier cutoff without a Gaussian assumption. */

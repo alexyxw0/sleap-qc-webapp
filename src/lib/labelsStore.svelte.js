@@ -400,9 +400,16 @@ class LabelsStore {
   #cachePut(key, img) {
     this.#imgCache.set(key, img);
     // Evict least-recently-used (Map preserves insertion order; oldest key is first).
+    //
+    // Dropping the reference is all we do on purpose. An ImageBitmap's backing store is NOT released
+    // by GC promptly — close() is the only prompt release — but calling it here would be a
+    // use-after-free: getFrameImage hands the same object to callers that keep drawing from it across
+    // await boundaries (both embedding stores decode a frame then draw every patch from it, and the
+    // proofread window holds current + prefetched-next). An evicted-but-still-held bitmap that gets
+    // closed throws on the next draw and blanks the viewer. Freeing it promptly needs a refcount or a
+    // close-on-file-change pass, not a close here.
     while (this.#imgCache.size > this.#imgCacheCap) {
-      const oldest = this.#imgCache.keys().next().value;
-      this.#imgCache.delete(oldest);
+      this.#imgCache.delete(this.#imgCache.keys().next().value);
     }
   }
 

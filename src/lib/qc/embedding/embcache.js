@@ -25,10 +25,52 @@ function open() {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
     };
-    req.onsuccess = () => { _db = req.result; resolve(_db); };
+    req.onsuccess = () => {
+      _db = req.result;
+      // A memoized handle that is never invalidated is a cache that dies silently: once the browser
+      // or another tab closes the connection, every later transaction() throws, the catch below turns
+      // that into "no cached entries", and it stays that way until a reload. Drop the handle instead,
+      // so the next call reopens.
+      _db.onclose = () => { _db = null; _opening = null; };
+      _db.onversionchange = () => { try { _db.close(); } finally { _db = null; _opening = null; } };
+      resolve(_db);
+    };
     req.onerror = () => reject(req.error);
   }).catch((e) => { _opening = null; throw e; });
   return _opening;
+}
+
+const rangeFor = (fileId) => IDBKeyRange.bound(`${fileId}::`, `${fileId}::\uffff`);
+
+/**
+ * How many crops are persisted for `fileId`. -1 if the cache cannot be read.
+ *
+ * Exists because the UI's "already cached" readout only ever wanted a NUMBER, and getting it via
+ * loadAll meant structured-cloning every embedding and thumbnail out of IndexedDB — a quarter of a
+ * gigabyte deserialized to render one integer. count() answers it in the database.
+ */
+export async function countFor(fileId) {
+  try {
+    const db = await open();
+    return await new Promise((resolve, reject) => {
+      const req = db.transaction(STORE, "readonly").objectStore(STORE).count(rangeFor(fileId));
+      req.onsuccess = () => resolve(req.result ?? 0);
+      req.onerror = () => reject(req.error);
+    });
+  } catch {
+    return -1;
+  }
+}
+
+/** Ask the browser not to evict this origin. Best-effort and idempotent; safe to call repeatedly. */
+export async function requestPersist() {
+  try {
+    if (!navigator?.storage?.persist) return false;
+    if (await navigator.storage.persisted()) return true;
+    return await navigator.storage.persist();
+  } catch {
+    return false;
+  }
 }
 
 /** All persisted crops for `fileId`, as a Map(cropKey -> { emb, thumb }). Empty Map on any failure. */
@@ -39,7 +81,7 @@ export async function loadAll(fileId) {
     const prefix = `${fileId}::`;
     await new Promise((resolve, reject) => {
       const tx = db.transaction(STORE, "readonly");
-      const req = tx.objectStore(STORE).openCursor(IDBKeyRange.bound(prefix, prefix + "￿"));
+      const req = tx.objectStore(STORE).openCursor(rangeFor(fileId));
       req.onsuccess = () => {
         const cur = req.result;
         if (!cur) return resolve();
@@ -52,17 +94,42 @@ export async function loadAll(fileId) {
   return out;
 }
 
-/** Persist newly-embedded crops. `entries` = [[cropKey, { emb, thumb }], …]. Silent on failure. */
+// One transaction per this many entries. A full per-keypoint run is ~58,000 crops at ~4 KB each; as a
+// single transaction that is a ~240 MB all-or-nothing write, so one QuotaExceededError at the end
+// discards a twenty-minute pass. Chunked, a quota wall costs the last chunk and keeps the rest.
+const WRITE_CHUNK = 2000;
+
+/**
+ * Persist newly-embedded crops. `entries` = [[cropKey, { emb, thumb }], …].
+ *
+ * Returns { wrote, failed, error } instead of swallowing everything: a run that persisted nothing
+ * because the origin hit its quota used to be indistinguishable from one that persisted fine, which is
+ * exactly the "the cache disappeared" report this came from.
+ */
 export async function putMany(fileId, entries) {
-  if (!entries?.length) return;
+  if (!entries?.length) return { wrote: 0, failed: 0, error: null };
+  let wrote = 0, error = null;
   try {
     const db = await open();
-    await new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE, "readwrite");
-      const store = tx.objectStore(STORE);
-      for (const [key, val] of entries) store.put(val, `${fileId}::${key}`);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-  } catch { /* no-op */ }
+    for (let i = 0; i < entries.length; i += WRITE_CHUNK) {
+      const chunk = entries.slice(i, i + WRITE_CHUNK);
+      try {
+        await new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE, "readwrite");
+          const store = tx.objectStore(STORE);
+          for (const [key, val] of chunk) store.put(val, `${fileId}::${key}`);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error ?? new Error("aborted"));
+        });
+        wrote += chunk.length;
+      } catch (e) {
+        error = e;
+        break; // a quota wall will not clear on the next chunk
+      }
+    }
+  } catch (e) {
+    error = e;
+  }
+  return { wrote, failed: entries.length - wrote, error: error ? (error.name || String(error)) : null };
 }

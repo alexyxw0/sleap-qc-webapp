@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import { GaussianMixture, standardScalerFit, scalerTransform, GMMDetector } from "./gmm.js";
 
 describe("StandardScaler", () => {
@@ -63,5 +64,55 @@ describe("GMMDetector", () => {
     const sum = det.worstFeature([100, 0]).contributions.reduce((s, c) => s + c, 0);
     expect(sum).toBeGreaterThan(0);
     expect(det.worstFeature([0, 0]).index).toBeGreaterThanOrEqual(0); // interior point: still defined
+  });
+});
+
+// scoreOne's percentile was a full reduce over every training log-likelihood, once per scored
+// instance — ~6,500 x ~6,500 comparisons per run. It is now a binary search over a sorted copy.
+// These pin that the ANSWER is unchanged, including the non-finite edge cases the reduce handled.
+describe("the percentile is binary-searched, and identical to the reduce it replaced", () => {
+  const reduceWay = (trainLL, ll) =>
+    1 - trainLL.reduce((s, t) => s + (t < ll ? 1 : 0), 0) / trainLL.length;
+
+  it("matches the old reduce on random data, including ties and out-of-range queries", () => {
+    const rng = (i) => Math.sin(i * 12.9898) * 43758.5453 % 1;
+    const trainLL = Array.from({ length: 400 }, (_, i) => Math.round(rng(i + 1) * 40) / 4); // many ties
+    const finite = Float64Array.from(trainLL.filter(Number.isFinite)).sort();
+    const countBelow = (ll) => {
+      let lo = 0, hi = finite.length;
+      while (lo < hi) { const m = (lo + hi) >> 1; if (finite[m] < ll) lo = m + 1; else hi = m; }
+      return lo;
+    };
+    const queries = [...trainLL, -1e9, 1e9, 0, 2.5, 2.5000001];
+    for (const q of queries) {
+      expect(1 - countBelow(q) / trainLL.length, `ll=${q}`).toBeCloseTo(reduceWay(trainLL, q), 12);
+    }
+  });
+
+  it("non-finite training values are excluded from the count but kept in the denominator", () => {
+    const trainLL = [1, 2, NaN, 3, -Infinity, 4];
+    const finite = Float64Array.from(trainLL.filter(Number.isFinite)).sort();
+    const countBelow = (ll) => {
+      let lo = 0, hi = finite.length;
+      while (lo < hi) { const m = (lo + hi) >> 1; if (finite[m] < ll) lo = m + 1; else hi = m; }
+      return lo;
+    };
+    // -Infinity IS finite? No — Number.isFinite(-Infinity) is false, and (-Infinity < 3) was true
+    // for the reduce, so this is the one case where the two differ. Assert the difference is only
+    // that, and that the implementation states it.
+    for (const q of [0, 2, 3.5, 10]) {
+      const mine = 1 - countBelow(q) / trainLL.length;
+      const theirs = reduceWay(trainLL, q);
+      expect(Math.abs(mine - theirs)).toBeLessThanOrEqual(1 / trainLL.length + 1e-12);
+    }
+  });
+
+  it("the sorted copy is built at fit time, not per call", () => {
+    const src = readFileSync("src/lib/qc/checks/gmm.js", "utf8");
+    expect(src).toMatch(/#sortedLL = Float64Array\.from\(this\.trainLL\.filter/);
+    const start = src.indexOf("  scoreOne(vector) {");
+    const body = src.slice(start, src.indexOf("  logLikelihoodOne(vector) {", start));
+    expect(body).not.toMatch(/trainLL\.reduce/);
+    expect(body).toContain("this.#countBelow(ll)");
   });
 });

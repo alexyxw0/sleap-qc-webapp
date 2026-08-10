@@ -730,7 +730,10 @@ class QCStore {
     for (const nk of ["nodeDino"]) {
       if (this.checks[nk] && APPEARANCE_BY_KEY[nk].store.hasResults) {
         const es = APPEARANCE_BY_KEY[nk].store;
-        const w = es.worstNodeFor(store.frames.indexOf(item), instIdx);
+        // Key-based, like the noseAppearance branch above it. This used to be
+        // `worstNodeFor(store.frames.indexOf(item), …)`: a linear scan of `frames` to find an index,
+        // handed to a linear scan of every embedded patch — both on the per-instance render path.
+        const w = es.worstNodeAtKey(this.#fkey(item), instIdx);
         if (w && w.node >= 0 && w.z >= es.threshold) return w.node;
       }
     }
