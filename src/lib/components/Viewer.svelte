@@ -106,6 +106,8 @@
     // poses stay clean. *Nodes[instIdx] = nodeIdx to ring, or -1.
     let worstNodes = null;
     let worstEdges = null;
+    let worstAngles = null;
+    let worstNodeVariants = null;
     let flaggedInstances = null;
     if (qc.hasResults && item) {
       const insts = item.lf?.instances ?? [];
@@ -113,8 +115,23 @@
       // the pose-split bridge node, or the GMM's leave-one-out node. Reacts live to the sliders.
       // When the flag is an EDGE (chirality pair / pose-split bridge / worst anomaly edge) we
       // highlight the edge instead and suppress that instance's ring.
-      worstEdges = insts.map((_, i) => (qc.instanceFlagged(item, i) ? qc.faultyEdgeFor(item, i) : null));
-      worstNodes = insts.map((_, i) => (qc.instanceFlagged(item, i) && !worstEdges[i] ? qc.faultyNodeFor(item, i) : -1));
+      // One pass per instance. Each flag resolves to exactly ONE shape — an angle (deviant joint or
+      // body-chain bend), an edge (chirality pair, pose-split bridge, deviant bone/pair), or a node —
+      // so the three are mutually exclusive and the loser is suppressed. Computed in a single loop
+      // because instanceFlagged was previously evaluated three times per instance per redraw.
+      worstEdges = []; worstNodes = []; worstAngles = []; worstNodeVariants = [];
+      for (let i = 0; i < insts.length; i++) {
+        if (!qc.instanceFlagged(item, i)) {
+          worstEdges.push(null); worstNodes.push(-1); worstAngles.push(null); worstNodeVariants.push(null);
+          continue;
+        }
+        const ang = qc.faultyAngleFor(item, i);
+        const edge = ang ? null : qc.faultyEdgeFor(item, i);
+        worstAngles.push(ang);
+        worstEdges.push(edge);
+        worstNodes.push(ang || edge ? -1 : qc.faultyNodeFor(item, i));
+        worstNodeVariants.push(ang || edge ? null : qc.faultyNodeVariantFor(item, i));
+      }
       flaggedInstances = qc.frameFlaggedInstances(item); // bbox around each flagged instance
     }
 
@@ -140,6 +157,8 @@
       selNode: selN,
       worstNodes,
       worstEdges,
+      worstAngles,
+      worstNodeVariants,
       gtFaulty,
       flaggedInstances,
       overlay: view.showOverlay,

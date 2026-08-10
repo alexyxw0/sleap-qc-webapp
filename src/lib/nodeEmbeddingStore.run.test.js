@@ -282,3 +282,59 @@ describe("the scoring choice never outlives the scores it describes", () => {
     expect(restore).toBeLessThan(blend);
   });
 });
+
+// worstNodeFor scanned every embedded patch — ~58,000 on a full per-keypoint run — and the QC store
+// called it once per instance from the render path, after a linear `frames.indexOf` to get the index
+// it wanted. A full flagged-set rebuild cost ~700 ms of pure scanning. Both are now map lookups.
+describe("worst-node lookup is O(1), not a scan of every patch", () => {
+  const src = readFileSync("src/lib/nodeEmbeddingStore.svelte.js", "utf8");
+  const qc = readFileSync("src/lib/qcStore.svelte.js", "utf8");
+
+  it("the accessor reads a prebuilt map instead of walking #recs", () => {
+    const body = src.slice(src.indexOf("worstNodeAtKey(fkey, ii)"), src.indexOf("worstNodeFor(fi, ii)"));
+    expect(body).toContain("this.#worstByInst.get(");
+    expect(body).not.toMatch(/for \(let r = 0; r < this\.#recs\.length/);
+  });
+
+  it("the map is built in the SAME pass as frameZ, everywhere frameZ is built", () => {
+    // A build site that updates frameZ but not worstByInst would serve stale node attributions.
+    expect(src).not.toMatch(/buildFrameZ\(/);
+    const sites = src.match(/buildScoreMaps\(/g) ?? [];
+    expect(sites.length).toBeGreaterThanOrEqual(3); // run(), applyTrainedModel, applyFewShot
+    for (const m of src.matchAll(/buildScoreMaps\(/g)) {
+      const line = src.slice(src.lastIndexOf("\n", m.index) + 1, src.indexOf("\n", m.index));
+      expect(line, "a build site that drops worstByInst").toContain("worstByInst: this.#worstByInst");
+    }
+  });
+
+  it("the memo carries it, so a cached re-run cannot resurrect a stale map", () => {
+    const read = src.slice(src.indexOf("} = this.#scoreRes)"), 0);
+    expect(src).toMatch(/frameZ: this\.#frameZ, worstByInst: this\.#worstByInst \} = this\.#scoreRes/);
+    expect(src).toMatch(/this\.#scoreRes = \{[^}]*worstByInst: this\.#worstByInst \}/);
+  });
+
+  it("a file change clears it with everything else", () => {
+    const reset = src.slice(src.indexOf("async run() {"), src.indexOf('this.status = "loading-model"'));
+    expect(reset).toContain("this.#worstByInst = new Map()");
+  });
+
+  it("the QC store uses the frame key it already has, not frames.indexOf", () => {
+    // strip comments — one of them quotes the old call on purpose
+    const code = qc.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+    expect(code).not.toContain("frames.indexOf(item)");
+    expect(qc).toMatch(/es\.worstNodeAtKey\(this\.#fkey\(item\), instIdx\)/);
+  });
+
+  it("and still answers the same thing", async () => {
+    const st = new NodeEmbeddingStore("dino");
+    await st.run();
+    const viaKey = st.worstNodeAtKey("0:0", 0);
+    const viaIdx = st.worstNodeFor(0, 0);
+    expect(viaIdx).toEqual(viaKey);
+    if (viaKey) {
+      // it really is the max over that instance's patches
+      const zs = st.pointsForNode(viaKey.node).filter((p) => p.fi === 0 && p.ii === 0).map((p) => p.z);
+      expect(Math.max(...zs)).toBeCloseTo(viaKey.z, 10);
+    }
+  });
+});

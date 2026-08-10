@@ -201,14 +201,33 @@ export class GMMDetector {
     const scaled = scalerTransform(valid, this.scaler);
     this.gmm = new GaussianMixture({ nComponents: nComp }).fit(scaled);
     this.trainLL = this.gmm.scoreSamples(scaled);
+    // Sorted copy of the FINITE training log-likelihoods, so scoreOne can binary-search the percentile
+    // instead of re-reducing the whole array per instance. Non-finite entries are dropped rather than
+    // sorted: `t < ll` was false for them, so they were never counted as "below", but they DID count
+    // in the denominator — keeping trainLL.length as the divisor preserves that exactly.
+    this.#sortedLL = Float64Array.from(this.trainLL.filter((t) => Number.isFinite(t))).sort();
     return this;
   }
+  #sortedLL = new Float64Array(0);
+
+  /** Number of training log-likelihoods strictly below `ll` — lower bound, O(log n). */
+  #countBelow(ll) {
+    const a = this.#sortedLL;
+    let lo = 0, hi = a.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (a[mid] < ll) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+  }
+
   // normalized anomaly score in [0,1]: 1 - percentile(ll) (higher = more anomalous).
   scoreOne(vector) {
     if (vector.some((x) => Number.isNaN(x))) return Number.NaN;
     const ll = this.logLikelihoodOne(vector);
-    const below = this.trainLL.reduce((s, t) => s + (t < ll ? 1 : 0), 0);
-    return 1 - below / this.trainLL.length;
+    // Was a full reduce over trainLL per instance: ~6,500 instances x ~6,500 training rows is 42M
+    // comparisons per run, for a percentile that a sorted array answers in ~13 steps.
+    return 1 - this.#countBelow(ll) / this.trainLL.length;
   }
   // Raw log p(x) under the fitted mixture (higher = more probable / normal). Used for
   // leave-one-node-out attribution: the node whose removal most raises this is "the

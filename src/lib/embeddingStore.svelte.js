@@ -5,10 +5,10 @@
 // acting on.) Kept fully inspectable — every crop, neighbourhood, and score is UI-visible.
 import { store } from "./labelsStore.svelte.js";
 import * as dinoBackend from "./qc/embedding/dinoRemote.js";
-import { l2norm, stratifiedReference, nearestNeighbors, buildFrameZ, pca2 } from "./qc/embedding/outlier.js";
+import { l2norm, stratifiedReference, nearestNeighbors, buildScoreMaps, pca2 } from "./qc/embedding/outlier.js";
 import { scoreEmbeddings } from "./qc/embedding/scoreRemote.js";
 import { classifyDecisions, classifierInfo } from "./qc/embedding/appearanceClf.js";
-import { loadAll as loadCache, putMany as saveCache } from "./qc/embedding/embcache.js";
+import { loadAll as loadCache, putMany as saveCache, requestPersist } from "./qc/embedding/embcache.js";
 
 const BACKENDS = { dino: dinoBackend };
 
@@ -69,12 +69,28 @@ class EmbeddingStore {
   #embs = []; // Float32Array (L2-normalized) per record, index-aligned with #recs
   #res = null; // { scores, z, coords }
   #frameZ = new Map(); // "videoIdx:frameIdx" -> max embedding z over that frame's instances
+  #instZ = new Map();  // "videoIdx:frameIdx:instIdx" -> that instance's z (one record per instance here)
   #refCount = 0; // size of the kNN reference used for the current results
   #abort = false;
   // Embedding cache: cropKey -> { emb, thumb }. Persists across runs; a crop's DINO embedding never
   // changes unless the crop does, so re-running the same file skips decode + inference for hits.
   #cache = new Map();
+  cacheNote = $state(null); // set when persisting the embedding cache failed (e.g. quota)
   #cacheLabels = null; // the labels the cache was built for (cleared when a new file loads)
+
+  /** Write-behind for the embedding cache. Fire-and-forget on purpose — the run is done and the user
+   *  should not wait on a large write — but a FAILED write is reported, because a quota wall used to
+   *  be indistinguishable from success and showed up later as "the cache disappeared". */
+  #persist(fileId, fresh) {
+    saveCache(fileId, fresh).then((r) => {
+      if (r?.error) {
+        this.cacheNote = `Could not cache ${(r.failed ?? 0).toLocaleString()} of ${fresh.length.toLocaleString()} crops (${r.error}) — they will be re-embedded next run.`;
+        this.rev++;
+      } else if (r?.wrote) {
+        this.cacheNote = null;
+      }
+    });
+  }
   #loadedFileId = null; // fileId the in-memory cache was hydrated from IndexedDB for (once per file)
   // Scoring cache: kNN+PCA are a pure function of the embedding set (O(N²)), independent of the
   // threshold, so an identical re-run reuses the result instead of recomputing.
@@ -127,6 +143,10 @@ class EmbeddingStore {
   get flaggedCount() { this.rev; return this.#res ? this.#res.z.reduce((a, z) => a + (z >= this.threshold), 0) : 0; }
   /** Max embedding z for a frame, by "videoIdx:frameIdx" key (the DINO QC check reads this), or null. */
   frameZByKey(key) { this.resultRev; return this.#frameZ.get(key) ?? null; }
+  /** This instance's embedding z, by "videoIdx:frameIdx" + index — the attribution behind a frame's
+   *  flag. Each record here IS an instance, so the per-frame max always comes from exactly one of
+   *  these; the map was already built alongside #frameZ and thrown away. */
+  instZAtKey(key, ii) { this.resultRev; return this.#instZ.get(`${key}:${ii}`)?.z ?? null; }
   /** Frames flagged at the current threshold (frame-level, for the check count). */
   get flaggedFrameCount() {
     this.resultRev;
@@ -172,7 +192,10 @@ class EmbeddingStore {
   async run() {
     if (this.status === "running" || this.status === "loading-model" || this.status === "scoring") return;
     if (store.labels !== this.#cacheLabels) { this.#cache.clear(); this.#scoreSig = null; this.#scoreRes = null; this.#cacheLabels = store.labels; this.#loadedFileId = null; } // new file -> drop stale cache
-    this.#abort = false; this.#recs = []; this.#embs = []; this.#res = null; this.#frameZ = new Map(); this.rev++; this.resultRev++;
+    // Best-effort: without this the origin is evictable, and a large embedding cache is exactly
+    // the kind of thing a browser drops under disk pressure.
+    requestPersist();
+    this.#abort = false; this.#recs = []; this.#embs = []; this.#res = null; this.#frameZ = new Map(); this.#instZ = new Map(); this.rev++; this.resultRev++;
     const be = this.#be();
     this.status = "loading-model"; this.message = `Loading ${be.MODEL.name}…`;
     try {
@@ -291,13 +314,13 @@ class EmbeddingStore {
       // Persist first: a partially-embedded set is exactly as reusable as a complete one, and throwing
       // away a long DINO pass because someone pressed Stop is the most expensive bug on this path.
       // (nodeEmbeddingStore already does this; this route was still discarding it.)
-      if (fresh.length) saveCache(fileId, fresh);
+      if (fresh.length) this.#persist(fileId, fresh);
       this.status = "aborted"; this.message = "Stopped."; this.rev++; return;
     }
 
     // Persist crops embedded this run so a future run — even after a page reload — reuses them
     // (fire-and-forget; failures are swallowed inside embcache).
-    if (fresh.length) saveCache(fileId, fresh);
+    if (fresh.length) this.#persist(fileId, fresh);
 
     if (!this.#embs.length) { this.status = "error"; this.message = "No crops could be embedded (no frame images?)."; return; }
     // Everything past here is wrapped so a throw can NEVER leave the panel wedged in "scoring" with a
@@ -317,7 +340,7 @@ class EmbeddingStore {
         this.#scoreSig = sig; this.#scoreRes = this.#res;
       }
       // Per-frame max z, keyed like qcStore's #fkey (videoIdx:frameIdx), so the appearance check can join.
-      this.#frameZ = buildFrameZ(this.#recs, this.#res.z, store.frames, vidx);
+      ({ frameZ: this.#frameZ, worstByInst: this.#instZ } = buildScoreMaps(this.#recs, this.#res.z, store.frames, vidx));
       this.status = "done"; this.message = ""; this.rev++; this.resultRev++;
     } catch (e) {
       this.status = "error"; this.message = `Scoring failed — ${e?.message ?? e}`; this.rev++; this.resultRev++;
@@ -350,7 +373,7 @@ class EmbeddingStore {
     try {
       this.#res = await this.#computeRes(vidx);
       this.#scoreSig = null; this.#scoreRes = this.#res;
-      this.#frameZ = buildFrameZ(this.#recs, this.#res.z, store.frames, vidx);
+      ({ frameZ: this.#frameZ, worstByInst: this.#instZ } = buildScoreMaps(this.#recs, this.#res.z, store.frames, vidx));
       this.status = "done"; this.message = ""; this.rev++; this.resultRev++;
     } catch (e) {
       this.status = "error"; this.message = `Scoring failed — ${e?.message ?? e}`; this.rev++; this.resultRev++;

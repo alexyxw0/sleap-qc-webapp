@@ -52,6 +52,17 @@ export class VisibilityModel {
    * conditions exactly so the named node is the one actually inflating the feature.
    */
   worstNode(mask) {
+    return this.worstNodeDetail(mask).node;
+  }
+
+  /**
+   * The most-blamed node AND which of the two ways it is anomalous, because they are opposite
+   * problems and the UI has to say which:
+   *   "absent"  — peers that are almost always co-visible with it are here, and it is not
+   *   "present" — it is here, and it almost never co-occurs with the peers that are
+   * A node the model cannot blame either way returns { node: -1, kind: null }.
+   */
+  worstNodeDetail(mask) {
     if (!this.coVisibility) throw new Error("Model not fitted. Call fit() first.");
     const blame = new Array(this.nNodes).fill(0);
     for (let i = 0; i < this.nNodes; i++) {
@@ -65,6 +76,8 @@ export class VisibilityModel {
     }
     let best = -1, bestC = 0;
     for (let j = 0; j < this.nNodes; j++) if (blame[j] > bestC) { bestC = blame[j]; best = j; }
-    return best;
+    // The blame rule is mutually exclusive per node — a node is counted only while absent, or only
+    // while present — so the mask itself names the case.
+    return { node: best, kind: best < 0 ? null : (mask[best] ? "present" : "absent"), blame: bestC };
   }
 }

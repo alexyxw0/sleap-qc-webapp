@@ -214,10 +214,10 @@ export class BaselineFeatureExtractor {
       const zRaw = (dist(pose[s], pose[d]) - this.stats.edgeMeans.get(k)) / this.stats.edgeStds.get(k);
       if (Math.abs(zRaw) > beZ) { beZ = Math.abs(zRaw); beEdge = [s, d]; beDir = Math.sign(zRaw); }
     }
-    if (beEdge) out.max_edge_zscore = { nodes: beEdge, dir: beDir };
+    if (beEdge) out.max_edge_zscore = { kind: "edge", nodes: beEdge, dir: beDir };
 
     // max_angle_zscore -> the joint (center node) with the most-deviant angle + direction.
-    let baZ = -Infinity, baCenter = -1, baDir = 0;
+    let baZ = -Infinity, baCenter = -1, baDir = 0, baArms = null;
     this._adjacency.forEach((neighbors, center) => {
       if (neighbors.length < 2 || !isVisible(pose[center])) return;
       for (let i = 0; i < neighbors.length; i++)
@@ -229,10 +229,17 @@ export class BaselineFeatureExtractor {
           const k = [center, Math.min(n1, n2), Math.max(n1, n2)].join(",");
           if (!this.stats.angleMeans.has(k)) continue;
           const zRaw = (a - this.stats.angleMeans.get(k)) / this.stats.angleStds.get(k);
-          if (Math.abs(zRaw) > baZ) { baZ = Math.abs(zRaw); baCenter = center; baDir = Math.sign(zRaw); }
+          if (Math.abs(zRaw) > baZ) { baZ = Math.abs(zRaw); baCenter = center; baDir = Math.sign(zRaw); baArms = [n1, n2]; }
         }
     });
-    if (baCenter >= 0) out.max_angle_zscore = { nodes: [baCenter], dir: baDir };
+    // The joint FIRST, then the two arms that form the deviant angle. An angle is not a node and not
+    // an edge — highlighting only the joint left the user guessing which of its bones was off — so the
+    // shape is [vertex, armA, armB] and `kind` tells the UI to draw the angle rather than a ring.
+    if (baCenter >= 0) {
+      out.max_angle_zscore = baArms
+        ? { nodes: [baCenter, baArms[0], baArms[1]], kind: "angle", dir: baDir }
+        : { nodes: [baCenter], dir: baDir };
+    }
 
     // max_pairwise_zscore -> the most distance-deviant node pair + direction.
     let bpZ = -Infinity, bpPair = null, bpDir = 0;
@@ -242,7 +249,7 @@ export class BaselineFeatureExtractor {
         const zRaw = (dist(pose[i], pose[j]) - this.stats.pairwiseMeans.get(`${i},${j}`)) / this.stats.pairwiseStds.get(`${i},${j}`);
         if (Math.abs(zRaw) > bpZ) { bpZ = Math.abs(zRaw); bpPair = [i, j]; bpDir = Math.sign(zRaw); }
       }
-    if (bpPair) out.max_pairwise_zscore = { nodes: bpPair, dir: bpDir };
+    if (bpPair) out.max_pairwise_zscore = { kind: "edge", nodes: bpPair, dir: bpDir };
 
     // max_centroid_distance -> the visible node furthest from the visible centroid (no direction:
     // a distance is one-sided).
@@ -280,7 +287,7 @@ export class BaselineFeatureExtractor {
           if (sc < worstScore) { worstScore = sc; worstPair = [l1, r1]; }
         }
       }
-      if (worstPair) out.min_symmetry_consistency = { nodes: worstPair };
+      if (worstPair) out.min_symmetry_consistency = { kind: "edge", nodes: worstPair };
     }
 
     // has_isolated_invisible -> the invisible node whose skeleton neighbors are all visible

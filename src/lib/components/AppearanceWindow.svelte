@@ -25,7 +25,7 @@
   import { keypointModels, ingestLabelCsv } from "../keypointModels.svelte.js";
   import { keypointLabels } from "../keypointLabels.svelte.js";
   import { appearanceCoverageNote, APPEARANCE_LABELS } from "../qcStore.svelte.js";
-  import { loadAll } from "../qc/embedding/embcache.js";
+  import { countFor } from "../qc/embedding/embcache.js";
   import { proofreadWindow } from "../proofreadWindow.svelte.js";
   import { importModel, exportModel, modelFilename } from "../qc/embedding/svmIo.js";
 
@@ -179,9 +179,15 @@
   let cached = $state(null); // entries already stored for this file, or null while unknown
   $effect(() => {
     const id = es?.cacheId;
+    // Depend on the RESULT revision too: a finished run writes tens of thousands of entries, and
+    // without this the readout kept showing the pre-run count until something unrelated re-ran the
+    // effect — which is what "the cache disappeared and came back later" actually was.
+    void es?.resultRev;
     if (!id) { cached = null; return; }
     let stale = false;
-    loadAll(id).then((m) => { if (!stale) cached = m?.size ?? 0; }).catch(() => { if (!stale) cached = null; });
+    // countFor, not loadAll: this only ever wanted a number, and loadAll deserializes every
+    // embedding and thumbnail in the partition to produce it.
+    countFor(id).then((n) => { if (!stale) cached = n < 0 ? null : n; }).catch(() => { if (!stale) cached = null; });
     return () => { stale = true; };
   });
   // The weights download once; after that modelInfo is set and they are in memory for the session.
@@ -687,6 +693,9 @@
             </p>
           {/if}
 
+          {#if es?.cacheNote}
+            <p class="cachewarn">⚠ {es.cacheNote}</p>
+          {/if}
           <p class="armed" class:on={ready}>
             {ready ? "✓" : "○"} the <b>{APPEARANCE_LABELS[appRun.checkKey].full}</b> check
             {ready ? "is armed" : "unlocks once this has results"}{#if ready && covNote} · <b>{covNote}</b>{/if}{ready ? " — tick it in the Appearance tab" : ""}
@@ -750,6 +759,8 @@
   .n-n { font-size: 0.56rem; color: var(--dim); padding: 0.02rem 0.3rem; border-radius: 999px; background: rgba(255, 255, 255, 0.06); }
   .n-arrow { color: var(--border); font-size: 0.7rem; }
   .lockmsg { margin: 0; font-size: 0.64rem; color: #f0b47a; }
+  /* A failed cache write used to be silent; it shows up much later as "my embeddings vanished". */
+  .cachewarn { margin: 0; font-size: 0.65rem; color: #f0b47a; line-height: 1.5; }
   /* This is the top of the pane and the thing to read first, so it gets the room: a panel with its own
      surface, sized to fill rather than to fit, instead of a paragraph competing with the results graph. */
   .score {

@@ -22,3 +22,36 @@ describe("VisibilityModel.worstNode — co-visibility culprit", () => {
     expect(m.worstNode([T, T, T, T])).toBe(-1);
   });
 });
+
+// worstNode answers WHICH node; the viewer also needs WHICH WAY, because the check fires on two
+// opposite conditions and they call for opposite marks — a cross-hair for "should be here and isn't"
+// against a filled dot for "is here and shouldn't be". A single ring for both said nothing.
+describe("VisibilityModel.worstNodeDetail — which way the node is wrong", () => {
+  it('an expected-but-missing node is "absent"', () => {
+    const masks = Array.from({ length: 20 }, () => [T, T, T, T]);
+    const d = new VisibilityModel().fit(masks).worstNodeDetail([T, T, F, T]);
+    expect(d.node).toBe(2);
+    expect(d.kind).toBe("absent");
+  });
+
+  it('a rarely-co-visible node that IS labelled is "present"', () => {
+    const masks = Array.from({ length: 20 }, (_, i) => (i === 19 ? [T, T, T, T] : [T, T, T, F]));
+    const d = new VisibilityModel().fit(masks).worstNodeDetail([T, T, T, T]);
+    expect(d.node).toBe(3);
+    expect(d.kind).toBe("present");
+  });
+
+  it("kind is null when nothing is blamed, so the caller cannot draw a mark for nobody", () => {
+    const masks = Array.from({ length: 20 }, () => [T, T, T, T]);
+    const d = new VisibilityModel().fit(masks).worstNodeDetail([T, T, T, T]);
+    expect(d).toMatchObject({ node: -1, kind: null });
+  });
+
+  it("worstNode stays exactly the node worstNodeDetail names (one blame, two readers)", () => {
+    const masks = Array.from({ length: 20 }, () => [T, T, T, T]);
+    const m = new VisibilityModel().fit(masks);
+    for (const mask of [[T, T, F, T], [F, T, T, T], [T, T, T, T]]) {
+      expect(m.worstNode(mask)).toBe(m.worstNodeDetail(mask).node);
+    }
+  });
+});

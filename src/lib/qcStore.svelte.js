@@ -730,7 +730,10 @@ class QCStore {
     for (const nk of ["nodeDino"]) {
       if (this.checks[nk] && APPEARANCE_BY_KEY[nk].store.hasResults) {
         const es = APPEARANCE_BY_KEY[nk].store;
-        const w = es.worstNodeFor(store.frames.indexOf(item), instIdx);
+        // Key-based, like the noseAppearance branch above it. This used to be
+        // `worstNodeFor(store.frames.indexOf(item), …)`: a linear scan of `frames` to find an index,
+        // handed to a linear scan of every embedded patch — both on the per-instance render path.
+        const w = es.worstNodeAtKey(this.#fkey(item), instIdx);
         if (w && w.node >= 0 && w.z >= es.threshold) return w.node;
       }
     }
@@ -913,14 +916,21 @@ class QCStore {
       const pose = item.lf?.instances?.[instIdx]?.numpy?.({ invisibleAsNaN: true });
       if (feature && pose) {
         if (feature === "visibility_pattern_score") {
-          // lives on the co-visibility model, not the baseline extractor
-          res = { node: fx.visibility?.worstNode(visibilityMask(pose)) ?? -1, dir: 0, feature };
+          // lives on the co-visibility model, not the baseline extractor. `variant` says whether the
+          // node is anomalous by being ABSENT or by being PRESENT — opposite problems, and the ring
+          // has to look different or the user cannot tell which they are being shown.
+          const v = fx.visibility?.worstNodeDetail(visibilityMask(pose)) ?? { node: -1, kind: null };
+          res = { node: v.node, nodes: v.node >= 0 ? [v.node] : null, kind: "node", variant: v.kind, dir: 0, feature };
+        } else if (feature === "max_curvature") {
+          // a V3 feature: the culprit is a bend, and only the detector knows the skeleton's chains
+          const a = fx.attributeCurvature?.(pose);
+          res = { node: a?.nodes?.[0] ?? -1, nodes: a?.nodes ?? null, kind: a?.kind ?? null, dir: a?.dir ?? 0, feature };
         } else if (feature === "bbox_area_zscore" || feature === "hull_area_zscore") {
           // whole-instance, but the contribution is a signed z -> a direction with no node
           res = { node: -1, dir: Math.sign(contributions[feature] ?? 0), feature };
         } else {
           const a = fx.baseline.attribute(pose)[feature];
-          res = { node: a?.nodes?.[0] ?? -1, nodes: a?.nodes ?? null, dir: a?.dir ?? 0, feature };
+          res = { node: a?.nodes?.[0] ?? -1, nodes: a?.nodes ?? null, kind: a?.kind ?? null, dir: a?.dir ?? 0, feature };
         }
       }
     }
@@ -980,6 +990,50 @@ class QCStore {
   /** When the dominant flag is fundamentally an EDGE, the `[a,b]` to highlight instead of a node:
    *  the chirality L/R pair, the pose-split bridge, or an edge/pairwise-dominated anomaly. Mirrors
    *  `faultyNodeFor`'s priority so the edge and node never disagree; null → the caller draws the ring. */
+  /**
+   * When the dominant flag is fundamentally an ANGLE — a deviant joint (max_angle_zscore) or a
+   * deviant bend along the body chain (max_curvature) — the `[vertex, armA, armB]` to draw, else
+   * null. An angle is neither a node nor an edge: ringing only the vertex left the user to guess
+   * which two bones were involved, and drawing "the edge" between the arms invents a bone.
+   *
+   * Only the anomaly check produces angles; chirality / ordering / pose-split are edge- or
+   * node-shaped and keep their existing precedence, so this returns null while one of them dominates.
+   */
+  faultyAngleFor(item, instIdx) {
+    this.rev;
+    if (!item) return null;
+    const key = `${this.#fkey(item)}:${instIdx}`;
+    if (this.checks.chirality) {
+      const s = this.#chiralityScores.get(key);
+      if (s != null && s >= this.chiralityThreshold) return null;
+    }
+    if (this.checks.ordering) {
+      const s = this.#orderingScores.get(key);
+      if (s != null && s >= this.orderingThreshold) return null;
+    }
+    if (this.checks.poseSplit) {
+      const s = this.#poseSplitScores.get(key);
+      if (s != null && s >= this.poseSplitThreshold) return null;
+    }
+    if (!this.checks.anomaly) return null;
+    const a = this.#instanceScores.get(key);
+    if (a == null || a < this.threshold) return null;
+    const at = this.#anomalyAttribution(item, instIdx);
+    return at.kind === "angle" && at.nodes?.length === 3 ? [...at.nodes] : null;
+  }
+
+  /** How the faulty NODE is anomalous, when the check distinguishes cases: "absent" (expected but
+   *  not labelled) or "present" (labelled but almost never co-occurs with its peers). Null when the
+   *  dominant flag carries no such distinction. Drives the ring style, not the ring's position. */
+  faultyNodeVariantFor(item, instIdx) {
+    this.rev;
+    if (!item || !this.checks.anomaly) return null;
+    const key = `${this.#fkey(item)}:${instIdx}`;
+    const a = this.#instanceScores.get(key);
+    if (a == null || a < this.threshold) return null;
+    return this.#anomalyAttribution(item, instIdx).variant ?? null;
+  }
+
   faultyEdgeFor(item, instIdx) {
     this.rev;
     if (!item) return null;
@@ -1003,8 +1057,10 @@ class QCStore {
     if (this.checks.anomaly) {
       const a = this.#instanceScores.get(key);
       if (a != null && a >= this.threshold) {
-        const nodes = this.#anomalyAttribution(item, instIdx).nodes;
-        return nodes?.length === 2 ? [nodes[0], nodes[1]] : null; // edge/pairwise feature -> the edge
+        // Read the declared kind rather than guessing from length: an angle also carries several
+        // nodes, and treating it as an edge drew a bone between the two arms that does not exist.
+        const a = this.#anomalyAttribution(item, instIdx);
+        return a.kind === "edge" && a.nodes?.length === 2 ? [a.nodes[0], a.nodes[1]] : null;
       }
     }
     return null; // GMM or none -> node ring
@@ -1505,14 +1561,23 @@ class QCStore {
     if (!item) return null;
     const pts = item.lf?.instances?.[instIdx]?.points;
     const wn = this.faultyNodeFor(item, instIdx);
-    const p0 = wn >= 0 ? pts?.[wn]?.xy : null;
-    if (!p0 || Number.isNaN(p0[0])) {
+    // Frame every node the mark spans, not just the primary: zooming a two-node edge or a
+    // three-node angle to a single point put half of the thing being pointed at off-screen.
+    const span = this.faultyAngleFor(item, instIdx) ?? this.faultyEdgeFor(item, instIdx) ?? (wn >= 0 ? [wn] : []);
+    const xy = span.map((n) => pts?.[n]?.xy).filter((p) => p && !Number.isNaN(p[0]));
+    if (!xy.length) {
       // no standout node — frame the whole instance so the user still lands on the problem
       if (!this.instanceFlagged(item, instIdx)) return null;
       const box = instanceBox(pts);
       return box ? { nodes: [], primary: -1, box } : null;
     }
-    return { nodes: [wn], primary: wn, box: { x: p0[0], y: p0[1], w: 0, h: 0 } };
+    const xs = xy.map((p) => p[0]), ys = xy.map((p) => p[1]);
+    const x = Math.min(...xs), y = Math.min(...ys);
+    return {
+      nodes: span,
+      primary: wn >= 0 ? wn : span[0],
+      box: { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y },
+    };
   }
 
   #computeUnit(unit) {
@@ -1730,6 +1795,72 @@ class QCStore {
     });
     return rows.sort((p, q) => Math.abs(q.z) - Math.abs(p.z)).slice(0, n);
   }
+  /**
+   * Which INSTANCE a given check blames on this frame, or -1 when the check is genuinely about the
+   * frame as a whole (instance count, negative frame) and no single instance is the answer.
+   *
+   * The frame-level rows in the sidebar name a problem without saying where it is, so every one of
+   * them was a dead end: you read "sparse instance" and then hunted for it by eye. The attribution
+   * already existed on the frame record and on the per-instance score maps — this just reads it.
+   */
+  blamedInstanceFor(item, checkKey) {
+    this.rev;
+    if (!item) return -1;
+    const fk = this.#fkey(item);
+    const n = item.lf?.instances?.length ?? 0;
+    const fq = this.#frameResults.get(fk);
+
+    // Per-instance scored checks: the worst instance that actually clears its own threshold.
+    const SCORED = {
+      anomaly: [this.#instanceScores, this.threshold],
+      gmm: [this.#gmmScores, this.gmmThreshold],
+      chirality: [this.#chiralityScores, this.chiralityThreshold],
+      ordering: [this.#orderingScores, this.orderingThreshold],
+      poseSplit: [this.#poseSplitScores, this.poseSplitThreshold],
+    };
+    if (SCORED[checkKey]) {
+      const [map, thr] = SCORED[checkKey];
+      let best = -1, bestS = -Infinity;
+      for (let i = 0; i < n; i++) {
+        const v = map.get(`${fk}:${i}`);
+        if (v != null && v >= thr && v > bestS) { bestS = v; best = i; }
+      }
+      return best;
+    }
+    if (checkKey.startsWith("feat:")) {
+      const f = this.featureChecks.find((x) => x.id === checkKey.slice(5));
+      if (!f) return -1;
+      let best = -1, bestS = -Infinity;
+      for (let i = 0; i < n; i++) {
+        const z = this.#instFeatureZ.get(`${fk}:${i}`)?.[f.feature];
+        if (z != null && z >= f.threshold && z > bestS) { bestS = z; best = i; }
+      }
+      return best;
+    }
+    if (checkKey === "sparse") return fq?.sparsestInstance ?? -1;
+    if (checkKey === "confidence") return fq?.lowConfInstance ?? -1;
+    if (checkKey === "instConfidence") return fq?.lowInstance ?? -1;
+    if (checkKey === "duplicates") return fq?.duplicatePairs?.[0]?.[0] ?? -1;
+    if (isAppearanceCheck(checkKey)) {
+      // All three appearance stores score instances; they just expose it differently. Mirror
+      // #appInstFaultyNode's thresholds so a row never points at an instance the check did not flag.
+      const st = APPEARANCE_BY_KEY[checkKey].store;
+      if (!st.hasResults) return -1;
+      const scoreOf =
+        checkKey === "dino" ? (i) => st.instZAtKey(fk, i)
+        : checkKey === "nodeDino" ? (i) => st.worstNodeAtKey(fk, i)?.z ?? null
+        : (i) => keypointModels.worstNodeAt(fk, i)?.prob ?? null;
+      const thr = st.threshold;
+      let best = -1, bestS = -Infinity;
+      for (let i = 0; i < n; i++) {
+        const v = scoreOf(i);
+        if (v != null && v >= thr && v > bestS) { bestS = v; best = i; }
+      }
+      return best;
+    }
+    return -1; // count / negative / outOfFrame: the frame IS the subject
+  }
+
   /** Every ENABLED check's status for a frame, for the opt-in "all checks" detail view. Each:
    *  { key, label, score, threshold, flagged, lowerIsWorse?, unit?, detail? }. */
   frameDetectorDetails(item) {
