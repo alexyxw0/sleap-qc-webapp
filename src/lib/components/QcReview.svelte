@@ -1,6 +1,6 @@
 <script>
   // QC-review correction popup. Steps through flagged frames WORST-FIRST (by qc.flagConfidence),
-  // showing each one auto-zoomed to its faulty instance on a focused canvas. The user drags the
+  // showing each one auto-zoomed to the instance that needs adjusting, on a focused canvas. The user drags the
   // ringed keypoint to fix it (or deletes a duplicate instance), then advances. Reuses the main
   // canvas pipeline: drawScene/hitTestNode (draw.js), store.frameImage + setIndex, editStore.
   import { store } from "../labelsStore.svelte.js";
@@ -8,6 +8,7 @@
   import { qc, heatColor } from "../qcStore.svelte.js";
   import { ui } from "../uiStore.svelte.js";
   import { drawScene, frameDims, hitTestNode, colorFor } from "../draw.js";
+  import { reviewFocusBox, flagPartners } from "../qc/focusBox.js";
 
   let wrap = $state();
   let canvas = $state();
@@ -33,6 +34,10 @@
   const DRAG_THRESH = 3;
   const HIT_PX = 14;
   const MAX_ZOOM = 24; // cap zoom-in at 24× the whole-image fit
+  // Floor on the framed box, as a fraction of the image's larger side. A tiny instance frames to
+  // its own few pixels otherwise, and the reviewer gets interpolated grey with no way to tell what
+  // they are looking at.
+  const MIN_FRAME_FRAC = 0.09;
   const dpr = Math.min((typeof window !== "undefined" && window.devicePixelRatio) || 1, 2);
 
   // Nav list snapshotted on open, so re-scoring after a correction doesn't reshuffle/drop frames
@@ -144,39 +149,57 @@
     const c = clampedCenter(ns, cx, cy, cw, ch, dims);
     s = ns; cx = c.x; cy = c.y;
   }
-  // Frame ALL instances' visible nodes (the whole labeled scene) with a little adjustment room —
-  // set once per frame, never during a drag. Seeing every animal matters for the cross-instance
-  // flags (duplicates, L/R swaps, chimeras), and it avoids the over-zoom when a single instance's
-  // bbox is tiny. A single-instance frame is unchanged. Whole-image floor + max-zoom cap still apply.
-  function frameScene(cw, ch) {
+  // Set the view to show `box` (image space) with adjustment room. Shared by both framings so they
+  // can never drift apart on margin, zoom bounds, or centring.
+  function applyBox(box, cw, ch) {
     const dims = dimsNow();
-    const xs = [], ys = [];
-    for (const inst of item?.lf?.instances ?? []) {
-      for (const p of inst.points ?? []) {
-        const x = p?.xy?.[0], y = p?.xy?.[1];
-        if (x != null && !Number.isNaN(x)) { xs.push(x); ys.push(y); }
-      }
-    }
-    let bx = 0, by = 0, bw = dims.w, bh = dims.h;
-    if (xs.length) { bx = Math.min(...xs); by = Math.min(...ys); bw = Math.max(...xs) - bx; bh = Math.max(...ys) - by; }
-    const margin = Math.max(bw, bh, 1) * 0.22 + 16; // breathing room so a dragged node stays in view
-    const ow = bw + 2 * margin, oh = bh + 2 * margin;
+    const b = box ?? { x: 0, y: 0, w: dims.w, h: dims.h };
+    const margin = Math.max(b.w, b.h, 1) * 0.22 + 16; // so a dragged node stays in view
+    const ow = b.w + 2 * margin, oh = b.h + 2 * margin;
     const minS = fitWhole(cw, ch, dims);
     const ns = Math.max(minS, Math.min(minS * MAX_ZOOM, Math.min((cw * 0.92) / ow, (ch * 0.92) / oh)));
-    const c = clampedCenter(ns, bx + bw / 2, by + bh / 2, cw, ch, dims);
+    const c = clampedCenter(ns, b.x + b.w / 2, b.y + b.h / 2, cw, ch, dims);
     s = ns; cx = c.x; cy = c.y;
   }
 
-  // (Re)frame whenever the SHOWN FRAME changes — not on every edit. This is the key to a stable
-  // view while dragging: the draw transform comes from s/cx/cy, which only change here or when the
-  // user explicitly zooms/pans, so moving a point no longer re-frames the canvas.
+  /** The instance this frame's review is ABOUT, or -1 when the flag is about the frame itself. */
+  function targetInstance() {
+    if (!item?.lf?.instances?.length) return -1;
+    return qc.frameWorstInstance(item);
+  }
+
+  // Zoom to the instance that needs adjusting — the default framing. It used to frame the whole
+  // labeled scene, which meant that on a 1000-px frame the keypoint you were sent here to fix was a
+  // few pixels wide and you zoomed in by hand every single time. The reasons the wide framing existed
+  // are kept rather than discarded: a flag with no single culprit still frames everything (the frame
+  // IS the subject), a cross-instance flag pulls in the instance it is being compared against, and a
+  // tiny instance is padded to MIN_FRAME_FRAC instead of filling the canvas with three pixels.
+  function frameTarget(cw, ch) {
+    const insts = item?.lf?.instances ?? [];
+    const ti = targetInstance();
+    const dims = dimsNow();
+    const box = reviewFocusBox(insts, ti, ti >= 0 ? flagPartners(qc.frameQC(item), ti) : [],
+                               Math.max(dims.w, dims.h) * MIN_FRAME_FRAC);
+    applyBox(box, cw, ch);
+  }
+
+  /** Every labeled instance — what "show me the whole picture" means. Kept on shift-0 / shift-click. */
+  function frameScene(cw, ch) {
+    applyBox(reviewFocusBox(item?.lf?.instances ?? [], -1), cw, ch);
+  }
+
+  // (Re)frame whenever the SHOWN FRAME changes — not on every edit, and NOT when the user selects a
+  // different instance by hand. This is the key to a stable view: the draw transform comes from
+  // s/cx/cy, which only change here or when the user explicitly zooms/pans, so moving a point never
+  // re-frames the canvas — and clicking a node on the other animal doesn't yank the view off the one
+  // you were about to drag.
   $effect(() => {
     if (!ui.reviewOpen) return;
     void store.index;
     const W = vpW, H = vpH;
     if (!W || !H || !item) return;
     if (store.index === framedIndex) return;
-    frameScene(Math.round(W * dpr), Math.round(H * dpr));
+    frameTarget(Math.round(W * dpr), Math.round(H * dpr));
     framedIndex = store.index;
   });
 
@@ -318,7 +341,13 @@
     else if (e.key === "v" && edit.selInstance >= 0 && edit.selNode >= 0) { edit.toggleVisible(edit.selInstance, edit.selNode); qc.rescoreInstance(store.current, edit.selInstance); e.preventDefault(); }
     else if (e.key === "=" || e.key === "+") { zoomBy(1.2); e.preventDefault(); }
     else if (e.key === "-" || e.key === "_") { zoomBy(1 / 1.2); e.preventDefault(); }
-    else if (e.key === "0") { frameScene(Math.round(vpW * dpr), Math.round(vpH * dpr)); e.preventDefault(); }
+    // 0 re-frames the flagged instance — one key to get back to it after a correction moves the
+    // blame to a different animal. Shift-0 pulls back to the whole frame.
+    else if (e.key === "0" || e.key === ")") {
+      const [cw, ch] = [Math.round(vpW * dpr), Math.round(vpH * dpr)];
+      (e.shiftKey ? frameScene : frameTarget)(cw, ch);
+      e.preventDefault();
+    }
   }
   // zoom % for the readout: current scale relative to the whole-image fit (1× = whole image).
   const zoomPct = $derived.by(() => {
@@ -370,7 +399,8 @@
           <button onclick={() => zoomBy(1 / 1.2)} title="Zoom out (−)">−</button>
           <span class="pct">{zoomPct}%</span>
           <button onclick={() => zoomBy(1.2)} title="Zoom in (+)">＋</button>
-          <button onclick={() => frameScene(Math.round(vpW * dpr), Math.round(vpH * dpr))} title="Refit to frame (0)">⤢</button>
+          <button onclick={(e) => (e.shiftKey ? frameScene : frameTarget)(Math.round(vpW * dpr), Math.round(vpH * dpr))}
+                  title="Refit to the flagged instance (0) · shift for the whole frame">⤢</button>
         </div>
       </div>
 
