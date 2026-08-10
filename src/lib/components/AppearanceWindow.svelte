@@ -250,6 +250,18 @@
     wasDone = done;
   });
 
+  // The bundle route's equivalent. A loaded pair is exactly when "score it as shipped, or adapt it?"
+  // becomes answerable, so loading one carries you to the question instead of leaving you on a finished
+  // upload form. Transition-only, for the same reasons: re-opening the window on an already-loaded
+  // bundle leaves you where you were, and going back to ① to add another keypoint does not bounce you
+  // forward mid-edit.
+  let wasPaired = $state(false);
+  $effect(() => {
+    const paired = appRun.pairLoaded;
+    if (paired && !wasPaired && appRun.tab === "upload") appRun.setTab("fewshot");
+    wasPaired = paired;
+  });
+
   // Never strand the user on a locked pane: if the answer to an earlier step is undone, fall back to the
   // last step that is actually reachable. Suppressed while a bundle half is still loading, so an
   // in-flight fetch cannot bounce a deep link somewhere unexplained.
