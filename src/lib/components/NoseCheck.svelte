@@ -151,13 +151,9 @@
   <input bind:this={modelInput} type="file" accept=".bin" style="display:none" onchange={onModelFile} />
   <button type="button" class="add" onclick={addKeypoint}>＋ Add keypoint</button>
 
-  <div class="fs">
-    <div class="row">
-      <span class="k">Few-shot</span>
-      <button class="load" onclick={() => appRun.showTab("fewshot")}
-        title="Adapting a transferred model with your own labels is step 2 of this route">→ step 2 · Adapt</button>
-    </div>
-
+  <!-- Labelling, not adaptation. Choosing between the bundle as-shipped and a few-shot blend is step
+       2's question, and it asks it properly — this panel only LOADS bundles and makes labels. -->
+  <div class="lbl">
     <div class="row">
       <span class="k">Proofread</span>
       <button class="load" class:on={keypointLabels.proofreading}
@@ -296,7 +292,7 @@
   .status { margin: 0; font-size: 0.62rem; color: var(--dim); }
   .status.error { color: #fca5a5; }
   .status.done { color: #6ee7a8; }
-  .fs { margin-top: 0.2rem; padding-top: 0.4rem; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 0.4rem; }
+  .lbl { margin-top: 0.2rem; padding-top: 0.4rem; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 0.4rem; }
   .thr { display: flex; align-items: center; gap: 0.4rem; }
   .thr input { flex: 1 1 auto; min-width: 0; }
   .val { font-size: 0.64rem; color: var(--accent); font-variant-numeric: tabular-nums; }

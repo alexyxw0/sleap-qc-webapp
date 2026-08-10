@@ -180,11 +180,13 @@ describe("few-shot is its own tab", () => {
     expect(s).toMatch(/TABS = \[[^\]]*"compute"[^\]]*"score"[^\]]*"upload"[^\]]*"fewshot"[^\]]*\]/);
   });
 
-  it("the adapt controls left NoseCheck and point at the new tab", () => {
+  it("the adapt controls left NoseCheck for good", () => {
     const n = read("src/lib/components/NoseCheck.svelte");
     expect(n).not.toMatch(/setAlpha/); // the blend slider moved
     expect(n).not.toMatch(/parseKeypointLabels/); // and so did the label import
-    expect(n).toContain('appRun.showTab("fewshot")');
+    // ...and so did the shortcut INTO the adapt step: step 2 asks the question itself now, so a link
+    // that lands mid-question was a second, worse entry into it.
+    expect(n).not.toContain('appRun.showTab("fewshot")');
     const f = read("src/lib/components/FewShotPanel.svelte");
     expect(f).toContain("setAlpha");
     // The CSV import moved to a shared ingest — the bundle route's scoring prompt offers it too, and a
@@ -540,5 +542,37 @@ describe("the bundle route is gated like the compute route", () => {
     // no earlier answer to undo; it points at step ① instead, which is where the work actually is.
     expect(w.match(/appRun\.unaskAdapt\(\)/g).length).toBe(3);
     expect(w).toContain("go back to ① Load bundles");
+  });
+});
+
+// The upload tab used to carry a "Few-shot → step 2 · Adapt" shortcut. Step 2 now ASKS the question —
+// as-shipped or adapt, then where the labels come from — so a link that lands mid-question is a second,
+// worse entry into it. And loading a bundle should carry you to that question, not leave you on a
+// finished upload form.
+describe("the bundle route hands off to its own question", () => {
+  const nose = read("src/lib/components/NoseCheck.svelte");
+  const w = read("src/lib/components/AppearanceWindow.svelte");
+
+  it("the upload panel no longer shortcuts into step 2", () => {
+    expect(nose).not.toContain('showTab("fewshot")');
+    expect(nose).not.toMatch(/step 2 · Adapt/);
+    expect(nose).not.toMatch(/<span class="k">Few-shot<\/span>/);
+  });
+
+  it("but it keeps the label tally and CSV export — the only working ones", () => {
+    // ProofreadWindow's Labels tab is still a placeholder, so removing these would delete the only
+    // path to a faulty_keypoints.csv.
+    expect(nose).toContain("proofread.exportCsv()");
+    expect(nose).toContain("keypointLabels.badCount");
+    expect(nose).toMatch(/keypointLabels\.proofreading = !keypointLabels\.proofreading/);
+  });
+
+  it("a loaded pair advances to the scoring question, on the transition only", () => {
+    expect(w).toContain("let wasPaired = $state(false);");
+    expect(w).toMatch(/if \(paired && !wasPaired && appRun\.tab === "upload"\) appRun\.setTab\("fewshot"\)/);
+  });
+
+  it("which is the same shape as the compute route's advance", () => {
+    expect(w).toMatch(/if \(done && !wasDone && appRun\.tab === "compute"[^)]*\) appRun\.setTab\("score"\)/);
   });
 });
