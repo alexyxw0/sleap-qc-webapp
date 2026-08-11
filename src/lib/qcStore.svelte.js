@@ -288,6 +288,8 @@ class QCStore {
   #gmmWorst = new Map(); // "v:f:i" -> GMM leave-one-out worst node (computed lazily)
   #gmmWorstFeat = new Map(); // "v:f:i" -> GMM most-improbable feature NAME (computed lazily)
   #anomalyAttr = new Map(); // "v:f:i" -> { node, dir, feature } for the anomaly's dominant feature (lazy)
+  #blameCache = new Map();  // "v:f:i" -> instanceBlame(); valid for ONE rev (see instanceBlame)
+  #blameRev = -1;
   #chiralityScores = new Map(); // "v:f:i" -> L/R-flip [0,1] score
   #chiralityWorst = new Map(); // "v:f:i" -> a node from a wrong pair, -1 if none
   #frameChir = new Map(); // "v:f" -> max chirality score
@@ -684,34 +686,153 @@ class QCStore {
     return this.#gmmScores.get(`${this.#fkey(item)}:${instIdx}`) ?? null;
   }
   /** Is this instance flagged by any enabled score-based check (anomaly OR GMM)? */
-  instanceFlagged(item, instIdx) {
+  /**
+   * THE one answer to "what does the flag say is wrong with this instance" — which check is speaking
+   * and the exact shape it names. Every red mark on the canvas comes from here.
+   *
+   * It exists because the four mark resolvers used to ask different, narrower questions. Each was
+   * gated on its own check, and the geometric FEATURE checks (max_angle, max_edge, curvature,
+   * visibility_pattern ...) appeared in none of them: their shapes were only reachable through the
+   * anomaly detector's own top-feature verdict, so a frame flagged by `max_angle` alone drew nothing
+   * at all. Same root cause as review mode framing the whole scene — frameWorstInstance knew about
+   * five checks out of thirteen.
+   *
+   * Precedence is most-specific-first: a structural verdict (chirality, ordering, split) names a
+   * shape the aggregate scorers can only approximate, so it wins; an explicit feature check beats the
+   * anomaly aggregate because the user asked for that feature by name; the frame-level checks come
+   * last because they are the least localized.
+   *
+   * -> { check, feature, kind: "edge"|"angle"|"node"|"instance"|null, nodes, node, variant, dir }
+   */
+  /** The per-feature |z| this instance scored, as the feature CHECKS see it — the ranking behind
+   *  frameWorstInstance, exposed so it can be asserted rather than inferred. */
+  instanceFeatureZ(item, instIdx) {
     this.rev;
-    if (!item) return false;
-    const key = `${this.#fkey(item)}:${instIdx}`;
-    if (this.checks.anomaly) {
-      const a = this.#instanceScores.get(key);
-      if (a != null && a >= this.threshold) return true;
-    }
-    if (this.checks.gmm) {
-      const g = this.#gmmScores.get(key);
-      if (g != null && g >= this.gmmThreshold) return true;
-    }
+    if (!item || instIdx < 0) return null;
+    return this.#instFeatureZ.get(`${this.#fkey(item)}:${instIdx}`) ?? null;
+  }
+
+  instanceBlame(item, instIdx) {
+    this.rev;
+    const none = { check: null, feature: null, kind: null, nodes: null, node: -1, variant: null, dir: 0 };
+    if (!item || instIdx < 0) return none;
+    const fk = this.#fkey(item);
+    const key = `${fk}:${instIdx}`;
+    // Thresholds decide WHICH check speaks, and moving one bumps rev without re-running — so unlike
+    // #anomalyAttr (a property of the fit alone) this cache cannot outlive a rev.
+    if (this.#blameRev !== this.rev) { this.#blameCache.clear(); this.#blameRev = this.rev; }
+    const cached = this.#blameCache.get(key);
+    if (cached) return cached;
+    const out = (o) => { const r = { ...none, ...o }; this.#blameCache.set(key, r); return r; };
+    const pose = () => item.lf?.instances?.[instIdx]?.numpy?.({ invisibleAsNaN: true });
+
+    // 1-3. structural verdicts: they know the exact nodes, so nothing downstream improves on them
     if (this.checks.chirality) {
-      const s = this.#chiralityScores.get(key);
-      if (s != null && s >= this.chiralityThreshold) return true;
+      const sc = this.#chiralityScores.get(key);
+      if (sc != null && sc >= this.chiralityThreshold) {
+        const n = this.#chiralityWorst.get(key) ?? -1;
+        const partner = this.#symmetricPartner(n);
+        return out(n >= 0 && partner >= 0
+          ? { check: "chirality", kind: "edge", nodes: [n, partner], node: n }
+          : { check: "chirality", kind: n >= 0 ? "node" : null, nodes: n >= 0 ? [n] : null, node: n });
+      }
     }
     if (this.checks.ordering) {
-      const s = this.#orderingScores.get(key);
-      if (s != null && s >= this.orderingThreshold) return true;
+      const sc = this.#orderingScores.get(key);
+      if (sc != null && sc >= this.orderingThreshold) {
+        const n = this.#orderingWorst.get(key) ?? -1;
+        return out({ check: "ordering", kind: n >= 0 ? "node" : null, nodes: n >= 0 ? [n] : null, node: n });
+      }
     }
     if (this.checks.poseSplit) {
-      const s = this.#poseSplitScores.get(key);
-      if (s != null && s >= this.poseSplitThreshold) return true;
+      const sc = this.#poseSplitScores.get(key);
+      if (sc != null && sc >= this.poseSplitThreshold) {
+        const bridge = this.#poseSplitBridge.get(key) ?? null;
+        const n = this.#poseSplitWorst.get(key) ?? -1;
+        return out(bridge
+          ? { check: "poseSplit", kind: "edge", nodes: [...bridge], node: bridge[0] }
+          : { check: "poseSplit", kind: n >= 0 ? "node" : null, nodes: n >= 0 ? [n] : null, node: n });
+      }
     }
+
+    // 4. the feature checks the user turned on BY NAME. Worst z wins among those that fire.
     const zs = this.#instFeatureZ.get(key);
-    if (zs) for (const f of this.featureChecks) if (f.on && (zs[f.feature] ?? -1) >= f.threshold) return true;
-    if (this.#appInstFaultyNode(item, instIdx) >= 0) return true; // per-keypoint appearance check flagged it
-    return false;
+    if (zs) {
+      let bestF = null, bestZ = -Infinity;
+      for (const f of this.featureChecks) {
+        if (!f.on) continue;
+        const z = zs[f.feature] ?? -1;
+        if (z >= f.threshold && z > bestZ) { bestZ = z; bestF = f.feature; }
+      }
+      if (bestF) {
+        const sh = this.#shapeForFeature(pose(), bestF, this.#contributions.get(key));
+        if (sh) return out({ check: `feat:${bestF}`, ...sh });
+        return out({ check: `feat:${bestF}`, feature: bestF, kind: "instance" });
+      }
+    }
+
+    // 5-6. the aggregate scorers, which name a feature and therefore a shape
+    if (this.checks.anomaly) {
+      const a = this.#instanceScores.get(key);
+      if (a != null && a >= this.threshold) {
+        const at = this.#anomalyAttribution(item, instIdx);
+        const kind = at.kind ?? (at.nodes?.length ? "node" : "instance");
+        return out({ check: "anomaly", ...at, kind, node: at.node ?? -1 });
+      }
+    }
+    if (this.#gmmFlagged(key)) {
+      const feature = this.gmmWorstFeature(item, instIdx);
+      const sh = feature ? this.#shapeForFeature(pose(), feature, this.#contributions.get(key)) : null;
+      if (sh) return out({ check: "gmm", ...sh });
+      const n = this.gmmWorstNode(item, instIdx);
+      return out({ check: "gmm", feature, kind: n >= 0 ? "node" : "instance", nodes: n >= 0 ? [n] : null, node: n });
+    }
+
+    // 7. per-keypoint appearance: the check's whole output IS a node
+    const an = this.#appInstFaultyNode(item, instIdx);
+    if (an >= 0) return out({ check: "appearance", kind: "node", nodes: [an], node: an });
+
+    // 8. the frame-level checks, which DO name an instance (and sometimes a node) on the frame
+    //    record — they were simply never read here, so their frames drew nothing and review had
+    //    nothing to zoom to.
+    const fq = this.frameQC(item); // NOT #frameResults: the is* flags are derived against the live
+    if (fq) {                        // thresholds here, and the raw record does not carry them
+      if (fq.isOutOfFrame) {
+        const nodes = fq.byInstance?.[instIdx] ?? [];
+        if (nodes.length) return out({ check: "outOfFrame", kind: "node", nodes: [...nodes], node: nodes[0] });
+      }
+      if (fq.isLowConf) {
+        // "min" blames the instance holding the single weakest keypoint, and can name it. "avg"
+        // blames the instance with the worst MEAN confidence, where no one keypoint is the culprit.
+        const avg = this.confidenceMode === "avg";
+        const who = avg ? fq.avgConfInstance : fq.lowConfInstance;
+        if (who === instIdx) {
+          const n = avg ? -1 : (fq.lowConfNode ?? -1);
+          return out({ check: "confidence", kind: n >= 0 ? "node" : "instance", nodes: n >= 0 ? [n] : null, node: n });
+        }
+      }
+      if ((fq.duplicatePairs ?? []).some(([a, b]) => a === instIdx || b === instIdx)) {
+        return out({ check: "duplicates", kind: "instance" });
+      }
+      if (fq.isSparse && fq.sparsestInstance === instIdx) {
+        return out({ check: "sparse", kind: "instance" });
+      }
+      if (fq.isLowInstConf && fq.lowInstance === instIdx) {
+        return out({ check: "instConfidence", kind: "instance" });
+      }
+    }
+    return out({});
+  }
+
+  /**
+   * Is THIS instance the one a flag is about? Now simply: does any check blame it.
+   *
+   * The list this replaced omitted every frame-level check, so a frame flagged only by low
+   * confidence (or duplicates, or out-of-frame) had no flagged instance — no red box, no mark, and
+   * nothing for review mode to zoom to, even though the frame record named the culprit outright.
+   */
+  instanceFlagged(item, instIdx) {
+    return this.instanceBlame(item, instIdx).check != null;
   }
 
   // Per-keypoint appearance checks (nose trained / per-node live) attribute a fault to a SPECIFIC keypoint;
@@ -805,18 +926,17 @@ class QCStore {
     if (!lf) return [];
     const n = lf.instances.length;
     const out = new Array(n).fill(false);
-    for (let i = 0; i < n; i++) if (this.instanceFlagged(item, i)) out[i] = true; // anomaly/gmm/chirality/ordering/poseSplit
-    const fq = this.#frameResults.get(this.#fkey(item));
-    if (fq) {
-      const c = this.checks;
-      const mark = (i) => { if (i >= 0 && i < n) out[i] = true; };
-      if (c.sparse && fq.minVisibleNodeCount < this.sparseThreshold) mark(fq.sparsestInstance);
-      if (c.confidence && this.#kpConf(fq) < this.confidenceThreshold) mark(this.confidenceMode === "avg" ? fq.avgConfInstance : fq.lowConfInstance);
-      if (c.instConfidence && fq.minInstScore < this.instConfidenceThreshold) mark(fq.lowInstance);
-      if (c.negative && fq.isNegativeWithInstances) out.fill(true); // a negative frame: every instance is spurious
-      if (c.duplicates) for (const d of fq.duplicatePairs ?? []) { mark(d.indexA); mark(d.indexB); }
-      // count (wrong total) has no per-instance attribution -> not boxed
-    }
+    // ONE definition of "flagged", shared with every red mark on the canvas. This used to re-derive
+    // the frame-level checks by hand alongside instanceFlagged, and the copy had drifted: it read
+    // `d.indexA` on duplicate pairs that the detector pushes as ARRAYS, so `mark(undefined)` boxed
+    // nothing and a duplicated animal never showed a box at all. Two answers to one question is what
+    // produced the whole class of bug this replaces.
+    for (let i = 0; i < n; i++) if (this.instanceFlagged(item, i)) out[i] = true;
+    // The one thing instanceBlame deliberately does NOT attribute: on a negative-anchor frame every
+    // instance is spurious, so no single one is to blame and all of them are boxed.
+    const fq = this.frameQC(item);
+    if (fq?.isNegativeWithInstances) out.fill(true);
+    // count (wrong total) has no per-instance attribution -> not boxed
     return out;
   }
   #gmmFlagged(key) {
@@ -903,6 +1023,44 @@ class QCStore {
    * 0 when not directional). Lazy + cached per instance. `node` is -1 for whole-instance
    * features (area z-scores still carry a `dir` for the verbal verdict, just no node).
    */
+  /**
+   * The SHAPE a geometric feature blames, for one pose: an edge, an angle, a node (and which way it
+   * is wrong), or nothing. Split out of #anomalyAttribution because the shape is a property of the
+   * FEATURE, not of the check that happened to notice it — max_angle names the same joint whether
+   * the anomaly detector, a feature check, or the GMM is the one speaking. Keeping it inside the
+   * anomaly path is exactly why a frame flagged only by `max_angle` drew no red at all.
+   */
+  #shapeForFeature(pose, feature, contributions = null) {
+    const fx = this.#computed.anomaly?.fx;
+    if (!fx?.baseline || !pose || !feature) return null;
+    if (feature === "visibility_pattern_score") {
+      // lives on the co-visibility model, not the baseline extractor. `variant` says whether the
+      // node is anomalous by being ABSENT or by being PRESENT — opposite problems, and the ring
+      // has to look different or the user cannot tell which they are being shown.
+      const v = fx.visibility?.worstNodeDetail(visibilityMask(pose)) ?? { node: -1, kind: null };
+      return { node: v.node, nodes: v.node >= 0 ? [v.node] : null, kind: "node", variant: v.kind, dir: 0, feature };
+    }
+    if (feature === "max_curvature" || feature === "curvature_std") {
+      // a V3 feature: the culprit is a bend, and only the detector knows the skeleton's chains
+      const a = fx.attributeCurvature?.(pose);
+      return { node: a?.nodes?.[0] ?? -1, nodes: a?.nodes ?? null, kind: a?.kind ?? null, dir: a?.dir ?? 0, feature };
+    }
+    if (feature === "bbox_area_zscore" || feature === "hull_area_zscore" || feature === "hull_compactness"
+        || feature === "nn_distance" || feature === "visibility_rate") {
+      // whole-instance features: no node is more to blame than any other, so the mark is the
+      // instance box itself. Saying so beats ringing an arbitrary node.
+      return { node: -1, nodes: null, kind: "instance", dir: Math.sign(contributions?.[feature] ?? 0), feature };
+    }
+    const a = fx.baseline.attribute(pose)[feature];
+    if (!a) return null;
+    const nodes = a.nodes ?? null;
+    // attribute() declares a kind only when the shape is NOT a plain node — an edge or an angle. A
+    // bare `{ nodes: [n] }` means "this node"; leaving kind null there is what made
+    // max_centroid_distance (and any anomaly verdict that landed on it) draw nothing.
+    return { node: nodes?.[0] ?? -1, nodes, kind: a.kind ?? (nodes?.length ? "node" : "instance"),
+             dir: a.dir ?? 0, feature };
+  }
+
   #anomalyAttribution(item, instIdx) {
     const empty = { node: -1, dir: 0, feature: null };
     if (!item || !this.checks.anomaly) return empty;
@@ -914,25 +1072,7 @@ class QCStore {
     if (fx?.baseline && contributions) {
       const { feature } = topIssue(contributions);
       const pose = item.lf?.instances?.[instIdx]?.numpy?.({ invisibleAsNaN: true });
-      if (feature && pose) {
-        if (feature === "visibility_pattern_score") {
-          // lives on the co-visibility model, not the baseline extractor. `variant` says whether the
-          // node is anomalous by being ABSENT or by being PRESENT — opposite problems, and the ring
-          // has to look different or the user cannot tell which they are being shown.
-          const v = fx.visibility?.worstNodeDetail(visibilityMask(pose)) ?? { node: -1, kind: null };
-          res = { node: v.node, nodes: v.node >= 0 ? [v.node] : null, kind: "node", variant: v.kind, dir: 0, feature };
-        } else if (feature === "max_curvature") {
-          // a V3 feature: the culprit is a bend, and only the detector knows the skeleton's chains
-          const a = fx.attributeCurvature?.(pose);
-          res = { node: a?.nodes?.[0] ?? -1, nodes: a?.nodes ?? null, kind: a?.kind ?? null, dir: a?.dir ?? 0, feature };
-        } else if (feature === "bbox_area_zscore" || feature === "hull_area_zscore") {
-          // whole-instance, but the contribution is a signed z -> a direction with no node
-          res = { node: -1, dir: Math.sign(contributions[feature] ?? 0), feature };
-        } else {
-          const a = fx.baseline.attribute(pose)[feature];
-          res = { node: a?.nodes?.[0] ?? -1, nodes: a?.nodes ?? null, kind: a?.kind ?? null, dir: a?.dir ?? 0, feature };
-        }
-      }
+      if (feature && pose) res = this.#shapeForFeature(pose, feature, contributions) ?? empty;
     }
     this.#anomalyAttr.set(key, res);
     return res;
@@ -942,42 +1082,9 @@ class QCStore {
    * chirality's wrong-pair node, else the anomaly's dominant-feature culprit node, else the
    * GMM's own leave-one-out node.
    */
+  /** The node to ring, or -1. One line, because every check now answers through instanceBlame. */
   faultyNodeFor(item, instIdx) {
-    this.rev;
-    if (!item) return -1;
-    const key = `${this.#fkey(item)}:${instIdx}`;
-    if (this.checks.chirality) {
-      const s = this.#chiralityScores.get(key);
-      if (s != null && s >= this.chiralityThreshold) {
-        const n = this.#chiralityWorst.get(key) ?? -1;
-        if (n >= 0) return n;
-      }
-    }
-    if (this.checks.ordering) {
-      const s = this.#orderingScores.get(key);
-      if (s != null && s >= this.orderingThreshold) {
-        const n = this.#orderingWorst.get(key) ?? -1;
-        if (n >= 0) return n;
-      }
-    }
-    if (this.checks.poseSplit) {
-      const s = this.#poseSplitScores.get(key);
-      if (s != null && s >= this.poseSplitThreshold) {
-        const n = this.#poseSplitWorst.get(key) ?? -1;
-        if (n >= 0) return n;
-      }
-    }
-    if (this.checks.anomaly) {
-      const a = this.#instanceScores.get(key);
-      if (a != null && a >= this.threshold) {
-        const n = this.anomalyWorstNode(item, instIdx);
-        if (n >= 0) return n;
-      }
-    }
-    if (this.#gmmFlagged(key)) return this.gmmWorstNode(item, instIdx);
-    const an = this.#appInstFaultyNode(item, instIdx); // per-keypoint appearance check → ring that keypoint
-    if (an >= 0) return an;
-    return -1;
+    return this.instanceBlame(item, instIdx).node;
   }
   /** The other node in `n`'s symmetric L/R pair (from the fitted chirality model), or -1. */
   #symmetricPartner(n) {
@@ -999,71 +1106,24 @@ class QCStore {
    * Only the anomaly check produces angles; chirality / ordering / pose-split are edge- or
    * node-shaped and keep their existing precedence, so this returns null while one of them dominates.
    */
+  /** Vertex-first [v, armA, armB] of a flagged ANGLE (a deviant joint, a bend along the body), else null. */
   faultyAngleFor(item, instIdx) {
-    this.rev;
-    if (!item) return null;
-    const key = `${this.#fkey(item)}:${instIdx}`;
-    if (this.checks.chirality) {
-      const s = this.#chiralityScores.get(key);
-      if (s != null && s >= this.chiralityThreshold) return null;
-    }
-    if (this.checks.ordering) {
-      const s = this.#orderingScores.get(key);
-      if (s != null && s >= this.orderingThreshold) return null;
-    }
-    if (this.checks.poseSplit) {
-      const s = this.#poseSplitScores.get(key);
-      if (s != null && s >= this.poseSplitThreshold) return null;
-    }
-    if (!this.checks.anomaly) return null;
-    const a = this.#instanceScores.get(key);
-    if (a == null || a < this.threshold) return null;
-    const at = this.#anomalyAttribution(item, instIdx);
-    return at.kind === "angle" && at.nodes?.length === 3 ? [...at.nodes] : null;
+    const b = this.instanceBlame(item, instIdx);
+    return b.kind === "angle" && b.nodes?.length === 3 ? [...b.nodes] : null;
   }
 
   /** How the faulty NODE is anomalous, when the check distinguishes cases: "absent" (expected but
    *  not labelled) or "present" (labelled but almost never co-occurs with its peers). Null when the
    *  dominant flag carries no such distinction. Drives the ring style, not the ring's position. */
+  /** "absent" | "present" — which WAY a visibility-flagged node is wrong, so the mark can differ. */
   faultyNodeVariantFor(item, instIdx) {
-    this.rev;
-    if (!item || !this.checks.anomaly) return null;
-    const key = `${this.#fkey(item)}:${instIdx}`;
-    const a = this.#instanceScores.get(key);
-    if (a == null || a < this.threshold) return null;
-    return this.#anomalyAttribution(item, instIdx).variant ?? null;
+    return this.instanceBlame(item, instIdx).variant ?? null;
   }
 
+  /** The two endpoints of a flagged EDGE (bone too long, L/R pair swapped, chimera bridge), or null. */
   faultyEdgeFor(item, instIdx) {
-    this.rev;
-    if (!item) return null;
-    const key = `${this.#fkey(item)}:${instIdx}`;
-    if (this.checks.chirality) {
-      const s = this.#chiralityScores.get(key);
-      if (s != null && s >= this.chiralityThreshold) {
-        const n = this.#chiralityWorst.get(key) ?? -1;
-        const p = this.#symmetricPartner(n);
-        return n >= 0 && p >= 0 ? [n, p] : null; // chirality dominant: the L/R pair, or nothing
-      }
-    }
-    if (this.checks.ordering) {
-      const s = this.#orderingScores.get(key);
-      if (s != null && s >= this.orderingThreshold) return null; // ordering dominant -> node ring
-    }
-    if (this.checks.poseSplit) {
-      const s = this.#poseSplitScores.get(key);
-      if (s != null && s >= this.poseSplitThreshold) return this.#poseSplitBridge.get(key) ?? null;
-    }
-    if (this.checks.anomaly) {
-      const a = this.#instanceScores.get(key);
-      if (a != null && a >= this.threshold) {
-        // Read the declared kind rather than guessing from length: an angle also carries several
-        // nodes, and treating it as an edge drew a bone between the two arms that does not exist.
-        const a = this.#anomalyAttribution(item, instIdx);
-        return a.kind === "edge" && a.nodes?.length === 2 ? [a.nodes[0], a.nodes[1]] : null;
-      }
-    }
-    return null; // GMM or none -> node ring
+    const b = this.instanceBlame(item, instIdx);
+    return b.kind === "edge" && b.nodes?.length === 2 ? [b.nodes[0], b.nodes[1]] : null;
   }
 
   seekFlagged(from, dir = 1) {
@@ -1513,41 +1573,50 @@ class QCStore {
    * The instance most responsible for this frame being flagged — the one furthest over its
    * threshold across the enabled score-checks (live, so it tracks the threshold sliders).
    */
+  /**
+   * Which instance on this frame the review should go to: the one a check most strongly blames.
+   *
+   * Ranking is FLAGGED-FIRST, then by relative margin. Two reasons it is not the old raw
+   * `score - threshold`: that ranked an unflagged instance above a flagged one whenever the
+   * unflagged one sat closer to its cutoff, and it mixed scales — anomaly/GMM/chirality live on
+   * 0..1 while a feature z runs to 20, so adding the feature checks to a raw-margin comparison would
+   * have let them win every tie by construction. Dividing by the threshold makes the margins
+   * comparable: "40% past its cutoff" means the same thing for all of them.
+   *
+   * The old version only consulted five checks. A frame flagged by max_angle, low confidence,
+   * duplicates, out-of-frame, sparse or an appearance check returned -1 — which is why review mode
+   * fell back to framing the whole scene instead of zooming to the culprit.
+   */
   frameWorstInstance(item) {
     this.rev;
     if (!item) return -1;
     const fk = this.#fkey(item);
     const insts = item.lf?.instances ?? [];
-    let best = -1;
-    let bestMargin = -Infinity;
+    let best = -1, bestFlagged = false, bestMargin = -Infinity;
     for (let i = 0; i < insts.length; i++) {
       const key = `${fk}:${i}`;
+      const flagged = this.instanceBlame(item, i).check != null;
       let margin = -Infinity;
-      if (this.checks.anomaly) {
-        const a = this.#instanceScores.get(key);
-        if (a != null) margin = Math.max(margin, a - this.threshold);
-      }
-      if (this.checks.gmm) {
-        const g = this.#gmmScores.get(key);
-        if (g != null) margin = Math.max(margin, g - this.gmmThreshold);
-      }
-      if (this.checks.chirality) {
-        const s = this.#chiralityScores.get(key);
-        if (s != null) margin = Math.max(margin, s - this.chiralityThreshold);
-      }
-      if (this.checks.ordering) {
-        const s = this.#orderingScores.get(key);
-        if (s != null) margin = Math.max(margin, s - this.orderingThreshold);
-      }
-      if (this.checks.poseSplit) {
-        const s = this.#poseSplitScores.get(key);
-        if (s != null) margin = Math.max(margin, s - this.poseSplitThreshold);
-      }
-      if (margin > bestMargin) {
-        bestMargin = margin;
-        best = i;
+      const rel = (score, thr) => {
+        if (score == null) return;
+        const m = (score - thr) / Math.max(Math.abs(thr), 1e-6);
+        if (m > margin) margin = m;
+      };
+      if (this.checks.anomaly) rel(this.#instanceScores.get(key), this.threshold);
+      if (this.checks.gmm) rel(this.#gmmScores.get(key), this.gmmThreshold);
+      if (this.checks.chirality) rel(this.#chiralityScores.get(key), this.chiralityThreshold);
+      if (this.checks.ordering) rel(this.#orderingScores.get(key), this.orderingThreshold);
+      if (this.checks.poseSplit) rel(this.#poseSplitScores.get(key), this.poseSplitThreshold);
+      const zs = this.#instFeatureZ.get(key);
+      if (zs) for (const f of this.featureChecks) if (f.on) rel(zs[f.feature], f.threshold);
+      // A frame-level check names its instance without giving it a score, so it has no margin at all
+      // — and it does not need one: the flagged/unflagged split below already puts it ahead of every
+      // animal nothing flagged, which is the only comparison that matters for "where do I look".
+      if (flagged !== bestFlagged ? flagged : margin > bestMargin) {
+        bestFlagged = flagged; bestMargin = margin; best = i;
       }
     }
+    return best;
     return best;
   }
 
@@ -1625,6 +1694,7 @@ class QCStore {
     frameMax(this.#poseSplitScores, this.#framePoseSplit);
     this.#gmmWorst = new Map(); // lazy leave-one-out cache — invalidated whenever results change
     this.#gmmWorstFeat = new Map(); // lazy GMM worst-feature cache — same invalidation
+    this.#blameCache = new Map();  // every mark on the canvas reads through this — see instanceBlame
     this.#anomalyAttr = new Map(); // lazy anomaly-attribution cache — same invalidation
     this.#deriveFeatureChecks(); // per-feature |z| maps for the user feature-checks
   }
@@ -1648,6 +1718,7 @@ class QCStore {
     this.#gmmWorst.delete(key); // attribution is per-instance — only the edited one is stale
     this.#gmmWorstFeat.delete(key);
     this.#anomalyAttr.delete(key);
+    this.#blameCache.delete(key); // the edited instance's mark must be recomputed, not redrawn
     if (this.featureCheckActive) this.#deriveFeatureChecks(); // feature-z maps are global; only when custom checks exist
   }
 
