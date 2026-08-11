@@ -21,8 +21,13 @@ const coi = {
 // special-case for the server; we only nudge dep-optimization for the wasm/large deps.
 export default defineConfig({
   plugins: [svelte()],
-  server: { headers: coi },
-  preview: { headers: coi },
+  // PIN the dev port. The embedding cache lives in IndexedDB, which is keyed by ORIGIN — a run on
+  // :5173 is invisible to the same app on :5174. Vite silently increments when the port is taken,
+  // which turns "another dev server was already running" into "my half-hour embedding run
+  // disappeared". Refusing to start is the better failure: it names the real problem at the moment
+  // it happens, instead of as an empty cache twenty minutes later.
+  server: { headers: coi, port: 5173, strictPort: true },
+  preview: { headers: coi, port: 5173, strictPort: true },
   worker: {
     format: "es", // the DINO embed worker dynamic-imports transformers.js from the CDN — needs ESM output
   },
