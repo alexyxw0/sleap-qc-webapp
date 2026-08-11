@@ -471,3 +471,57 @@ describe("AnomalyDINO scorer", () => {
     expect(sig).toContain("this.scorer");
   });
 });
+
+// Choosing an unsupervised scorer settles the BASELINE, not the question. A trained boundary is a
+// per-keypoint override on top of whichever baseline is running — they compose, and picking
+// AnomalyDINO must not close the supervised route or discard a model already fitted.
+describe("unsupervised baseline + supervised override compose", () => {
+  const label = async () => {
+    const { keypointLabels } = await import("./keypointLabels.svelte.js");
+    keypointLabels.clear();
+    for (let f = 0; f < 6; f++) for (let ii = 0; ii < 2; ii++) keypointLabels.markAt(`0:${f}`, ii, "nose", ii === 0);
+    return keypointLabels;
+  };
+
+  it("an SVM fitted under AnomalyDINO overrides ONLY its keypoint", async () => {
+    const st = new NodeEmbeddingStore("dino");
+    await st.run();
+    await st.setScorer("anomalyDino");
+    expect([0, 1, 2].map((n) => st.scoringOf(n))).toEqual(["anomalyDino", "anomalyDino", "anomalyDino"]);
+
+    const kl = await label();
+    st.applyTrainedModel(0, st.trainFor(0).clf);
+    expect(st.scoringOf(0), "the trained keypoint").toBe("svm");
+    expect([1, 2].map((n) => st.scoringOf(n)), "every other keypoint keeps the baseline")
+      .toEqual(["anomalyDino", "anomalyDino"]);
+    kl.clear();
+  });
+
+  it("switching the baseline afterwards keeps the trained keypoint trained", async () => {
+    const st = new NodeEmbeddingStore("dino");
+    await st.run();
+    await st.setScorer("anomalyDino");
+    const kl = await label();
+    st.applyTrainedModel(0, st.trainFor(0).clf);
+    const trainedZ = st.pointsForNode(0).map((p) => p.z);
+
+    await st.setScorer("knn");                       // change the baseline under it
+    expect(st.scoringOf(0), "the model was thrown away by a baseline switch").toBe("svm");
+    expect(st.pointsForNode(0).map((p) => p.z), "its scores drifted").toEqual(trainedZ);
+    expect(st.scoringOf(1)).toBe("knn");             // ...and the rest followed the new baseline
+    kl.clear();
+  });
+
+  it("few-shot layers over AnomalyDINO, not only over kNN", async () => {
+    const st = new NodeEmbeddingStore("dino");
+    await st.run();
+    await st.setScorer("anomalyDino");
+    const kl = await label();
+    const before = st.pointsForNode(0).map((p) => p.z);
+    const info = st.applyFewShot(0, 0.5);
+    expect(info, "few-shot refused to blend over the AnomalyDINO baseline").toBeTruthy();
+    expect(st.scoringOf(0)).toBe("fewshot");
+    expect(st.pointsForNode(0).map((p) => p.z)).not.toEqual(before);
+    kl.clear();
+  });
+});

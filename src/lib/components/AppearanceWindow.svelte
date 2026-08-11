@@ -43,6 +43,17 @@
   // did nothing, or an upload that silently failed, is the failure mode this whole flow exists to remove.
   // The keypoint picker lives IN the question now. Scoring is chosen per keypoint, so sending the user
   // down to the results graph to pick one and back up to answer split one decision across two places.
+  /** Keypoints already carrying a trained override — proof, in the pane, that a supervised layer and
+   *  an unsupervised baseline coexist rather than replacing each other. */
+  const trainedNodes = $derived.by(() => {
+    void es?.resultRev;
+    const names = store.skeleton?.nodeNames ?? [];
+    return (es?.nodeStats ?? [])
+      .map((n) => n.node)
+      .filter((ni) => es?.scoringOf?.(ni) === "svm" || es?.scoringOf?.(ni) === "fewshot")
+      .map((ni) => names[ni] ?? `node ${ni}`);
+  });
+
   const nodeChips = $derived.by(() => {
     void es?.resultRev;
     if (!es?.hasResults) return [];
@@ -517,11 +528,26 @@
                   <label class="s-req"><input type="checkbox" bind:checked={es.requirePatches} /> re-embed those on the next run</label>
                 </p>
               {/if}
-              <button class="back" onclick={() => appRun.unaskScore()}>‹ use a different technique</button>
+              <!-- Choosing an unsupervised scorer settles the BASELINE, not the question. A trained
+                   boundary is a per-keypoint override on top of it, so it stays one click away rather
+                   than something you reach by backing out and re-answering. -->
+              <p class="s-add">
+                Scoring every keypoint. You can still fit a boundary on top for individual keypoints —
+                {ad ? "AnomalyDINO" : "kNN"} stays the baseline for the rest.
+                {#if trainedNodes.length}<br /><span class="dim">already trained: {trainedNodes.join(", ")}</span>{/if}
+              </p>
+              <div class="s-row">
+                <button class="sopt-sm" onclick={() => appRun.setScoreChoice("svm")}>+ add a trained boundary (SVM)</button>
+                <button class="back" onclick={() => appRun.unaskScore()}>‹ use a different technique</button>
+              </div>
 
             <!-- Q2 ------------------------------------------------------------------------------ -->
             {:else if !appRun.svmSource}
               <p class="s-q">Where does the boundary come from?</p>
+              <p class="s-note dim">
+                This overrides <b>{nodeName}</b> only. Every other keypoint keeps
+                {es.scorer === "anomalyDino" ? "AnomalyDINO" : "kNN"}, and so does this one if you remove the model.
+              </p>
               <div class="s-opts">
                 <button class="sopt" onclick={() => appRun.setSvmSource("upload")}>
                   <span class="so-t">Upload a fitted model</span>
@@ -574,7 +600,7 @@
                     {t.n ? "keep labelling" : "open proofreader"}
                   </button>
                 </li>
-                <li class:done={scoredMode !== "knn"} class:locked={!t.pos}>
+                <li class:done={scoredMode === "svm"} class:locked={!t.pos}>
                   <span class="fs-n">2</span>
                   <span class="fs-b">
                     <b>Fit.</b>
@@ -877,6 +903,30 @@
     display: block;
     margin-top: 0.35rem;
     color: var(--accent);
+  }
+  .s-add {
+    margin: 0.5rem 0 0.4rem;
+    font-size: 0.78rem;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+  .s-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+  }
+  .sopt-sm {
+    padding: 0.3rem 0.6rem;
+    border: 1px solid var(--accent);
+    border-radius: 5px;
+    background: transparent;
+    color: var(--accent);
+    font-size: 0.76rem;
+    cursor: pointer;
+  }
+  .sopt-sm:hover {
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
   }
   .s-req {
     display: flex;

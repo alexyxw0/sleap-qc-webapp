@@ -600,6 +600,33 @@ describe("the bundle route hands off to its own question", () => {
 
 // The nav's back button must be wired to the one-step walker, not to the fork jump. The behaviour
 // itself is in appearanceRun.test.js, where the store can actually be driven.
+// Picking an unsupervised scorer settles the BASELINE; a trained boundary layers on top of it per
+// keypoint. The UI has to say so, and — the bug — must not report the supervised route as already
+// finished just because the baseline is no longer kNN.
+describe("unsupervised and supervised compose", () => {
+  const win = () => read("src/lib/components/AppearanceWindow.svelte");
+
+  it('the Fit step is done only when an SVM was FITTED, not whenever the scorer is not kNN', () => {
+    const w = win();
+    // `scoredMode !== "knn"` was true the moment a third unsupervised scorer existed, so choosing
+    // AnomalyDINO ticked Fit as complete and the supervised route read as closed.
+    expect(w, "the Fit step still keys off 'not kNN'").not.toMatch(/class:done=\{scoredMode !== "knn"\}/);
+    expect(w).toContain('class:done={scoredMode === "svm"}');
+  });
+
+  it("the unsupervised confirm panel offers the supervised layer directly", () => {
+    const w = win();
+    expect(w).toContain('+ add a trained boundary (SVM)');
+    expect(w).toContain('appRun.setScoreChoice("svm")');
+    // and states that the baseline survives it
+    expect(w).toMatch(/stays the baseline for the rest/);
+  });
+
+  it("the SVM branch says it overrides one keypoint, not the file", () => {
+    expect(win()).toMatch(/overrides <b>\{nodeName\}<\/b> only/);
+  });
+});
+
 describe("the flow nav goes back one step", () => {
   it("is wired to back(), not clearRoute()", () => {
     const w = read("src/lib/components/AppearanceWindow.svelte");
