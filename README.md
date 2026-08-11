@@ -112,6 +112,14 @@ mutating the sleap-io.js model in place and bumping `store.rev`. The canvas spli
 image-fetch from overlay-draw into two `$effect`s so dragging redraws the overlay without
 re-decoding the frame. `EditToolbar` / `SkeletonEditor` are the new components.
 
+## Documentation
+
+- [`docs/METHODS.md`](docs/METHODS.md) — what was built on top of the baseline detector: the DINOv2
+  appearance stack (kNN / RBF-SVM / few-shot / AnomalyDINO), attribution, and the measured results.
+- [`docs/UI.md`](docs/UI.md) — interface design and implementation: review mode, the appearance
+  workflow, performance, and how the UI is tested.
+- [`src/lib/qc/CHECKS.md`](src/lib/qc/CHECKS.md) — the baseline `sleap.qc` port, check by check.
+
 ## QC checks
 
 A JS port of the `sleap.qc` detection pipeline (`src/lib/qc/checks/`) is wired into the UI:
