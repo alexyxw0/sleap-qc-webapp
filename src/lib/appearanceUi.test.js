@@ -396,6 +396,24 @@ describe("the question is the pane, and it can arm the check itself", () => {
     expect(w.indexOf('appRun.tab === "score"')).toBeLessThan(w.indexOf("1 — WHAT TO EMBED"));
   });
 
+  it("no answer to the technique question is ever un-pickable", () => {
+    // AnomalyDINO was rendered `disabled` when the run carried no patch features — which is exactly
+    // the state a warm cache from before patch features puts you in. The only way to GET them is the
+    // recompute toggle, and that lives in the panel behind this button: a locked door whose key is
+    // inside the room. Answering a question is always allowed; cost is explained after.
+    const q1 = w.slice(w.indexOf("Which detection technique"), w.indexOf('setScoreChoice("svm")'));
+    expect(q1).toContain('setScoreChoice("anomalyDino")');
+    expect(q1, "an option in the technique fork was disabled").not.toMatch(/<button[^>]*\bdisabled=/);
+  });
+
+  it("the zero-patch-features state names itself and offers the recompute", () => {
+    // Distinct from a PARTIAL shortfall: with none at all, every group silently falls back to kNN,
+    // so the panel must say that rather than imply AnomalyDINO is running.
+    expect(w).toContain("No patch features in this run");
+    expect(w).toContain("recompute them on the next run");
+    expect(w).toContain("bind:checked={es.requirePatches}");
+  });
+
   it("picking the keypoint happens in the question, not in the graph below it", () => {
     expect(w).toContain('<span class="kp-l">Keypoint</span>');
     expect(w).toContain("(es.selectedNode = ch.node)");

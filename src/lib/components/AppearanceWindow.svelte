@@ -466,14 +466,15 @@
                   <span class="so-t">kNN · unsupervised</span>
                   <span class="so-d">Each patch against the k most similar patches of this keypoint elsewhere in the file. No labels, already applied — choose this to keep it.</span>
                 </button>
-                <button class="sopt" disabled={!es.canAnomalyDino} onclick={() => appRun.setScoreChoice("anomalyDino")}>
+                <button class="sopt" onclick={() => appRun.setScoreChoice("anomalyDino")}>
                   <span class="so-t">AnomalyDINO · unsupervised, patch-level</span>
                   <span class="so-d">
                     Same embeddings, read differently: the patch's own DINOv2 <i>patch tokens</i> against a memory
                     bank of normal ones, scored by its worst quarter. Catches a keypoint that is only <i>locally</i>
                     wrong — where kNN sees one averaged vector that still looks like a {nodeName}.
-                    {#if !es.canAnomalyDino}<b>This run kept no patch features — re-run to compute them.</b>
-                    {:else}No labels, and no re-embedding: it re-scores what is already here.{/if}
+                    {#if es.canAnomalyDino}No labels, and no re-embedding: it re-scores what is already here.
+                    {:else}<b>Needs patch features this run doesn't have</b> — its embeddings were reused from a
+                      cache written before they existed. Pick this to see what recomputing them costs.{/if}
                   </span>
                 </button>
                 <button class="sopt" onclick={() => appRun.setScoreChoice("svm")}>
@@ -495,7 +496,18 @@
               </p>
               <!-- Partial coverage is the one thing that must not be quiet: those patches score 0, i.e.
                    perfectly clean, for a bookkeeping reason and not an appearance one. -->
-              {#if ad && !cov.full}
+              {#if ad && cov.have === 0}
+                <!-- Nothing to score. Say so plainly and price the fix, rather than letting the panel
+                     imply AnomalyDINO is running when every group has quietly fallen back to kNN. -->
+                <p class="s-warn">
+                  <b>No patch features in this run — every keypoint is still scored by kNN.</b>
+                  These embeddings came from a cache written before patch features existed, so there are
+                  no patch tokens to compare. Computing them means embedding
+                  {cov.total.toLocaleString()} patches again.
+                  <label class="s-req"><input type="checkbox" bind:checked={es.requirePatches} /> recompute them on the next run</label>
+                  {#if es.requirePatches}<span class="s-go">Now go back to <b>‹ start</b> and run the pass again.</span>{/if}
+                </p>
+              {:else if ad && !cov.full}
                 <p class="s-warn">
                   {(cov.total - cov.have).toLocaleString()} of {cov.total.toLocaleString()} patches came from a
                   cache written before patch features existed. <b>They score 0 — clean — because nothing is
@@ -858,6 +870,11 @@
     color: #e7c08a;
     font-size: 0.76rem;
     line-height: 1.5;
+  }
+  .s-go {
+    display: block;
+    margin-top: 0.35rem;
+    color: var(--accent);
   }
   .s-req {
     display: flex;
