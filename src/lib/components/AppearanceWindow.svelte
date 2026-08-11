@@ -322,8 +322,10 @@
         </section>
       {:else}
       <nav class="flow">
-        <button class="f-back" onclick={() => appRun.clearRoute()} disabled={busy}
-                title={busy ? "Not while a run is in flight" : "Back to the first question"}>‹ start</button>
+        <!-- One step, not all the way out. The destination is on the button face: backing out of a
+             question should not require pressing it to find out where you land. -->
+        <button class="f-back" onclick={() => appRun.back()} disabled={busy || !appRun.canBack}
+                title={busy ? "Not while a run is in flight" : `Back to ${appRun.backLabel}`}>‹ {appRun.backLabel}</button>
         {#each steps as st, k (st.id)}
           <button class="node" class:on={appRun.tab === st.id} class:done={st.done} class:locked={st.locked}
                   disabled={st.locked || busy} onclick={() => appRun.setTab(st.id)}
