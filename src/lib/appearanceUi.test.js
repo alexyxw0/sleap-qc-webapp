@@ -597,3 +597,15 @@ describe("the bundle route hands off to its own question", () => {
     expect(w).toMatch(/if \(done && !wasDone && appRun\.tab === "compute"[^)]*\) appRun\.setTab\("score"\)/);
   });
 });
+
+// The nav's back button must be wired to the one-step walker, not to the fork jump. The behaviour
+// itself is in appearanceRun.test.js, where the store can actually be driven.
+describe("the flow nav goes back one step", () => {
+  it("is wired to back(), not clearRoute()", () => {
+    const w = read("src/lib/components/AppearanceWindow.svelte");
+    const nav = w.slice(w.indexOf('class="f-back"'), w.indexOf('class="f-back"') + 400);
+    expect(nav).toContain("appRun.back()");
+    expect(nav, "the nav back still jumps to the fork").not.toContain("clearRoute()");
+    expect(nav, "the button does not say where it goes").toContain("appRun.backLabel");
+  });
+});

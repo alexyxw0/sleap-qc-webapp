@@ -104,6 +104,43 @@ class AppearanceRun {
   }
   /** Back to the fork. Clears nothing — the routes are independent and results are never discarded. */
   clearRoute() { this.route = null; }
+
+  /**
+   * ONE step back, undoing the last answer given rather than the whole session.
+   *
+   * The nav offered only "‹ start", so backing out of a sub-question on step 2 threw away the route
+   * and both steps with it. The flow is a stack of answers — route, then step, then question, then
+   * sub-question — so back should pop exactly one, whichever was answered last.
+   *
+   * -> { kind: "unask" | "tab" | "route", to?, label } — `label` names the DESTINATION, so the button
+   * can say where it goes instead of making you find out by pressing it. null at the fork.
+   */
+  get backTarget() {
+    if (this.route === "bundle") {
+      if (this.labelSource) return { kind: "unask", label: "labels" };
+      if (this.adaptChoice) return { kind: "unask", label: "scoring" };
+      if (this.tab === "fewshot") return { kind: "tab", to: "upload", label: "Load bundles" };
+      return { kind: "route", label: "start" };
+    }
+    if (this.route === "compute") {
+      if (this.svmSource) return { kind: "unask", label: "boundary" };
+      if (this.scoreChoice) return { kind: "unask", label: "technique" };
+      if (this.tab === "score") return { kind: "tab", to: "compute", label: "Embed" };
+      return { kind: "route", label: "start" };
+    }
+    return null; // already at the fork — there is nothing behind it
+  }
+  get canBack() { return this.backTarget != null; }
+  /** Short destination name for the button face. */
+  get backLabel() { return this.backTarget?.label ?? ""; }
+
+  back() {
+    const t = this.backTarget;
+    if (!t) return;
+    if (t.kind === "unask") (this.route === "bundle" ? this.unaskAdapt() : this.unaskScore());
+    else if (t.kind === "tab") this.setTab(t.to);
+    else this.clearRoute();
+  }
   /** Jump straight to a pane — the tab's locked-check hints link here. */
   showTab(t) { this.setTab(t); this.open = true; }
 

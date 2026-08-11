@@ -223,3 +223,64 @@ describe("formatting", () => {
     expect(fmtRate(Infinity)).toBe("—");
   });
 });
+
+// The flow is a stack of answers — route, then step, then question, then sub-question. The nav
+// offered only "‹ start", so backing out of a sub-question on step 2 discarded the route and both
+// steps with it. Back must pop exactly ONE, whichever was answered last, and say where it lands.
+describe("one step back", () => {
+  const at = () => [appRun.route, appRun.tab, appRun.scoreChoice, appRun.svmSource];
+
+  beforeEach(() => { appRun.clearRoute(); appRun.scoreChoice = null; appRun.svmSource = null; });
+
+  it("walks the compute route back one answer at a time, in reverse order", () => {
+    appRun.setRoute("compute");
+    appRun.setTab("score");
+    appRun.setScoreChoice("svm");
+    appRun.setSvmSource("upload");
+    expect(at()).toEqual(["compute", "score", "svm", "upload"]);
+
+    appRun.back();                                    // sub-question only
+    expect(at()).toEqual(["compute", "score", "svm", null]);
+    appRun.back();                                    // the technique answer
+    expect(at()).toEqual(["compute", "score", null, null]);
+    appRun.back();                                    // the step
+    expect(at()).toEqual(["compute", "compute", null, null]);
+    appRun.back();                                    // the route
+    expect(appRun.route).toBeNull();
+  });
+
+  it("stops at the fork instead of unwinding into nothing", () => {
+    expect(appRun.route).toBeNull();
+    expect(appRun.canBack).toBe(false);
+    expect(() => appRun.back()).not.toThrow();
+    expect(appRun.route).toBeNull();
+  });
+
+  it("names the destination on every step, so the button is not a guess", () => {
+    appRun.setRoute("compute");
+    expect(appRun.backLabel).toBe("start");
+    appRun.setTab("score");
+    expect(appRun.backLabel).toBe("Embed");
+    appRun.setScoreChoice("svm");
+    expect(appRun.backLabel).toBe("technique");
+    appRun.setSvmSource("fewshot");
+    expect(appRun.backLabel).toBe("boundary");
+  });
+
+  it("walks the bundle route back the same way", () => {
+    appRun.setRoute("bundle");
+    expect([appRun.route, appRun.tab]).toEqual(["bundle", "upload"]);
+    expect(appRun.backLabel).toBe("start");
+    appRun.setTab("fewshot");
+    expect(appRun.backLabel).toBe("Load bundles");
+    appRun.setAdaptChoice("adapt");
+    expect(appRun.backLabel).toBe("scoring");
+    appRun.setLabelSource("csv");
+    expect(appRun.backLabel).toBe("labels");
+
+    appRun.back(); expect(appRun.labelSource).toBeNull();
+    appRun.back(); expect(appRun.adaptChoice).toBeNull();
+    appRun.back(); expect(appRun.tab).toBe("upload");
+    appRun.back(); expect(appRun.route).toBeNull();
+  });
+});
