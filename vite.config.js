@@ -19,6 +19,8 @@ const coi = {
 // Pure client-side SPA. sleap-io.js runs only in the browser (WASM h5wasm via a
 // CDN-loaded Web Worker, WebCodecs for video). No SSR, so there is nothing to
 // special-case for the server; we only nudge dep-optimization for the wasm/large deps.
+const PORT = Number(process.env.PORT) || 5173;
+
 export default defineConfig({
   plugins: [svelte()],
   // PIN the dev port. The embedding cache lives in IndexedDB, which is keyed by ORIGIN — a run on
@@ -26,8 +28,10 @@ export default defineConfig({
   // which turns "another dev server was already running" into "my half-hour embedding run
   // disappeared". Refusing to start is the better failure: it names the real problem at the moment
   // it happens, instead of as an empty cache twenty minutes later.
-  server: { headers: coi, port: 5173, strictPort: true },
-  preview: { headers: coi, port: 5173, strictPort: true },
+  // ...but overridable, because the cache you are looking for may be on a port you used earlier:
+  // `PORT=5179 npm run dev` opens that origin and turns strictPort off for the one-off.
+  server: { headers: coi, port: PORT, strictPort: !process.env.PORT },
+  preview: { headers: coi, port: PORT, strictPort: !process.env.PORT },
   worker: {
     format: "es", // the DINO embed worker dynamic-imports transformers.js from the CDN — needs ESM output
   },
