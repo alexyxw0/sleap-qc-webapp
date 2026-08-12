@@ -52,6 +52,9 @@ class UIStore {
   isBlockOpen(id) { return this.activeBlock === id; }
   /** Click a tab: show it, or clear back to the blank slate if it was already showing. */
   toggleBlock(id) { this.activeBlock = this.activeBlock === id ? null : id; }
+  /** Show a block. Unlike toggleBlock this never closes one — for cross-tab links, where
+   *  "go there" must not mean "leave" on the one occasion you are already there. */
+  openBlock(id) { this.activeBlock = id; }
   collapseAll() { this.activeBlock = null; }
 
   setRailW(w) {

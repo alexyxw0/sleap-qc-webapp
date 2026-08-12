@@ -4,6 +4,7 @@
   import DetectorOverlap from "./DetectorOverlap.svelte";
   import ManualCheckCompare from "./ManualCheckCompare.svelte";
   import { appRun } from "../appearanceRun.svelte.js";
+  import { ui } from "../uiStore.svelte.js";
   import { nodeEmbeddingStores } from "../nodeEmbeddingStore.svelte.js";
   import RunProgress from "./RunProgress.svelte";
 
@@ -20,8 +21,15 @@
   const isGeom = $derived(mode === "geometry");
   const isAppearMode = $derived(mode === "appearance");
   const isAnalysis = $derived(mode === "analysis");
+  // Appearance checks were kept out of the checks tab entirely, so that tab stayed honest about cost:
+  // everything in it scores the instant QC runs. But once a compute pass HAS happened, an appearance
+  // check is just another detector in the flagged union, and the checks tab is where you manage that
+  // set — so hiding it there means the tab no longer shows what is actually running. It appears here
+  // the moment it is ready, and not before: visibleInGroup already drops the not-ready rows, so this
+  // only has to stop excluding the group wholesale (and keep the header from appearing empty).
+  const anyAppearReady = $derived.by(() => { void qc.rev; return APPEARANCE_KEYS.some((k) => qc.checkReady(k)); });
   const groupsFor = $derived(
-    isGeom ? GROUPS.filter((g) => g.id !== "appearance")
+    isGeom ? GROUPS.filter((g) => g.id !== "appearance" || anyAppearReady)
       : isAppearMode ? GROUPS.filter((g) => g.id === "appearance")
         : [],   // analysis shows no detector list — it reports on the run
   );
@@ -528,6 +536,12 @@
             />
           </div>
           {#if groupOpen[g.id]}
+            {#if g.id === "appearance" && isGeom}
+              <p class="grp-note">
+                Computed, so they run like any other check here. Granularity, scoring technique and
+                thresholds live in <button type="button" class="lnk" onclick={() => ui.openBlock("appearance")}>Appearance</button>.
+              </p>
+            {/if}
             {#if g.id === "statistical" && (!qc.hasResults || (qc.hasPredictions && qc.hasUserInstances))}
               <div class="baseline" title="Which instances define the 'normal' reference the Anomaly / GMM outlier checks score against">
                 <span class="bl-lbl">outlier baseline</span>
@@ -733,6 +747,21 @@
     gap: 0.45rem;
     border-top: 1px solid var(--border-soft, var(--border));
     padding: 0.5rem 0 0.32rem;
+  }
+  .grp-note {
+    margin: 0.15rem 0 0.35rem 1.15rem;
+    font-size: 0.72rem;
+    color: var(--dim);
+    line-height: 1.5;
+  }
+  .grp-note .lnk {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font: inherit;
+    cursor: pointer;
+    text-decoration: underline;
   }
   .grp-check {
     flex: none;

@@ -53,9 +53,24 @@ describe("geometry / appearance / analysis split", () => {
   it("QcChecks takes a mode and filters the groups by it", () => {
     expect(qcc).toMatch(/let \{ mode = "geometry" \} = \$props\(\)/);
     expect(qcc).toMatch(/const groupsFor = \$derived\(/);
-    expect(qcc).toMatch(/isGeom \? GROUPS\.filter\(\(g\) => g\.id !== "appearance"\)/);
+    // Geometry drops the appearance group ONLY while none of it is ready. Once a compute pass has
+    // happened those checks run like any other and belong in the tab that manages the detection set.
+    expect(qcc).toMatch(/isGeom \? GROUPS\.filter\(\(g\) => g\.id !== "appearance" \|\| anyAppearReady\)/);
+    expect(qcc).toMatch(/anyAppearReady = \$derived\.by/);
+    expect(qcc).toMatch(/APPEARANCE_KEYS\.some\(\(k\) => qc\.checkReady\(k\)\)/);
     expect(qcc).toMatch(/isAppearMode \? GROUPS\.filter\(\(g\) => g\.id === "appearance"\)/);
     expect(qcc).toMatch(/\[\],\s*\/\/ analysis shows no detector list/);   // analysis lists no detectors
+  });
+
+  it("a READY appearance check also belongs to the checks tab, an unready one does not", () => {
+    // The tab split was by cost: everything in "Detection checks" scores the instant QC runs. Once a
+    // compute pass has happened that is true of an appearance check too, and hiding it there meant
+    // the tab that manages the detection set no longer showed what was actually running.
+    expect(qcc).toMatch(/g\.id !== "appearance" \|\| anyAppearReady/);
+    // ...and it says where it came from, so the group does not silently break the cost promise.
+    expect(qcc).toContain('g.id === "appearance" && isGeom');
+    expect(qcc).toContain("Computed, so they run like any other check here");
+    expect(qcc).toContain('ui.openBlock("appearance")');
   });
 
   it("all three tabs are wired to the one component", () => {
