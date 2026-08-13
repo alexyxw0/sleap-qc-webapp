@@ -299,3 +299,27 @@ describe("the strip under the frame carries only per-candidate information", () 
     expect(strip).toContain("upnext");     // which candidates come next — changes every step
   });
 });
+
+describe("the priority tier is shown, not just applied", () => {
+  const w3 = read("src/lib/components/ProofreadWindow.svelte");
+
+  it("AnomalyDINO is one of the signals the readout draws", () => {
+    expect(w3).toMatch(/\["nodeDino", "AnomalyDINO"/);
+  });
+
+  it("the pane's idea of 'priority' matches the store's, in one place", () => {
+    // Two hard-coded copies of "angle or meanAngle" drifted the moment a third signal joined the
+    // tier: the tooltip and the histogram highlight would both still say angle-only.
+    const store = read("src/lib/qcStore.svelte.js");
+    const inStore = store.match(/PF_PRIORITY_SIGNALS = \[([^\]]*)\]/)[1].match(/"(\w+)"/g).sort();
+    const inPane = w3.match(/const PRIORITY = new Set\(\[([^\]]*)\]\)/)[1].match(/"(\w+)"/g).sort();
+    expect(inPane, "the pane and the store disagree about the priority tier").toEqual(inStore);
+    expect(w3, "the tooltip still hard-codes the angle pair")
+      .not.toMatch(/k === "angle" \|\| k === "meanAngle"/);
+  });
+
+  it("the explainer no longer claims only angles promote", () => {
+    expect(w3).toMatch(/max_angle, mean_angle and AnomalyDINO carry 3× the weight/);
+    expect(w3).toMatch(/counts only\s+when the per-keypoint pass actually ran it/);
+  });
+});

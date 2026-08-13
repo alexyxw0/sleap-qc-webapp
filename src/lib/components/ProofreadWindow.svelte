@@ -216,10 +216,15 @@
     ["meanAngle", "mean_angle", (v) => `z ${v.toFixed(1)}`],
     ["anomaly", "Anomaly", (v) => v.toFixed(2)],
     ["gmm", "GMM", (v) => v.toFixed(2)],
+    // Present only when the per-keypoint pass ran AnomalyDINO; null everywhere otherwise, which the
+    // row renders as "—" and the ranking treats as no evidence either way.
+    ["nodeDino", "AnomalyDINO", (v) => v.toFixed(2)],
   ];
   // Only the four the pass runs on. The other six were a reference card printed under every frame —
   // and now that Keybinds is a tab, a reference card is what that tab IS. The space buys a QC readout
   // you can actually read at a glance, which is the thing you look at on every single candidate.
+  // Mirrors PF_PRIORITY_SIGNALS in qcStore: the signals that promote an animal ahead of the rest.
+  const PRIORITY = new Set(["angle", "meanAngle", "nodeDino"]);
   const LEGEND_IDS = ["faulty", "clean", "next", "prev"];
   const KEYS = $derived(LEGEND_IDS.map((id) => keybinds.allEntries.find((e) => e.id === id)).filter(Boolean));
 
@@ -325,7 +330,7 @@
               <b>#{pos + 1}</b> of {ranked.length.toLocaleString()} ·
               <span class="fno" title="This frame's index in the video. Queue position #{pos + 1} of {ranked.length} — the two are unrelated, because the queue is sorted by suspicion, not by frame.">frame {frameNo}</span>
               {#if cur?.anglePriority}
-                <span class="apri" title="An angle check rates this animal in its top 5% — those sort ahead of everything else">∠ angle</span>
+                <span class="apri" title="A priority check (an angle check, or AnomalyDINO) rates this animal in its top 5% — those sort ahead of everything else">∠ angle</span>
               {/if}
               {#if framePass.siblings.length > 1}
                 <span class="sib" title="This frame puts {framePass.siblings.length} animals in the queue — each is judged separately">
@@ -374,7 +379,7 @@
                   {@const p = cur.pct?.[k]}
                   <div class="sig" class:hot={p != null && p >= 0.95} class:drove={cur.by === k} class:none={v == null}
                        title={v == null ? "not scored on this animal"
-                         : `${label} = ${fmt(v)} — higher than ${Math.round((p ?? 0) * 100)}% of animals in this file${cur.by === k ? " · this is what put it here" : ""}${k === "angle" || k === "meanAngle" ? " · angle checks are weighted heaviest and sort first" : ""}`}>
+                         : `${label} = ${fmt(v)} — higher than ${Math.round((p ?? 0) * 100)}% of animals in this file${cur.by === k ? " · this is what put it here" : ""}${PRIORITY.has(k) ? " · a priority check — weighted heaviest, and sorts first" : ""}`}>
                     <span class="s-l">{label}{#if cur.by === k}<i class="s-drove" title="this is what put it here">◂</i>{/if}</span>
                     <span class="s-bar"><i style:width="{Math.round((p ?? 0) * 100)}%"></i><u></u></span>
                     <span class="s-v">{v == null ? "—" : fmt(v)}{#if p != null}&nbsp;<i class="s-p">{Math.round(p * 100)}%</i>{/if}</span>
@@ -462,22 +467,24 @@
             <p>
               One row per <b>animal</b>, worst first. Each detector is rank-normalized across every animal
               in the file, then combined as evidence — so detectors that agree outrank one that is merely
-              extreme. <b>max_angle / mean_angle carry 3× the weight, and any animal they rate in their top
-              5% sorts ahead of everything else.</b> The <b>score</b> is this animal's percentile in that
+              extreme. <b>max_angle, mean_angle and AnomalyDINO carry 3× the weight, and any animal one of
+              them rates in its own top 5% sorts ahead of everything else.</b> AnomalyDINO counts only
+              when the per-keypoint pass actually ran it — a kNN pass is a weaker claim about the same
+              patches. The <b>score</b> is this animal's percentile in that
               order. Fixed to the run behind it; re-run QC to rebuild.
             </p>
             {#if dist}
                 <!-- How many animals each detector is alarmed about, by the same top-5% rule the ranking
                      uses — so the numbers explain the order rather than describing something else. -->
-                <div class="dist" title="Animals each detector rates in its own top 5%, out of {dist.total}. {dist.priority} are promoted by an angle check; {dist.agree[2] + dist.agree[3] + dist.agree[4]} have two or more detectors agreeing.">
+                <div class="dist" title="Animals each detector rates in its own top 5%, out of {dist.total}. {dist.priority} are promoted by a priority check (an angle check, or AnomalyDINO when it ran); {dist.agree[2] + dist.agree[3] + dist.agree[4]} have two or more detectors agreeing.">
                   {#each SIGNALS as [k, label] (k)}
-                    <span class="d-item" class:angle={k === "angle" || k === "meanAngle"}>
+                    <span class="d-item" class:angle={PRIORITY.has(k)}>
                       <span class="d-l">{label}</span>
                       <span class="d-bar"><i style:width="{(dist.per[k] / distMax) * 100}%"></i></span>
                       <b>{dist.per[k]}</b>
                     </span>
                   {/each}
-                  <span class="d-item d-tot">∠ {dist.priority} first · {dist.total} animals</span>
+                  <span class="d-item d-tot">{dist.priority} promoted · {dist.total} animals</span>
                 </div>
               {/if}
             </details>
