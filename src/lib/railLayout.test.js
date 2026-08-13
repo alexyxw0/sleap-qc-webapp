@@ -143,3 +143,45 @@ describe("check groups start expanded", () => {
     expect(decl("infoOpen").trim()).toBe("{}");   // per-check ⓘ, all closed
   });
 });
+
+// The tab strip used to be an INVISIBLE 14px catch strip: nothing marked where the app's four
+// sections were, so they were discoverable only by sweeping the right edge and noticing something
+// appear. The icons are now always on screen, and expand to the labelled strip on hover.
+describe("the tab strip is always visible", () => {
+  const app = readFileSync("src/App.svelte", "utf8");
+  const uiSrc = readFileSync("src/lib/uiStore.svelte.js", "utf8");
+
+  it("renders a square icon for every section, permanently", () => {
+    expect(tabs, "the invisible catch strip is still the only target").not.toMatch(/class="edge"/);
+    expect(tabs).toContain('class="mini"');
+    const icons = tabs.match(/const ICON = \{([^}]*)\}/)[1];
+    const blocks = uiSrc.match(/\{ id: "(\w+)", title:/g).map((m) => m.match(/"(\w+)"/)[1]);
+    expect(blocks.length).toBeGreaterThan(0);
+    for (const id of blocks) expect(icons, `no icon for ${id}`).toContain(`${id}:`);
+  });
+
+  it("an icon is a control, not just a hover target", () => {
+    // Clicking one opens that section directly — waiting for the panel to slide out before you can
+    // click a label would make the icons decoration.
+    expect(tabs).toMatch(/class="mbtn"[\s\S]{0,200}?onclick=\{\(\) => ui\.toggleBlock\(b\.id\)\}/);
+    expect(tabs).toContain("aria-pressed={on}");
+  });
+
+  it("it still expands on hover, and the panel still overlays it", () => {
+    expect(tabs).toMatch(/class="mini"[\s\S]{0,140}?onpointerenter=\{enter\}/);
+    expect(tabs).toMatch(/\.tabs\.open \{ transform: translateX\(0\)/);
+  });
+
+  it("the shell reserves exactly the strip's width, from one definition", () => {
+    // A fixed strip over a flex shell sits ON TOP of whatever is rightmost. Two hard-coded widths
+    // would drift; both sides read the same custom property.
+    expect(css).toMatch(/--rail-mini:\s*[\d.]+rem/);
+    expect(app).toMatch(/padding-right: var\(--rail-mini\)/);
+    expect(tabs).toMatch(/width: var\(--rail-mini\)/);
+  });
+
+  it("the icon's label is available to a screen reader, not painted twice", () => {
+    expect(tabs).toContain('class="mlbl"');
+    expect(tabs).toMatch(/\.mlbl \{[^}]*clip-path: inset\(50%\)/s);
+  });
+});

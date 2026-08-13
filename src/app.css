@@ -1,4 +1,7 @@
 :root {
+  /* Width of the always-visible tab strip on the right edge. The shell reserves exactly this much
+     so nothing ever sits underneath it; the strip and the reservation must not drift apart. */
+  --rail-mini: 2.6rem;
   /* surfaces — neutral graphite, no blue cast; the right rail sits one tone above the well */
   --bg: #0b0d0f;
   --surface: #101316;

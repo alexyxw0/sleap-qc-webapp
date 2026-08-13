@@ -105,6 +105,10 @@
     height: 100vh;
     display: flex;
     flex-direction: column;
+    /* The tab strip is fixed to the right edge and always visible, so the shell gives up exactly its
+       width. Without this the strip would sit ON TOP of whatever is rightmost — usually the docked
+       panel's scrollbar, occasionally a control. */
+    padding-right: var(--rail-mini);
     animation: fade-up 0.3s var(--ease) both;
   }
   .row {

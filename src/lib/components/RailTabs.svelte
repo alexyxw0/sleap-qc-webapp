@@ -1,8 +1,14 @@
 <script>
-  // THE TAB SELECTOR — a hover-revealed strip on the right edge. It is deliberately a SEPARATE component
-  // from the content panel (Sidebar.svelte): the selector comes and goes with the pointer, while whatever
-  // you opened stays docked until you close it. Merging the two is what forced the old rail to be
-  // permanently on screen just to keep its content visible.
+  // THE TAB SELECTOR — always present as a column of square icons on the right edge, expanding to the
+  // full labelled strip on hover. It is deliberately a SEPARATE component from the content panel
+  // (Sidebar.svelte): the selector comes and goes with the pointer, while whatever you opened stays
+  // docked until you close it. Merging the two is what forced the old rail to be permanently on screen
+  // just to keep its content visible.
+  //
+  // The icons replaced an INVISIBLE 14px catch strip. Nothing marked where the tabs were, so they were
+  // discoverable only by sweeping the edge and noticing something appear — and the four sections are
+  // the app's whole navigation. Always-visible icons cost 2.6rem of gutter (reserved in App.svelte, so
+  // they never overlay content) and make the sections both findable and clickable without expanding.
   //
   // Owns: the edge catch-strip, hover/pin, the file header, and the tab buttons. Owns NO content.
   import { store } from "../labelsStore.svelte.js";
@@ -10,6 +16,9 @@
   import { ui } from "../uiStore.svelte.js";
 
   const BLOCKS = ui.constructor.BLOCKS;
+  // One glyph per section, chosen to be distinct in SHAPE at 1rem rather than to be literal — at this
+  // size an outline of a thing is a smudge, while a filled square, a tick, a ring and bars are not.
+  const ICON = { frame: "▣", checks: "✓", appearance: "◉", analysis: "▤" };
 
   let hideTimer = null;
   // Small close delay: overshooting the edge or crossing a gap shouldn't slam the selector shut.
@@ -34,8 +43,18 @@
   }
 </script>
 
-<!-- Always-present catch strip: with the selector hidden there would otherwise be nothing to hover. -->
-<div class="edge" onpointerenter={enter} onpointerleave={leave} aria-hidden="true"></div>
+<!-- The always-visible strip. It is the hover catcher AND a usable control: clicking an icon opens
+     that section without waiting for the panel to slide out. -->
+<nav class="mini" onpointerenter={enter} onpointerleave={leave} aria-label="Sections">
+  {#each BLOCKS as b (b.id)}
+    {@const on = ui.isBlockOpen(b.id)}
+    <button type="button" class="mbtn" class:open={on} aria-pressed={on}
+            title="{b.title} — {b.hint}" onclick={() => ui.toggleBlock(b.id)}>
+      <span class="mico" aria-hidden="true">{ICON[b.id] ?? "▪"}</span>
+      <span class="mlbl">{b.title}</span>
+    </button>
+  {/each}
+</nav>
 
 <aside class="tabs" class:open={ui.railOpen} onpointerenter={enter} onpointerleave={leave}
        aria-label="Sections">
@@ -63,7 +82,38 @@
 </aside>
 
 <style>
-  .edge { position: fixed; top: 0; right: 0; bottom: 0; width: 14px; z-index: 60; }
+  /* Always on screen. App.svelte reserves exactly --rail-mini so this never covers content. */
+  .mini {
+    position: fixed;
+    top: 0; right: 0; bottom: 0;
+    z-index: 60;
+    width: var(--rail-mini);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.5rem 0;
+    background: var(--panel, #12161b);
+    border-left: 1px solid var(--border);
+  }
+  .mbtn {
+    width: 2rem; height: 2rem;
+    display: grid; place-items: center;
+    border: none; border-radius: 7px;
+    background: transparent;
+    color: var(--dim);
+    font-size: 0.95rem;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 120ms ease, color 120ms ease;
+  }
+  .mbtn:hover { background: rgba(255, 255, 255, 0.06); color: var(--text); }
+  .mbtn.open { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+  /* The label exists for screen readers and is never shown — the expanded strip carries the words. */
+  .mlbl {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
   /* Sits ABOVE the docked content panel so it can overlay it while you pick. */
   .tabs {
     position: fixed;
