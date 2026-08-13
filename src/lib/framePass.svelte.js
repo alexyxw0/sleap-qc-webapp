@@ -148,12 +148,27 @@ class FramePass {
   }
 
   /** Mark the TARGETED keypoint. Frame-based, so this does NOT advance — you judge several per frame. */
+  /**
+   * Record a verdict on the current candidate.
+   *
+   * The two verdicts have different requirements, and treating them the same is what produced "pick a
+   * keypoint first" on a CLEAN marking. FAULTY has to name the keypoint that is wrong — that is the
+   * whole content of the label. CLEAN does not: it asserts nothing is wrong with the instance, which
+   * is precisely what the store records as "reviewed, with an empty faulty set". So a clean verdict
+   * falls back to the whole instance when no keypoint is selected (or when the selection points past
+   * this skeleton's node list, which is how the message appeared intermittently).
+   */
   judge(faulty) {
     if (this.#staleGuard()) return;
     const fk = this.#fkey();
-    const ni = edit.selNode;
-    const nm = this.nodeNames[ni];
-    if (!fk || !nm) { this.hint = "pick a keypoint first — press 1-9 or k"; return; }
+    if (!fk) { this.hint = "no frame to judge"; return; }
+    const nm = this.nodeNames[edit.selNode];
+    if (!faulty && !nm) {
+      const cleared = keypointLabels.markInstanceCleanAt(fk, this.instIdx);
+      this.hint = cleared ? `whole instance marked clean — cleared ${cleared} keypoint mark${cleared === 1 ? "" : "s"}` : "";
+      return;
+    }
+    if (!nm) { this.hint = "pick a keypoint first — press 1-9 or k"; return; }
     keypointLabels.markAt(fk, this.instIdx, nm, faulty);
     this.hint = "";
   }

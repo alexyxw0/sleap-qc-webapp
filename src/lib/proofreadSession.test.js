@@ -142,3 +142,4 @@ describe("keyboard-only session controls", () => {
     expect(proofread.current.frameIdx).toBe(1);      // most suspicious first
   });
 });
+

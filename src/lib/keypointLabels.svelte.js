@@ -57,6 +57,29 @@ class KeypointLabels {
     this.rev++;
   }
 
+  /**
+   * "Every keypoint on this instance is fine" — reviewed, with an empty faulty set.
+   *
+   * The store already means exactly this: `#reviewed` records that a human looked, and absence from
+   * `#bad` IS cleanliness. A clean verdict therefore needs no keypoint to name, which is why the
+   * proofreading pass no longer demands one for it. Returns how many per-node faults it cleared, so
+   * the caller can say that out loud rather than silently discarding earlier work.
+   */
+  markInstanceClean(video, frameIdx, inst, source = "in-app") {
+    const key = keyOf(video, frameIdx, inst);
+    const cleared = this.#bad.get(key)?.size ?? 0;
+    this.#reviewed.add(key);
+    this.#bad.delete(key);
+    this.source = source;
+    this.rev++;
+    return cleared;
+  }
+  /** Same, by the "videoIdx:frameIdx" key the pass already holds. */
+  markInstanceCleanAt(fkey, inst, source = "in-app") {
+    const [v, f] = String(fkey).split(":");
+    return this.markInstanceClean(Number(v), Number(f), inst, source);
+  }
+
   /** Single label — the Phase-2 entry point (click a keypoint in review mode). */
   mark(video, frameIdx, inst, node, faulty, source = "in-app") {
     const k = keyOf(video, frameIdx, inst);

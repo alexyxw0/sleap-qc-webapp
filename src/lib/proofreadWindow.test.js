@@ -201,3 +201,42 @@ describe("proofread window wiring", () => {
     expect(src.match(/\$state\(/g).length).toBe(2); // open + tab, nothing else
   });
 });
+
+// The pass strip had grown a ten-key reference card, a queue preview, a detector histogram and a
+// paragraph explaining the ranking — all under the one thing you actually look at on every candidate.
+// Now that Keybinds is a tab, a reference card is what that tab IS.
+describe("the pass shows the verdict, not a reference card", () => {
+  const win = read("src/lib/components/ProofreadWindow.svelte");
+
+  it("keeps only the four keys the pass runs on", () => {
+    const ids = win.match(/const LEGEND_IDS = \[([^\]]*)\]/)[1];
+    expect(ids).toContain('"faulty"');
+    expect(ids).toContain('"clean"');
+    expect(ids).toContain('"next"');
+    expect(ids).toContain('"prev"');
+    for (const gone of ["toggleKeypoint", "cycleInstance", "nextUnreviewed", "unset", "zoom", "help"]) {
+      expect(ids, `${gone} is still printed under every frame`).not.toContain(`"${gone}"`);
+    }
+    // ...and the full set is one click away, not lost
+    expect(win).toContain('proofreadWindow.setTab("keys")');
+  });
+
+  it("draws each detector's PERCENTILE, not just its number", () => {
+    // "z 4.1" means nothing without knowing what the rest of the file looks like; the bar answers
+    // "is this extreme?" before you have finished reading the value.
+    expect(win).toContain('class="s-bar"');
+    expect(win).toMatch(/style:width="\{Math\.round\(\(p \?\? 0\) \* 100\)\}%"/);
+    expect(win).toMatch(/\.s-bar u \{[^}]*left: 95%/s);   // the line the ranking itself uses
+  });
+
+  it("still shows every detector, including the calm ones", () => {
+    // "GMM is not alarmed about this one" is information; dropping quiet rows would hide it.
+    expect(win).toContain("{#each SIGNALS as [k, label, fmt] (k)}");
+    expect(win).toContain("class:none={v == null}");
+  });
+
+  it("the ranking explainer is collapsed, not printed under every candidate", () => {
+    expect(win).toMatch(/<details class="rank-note">/);
+    expect(win).toContain("How this order was built");
+  });
+});

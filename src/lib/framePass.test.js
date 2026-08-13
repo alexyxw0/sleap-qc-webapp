@@ -360,3 +360,56 @@ describe("dispatch", () => {
     expect(framePass.hint).toBe("");
   });
 });
+
+// FAULTY has to name the keypoint that is wrong — that is the whole content of the label. CLEAN does
+// not: it asserts nothing is wrong with this animal, which is exactly what the store records as
+// "reviewed, with an empty faulty set". Requiring a keypoint for both is what produced "pick a
+// keypoint first" on a clean marking, and it appeared INTERMITTENTLY because it only bit when the
+// selection happened to point past this skeleton's node list.
+describe("a clean verdict needs no keypoint", () => {
+  const vf = () => [0, framePass.item.frameIdx, framePass.instIdx];
+
+  beforeEach(() => { keypointLabels.clear(); framePass.seek(0); framePass.hint = ""; });
+
+  it("marks the whole animal reviewed-and-clean with nothing selected", () => {
+    fakeEdit.select(framePass.instIdx, -1);
+    framePass.judge(false);
+    expect(framePass.hint, "it refused, or complained").toBe("");
+    expect(keypointLabels.isReviewed(...vf())).toBe(true);
+    for (const nm of NODES) expect(keypointLabels.isBad(...vf(), nm)).toBe(false);
+  });
+
+  it("also works when the selection points PAST this skeleton's nodes", () => {
+    fakeEdit.select(framePass.instIdx, NODES.length + 5);
+    framePass.judge(false);
+    expect(framePass.hint).toBe("");
+    expect(keypointLabels.isReviewed(...vf())).toBe(true);
+  });
+
+  it("FAULTY still demands a keypoint — a fault with no location is not a label", () => {
+    fakeEdit.select(framePass.instIdx, -1);
+    framePass.judge(true);
+    expect(framePass.hint).toMatch(/pick a keypoint first/);
+    expect(keypointLabels.isReviewed(...vf())).toBe(false);
+  });
+
+  it("clearing earlier keypoint marks is REPORTED, not silent", () => {
+    fakeEdit.select(framePass.instIdx, 0);
+    framePass.judge(true);
+    expect(keypointLabels.isBad(...vf(), NODES[0])).toBe(true);
+    fakeEdit.select(framePass.instIdx, -1);
+    framePass.judge(false);
+    expect(keypointLabels.isBad(...vf(), NODES[0])).toBe(false);
+    expect(framePass.hint).toMatch(/cleared 1 keypoint mark\b/);
+  });
+
+  it("with a keypoint selected, clean still scopes to that keypoint alone", () => {
+    fakeEdit.select(framePass.instIdx, 0);
+    framePass.judge(true);
+    fakeEdit.select(framePass.instIdx, 1);
+    framePass.judge(true);
+    framePass.judge(false);                       // clean node 1 only
+    expect(keypointLabels.isBad(...vf(), NODES[0]), "node 0 was collateral damage").toBe(true);
+    expect(keypointLabels.isBad(...vf(), NODES[1])).toBe(false);
+  });
+});

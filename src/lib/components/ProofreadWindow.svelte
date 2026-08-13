@@ -217,7 +217,10 @@
     ["anomaly", "Anomaly", (v) => v.toFixed(2)],
     ["gmm", "GMM", (v) => v.toFixed(2)],
   ];
-  const LEGEND_IDS = ["faulty", "clean", "toggleKeypoint", "cycleInstance", "next", "prev", "nextUnreviewed", "unset", "zoom", "help"];
+  // Only the four the pass runs on. The other six were a reference card printed under every frame —
+  // and now that Keybinds is a tab, a reference card is what that tab IS. The space buys a QC readout
+  // you can actually read at a glance, which is the thing you look at on every single candidate.
+  const LEGEND_IDS = ["faulty", "clean", "next", "prev"];
   const KEYS = $derived(LEGEND_IDS.map((id) => keybinds.allEntries.find((e) => e.id === id)).filter(Boolean));
 
   // ---- keybind editor ----------------------------------------------------------------------------
@@ -361,16 +364,22 @@
                   {#if !whole}· cropped to it{/if}
                 </span>
               </p>
+              <!-- One row per detector, with the PERCENTILE drawn. The percentile is the meaningful
+                   quantity — "z 4.1" means nothing without knowing what the rest of the file looks
+                   like — and a bar answers "is this extreme?" before you have finished reading the
+                   number. The 95th is marked, because that is the line the ranking itself uses. -->
               <div class="sigs">
                 {#each SIGNALS as [k, label, fmt] (k)}
                   {@const v = cur[k]}
                   {@const p = cur.pct?.[k]}
-                  <span class="sig" class:hot={p != null && p >= 0.95} class:drove={cur.by === k}
-                        title={v == null ? "not scored on this animal"
-                          : `${label} = ${fmt(v)} — higher than ${Math.round((p ?? 0) * 100)}% of animals in this file${cur.by === k ? " · this is what put it here" : ""}${k === "angle" || k === "meanAngle" ? " · angle checks are weighted heaviest and sort first" : ""}`}>
-                    <b>{label}</b>{v == null ? "—" : fmt(v)}
-                    {#if p != null}<i>{Math.round(p * 100)}%</i>{/if}
-                  </span>
+                  <div class="sig" class:hot={p != null && p >= 0.95} class:drove={cur.by === k} class:none={v == null}
+                       title={v == null ? "not scored on this animal"
+                         : `${label} = ${fmt(v)} — higher than ${Math.round((p ?? 0) * 100)}% of animals in this file${cur.by === k ? " · this is what put it here" : ""}${k === "angle" || k === "meanAngle" ? " · angle checks are weighted heaviest and sort first" : ""}`}>
+                    <span class="s-l">{label}{#if cur.by === k}<i class="s-drove" title="this is what put it here">◂ drove</i>{/if}</span>
+                    <span class="s-bar"><i style:width="{Math.round((p ?? 0) * 100)}%"></i><u></u></span>
+                    <span class="s-v">{v == null ? "—" : fmt(v)}</span>
+                    <span class="s-p">{p == null ? "" : `${Math.round(p * 100)}%`}</span>
+                  </div>
                 {/each}
               </div>
               {#if alsoFlagging.length}
@@ -438,7 +447,7 @@
             {#each KEYS as k (k.id)}
               <span><kbd>{k.id === "toggleKeypoint" ? "1–9" : keyLabel(k.keys[0])}</kbd>{k.id === "toggleKeypoint" ? "toggle keypoint" : k.label.toLowerCase()}</span>
             {/each}
-            <button class="edit" onclick={() => proofreadWindow.setTab("keys")}>edit keys</button>
+            <button class="edit" onclick={() => proofreadWindow.setTab("keys")}>all keys &amp; remap</button>
           </div>
           {#if upcoming.length}
             <p class="upnext">
@@ -461,13 +470,18 @@
               <span class="d-item d-tot">∠ {dist.priority} first · {dist.total} animals</span>
             </div>
           {/if}
-          <p class="rank-note">
-            One row per <b>animal</b>, worst first. Each detector is rank-normalized across every animal
-            in the file, then combined as evidence — so detectors that agree outrank one that is merely
-            extreme. <b>max_angle / mean_angle carry 3× the weight, and any animal they rate in their top
-            5% sorts ahead of everything else.</b> The <b>score</b> is this animal's percentile in that
-            order. Fixed to the run behind it; re-run QC to rebuild.
-          </p>
+          <!-- The ranking explainer used to sit under every candidate. It does not change between
+               them, so it belongs where you go to ask about the order, not in the pass. -->
+          <details class="rank-note">
+            <summary>How this order was built</summary>
+            <p>
+              One row per <b>animal</b>, worst first. Each detector is rank-normalized across every animal
+              in the file, then combined as evidence — so detectors that agree outrank one that is merely
+              extreme. <b>max_angle / mean_angle carry 3× the weight, and any animal they rate in their top
+              5% sorts ahead of everything else.</b> The <b>score</b> is this animal's percentile in that
+              order. Fixed to the run behind it; re-run QC to rebuild.
+            </p>
+          </details>
         {:else if proofreadWindow.tab === "keys"}
           <div class="keyspane">
             <p class="kp-h">
@@ -725,7 +739,8 @@
     background: rgba(255, 255, 255, 0.02);
   }
   .v-head { margin: 0; display: flex; align-items: baseline; gap: 0.4rem; flex-wrap: wrap; }
-  .v-issue { font-size: 0.8rem; color: var(--text); font-weight: 600; }
+  /* The headline answer. It earns the space the ten-key legend used to take. */
+  .v-issue { font-size: 0.95rem; line-height: 1.3; color: var(--text); font-weight: 600; }
   .v-issue.dim { color: var(--dim); font-weight: 400; font-style: italic; }
   .v-node {
     font-size: 0.68rem; color: var(--accent);
@@ -733,21 +748,41 @@
     background: color-mix(in srgb, var(--accent) 16%, transparent);
   }
   .v-where { margin-left: auto; font-size: 0.62rem; color: var(--dim); }
-  .sigs { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+  /* A row per detector: label, percentile bar, value, percentile. Reads top-to-bottom as "which of
+     these is extreme", which is the question, instead of as four chips of unrelated numbers. */
+  .sigs { display: grid; gap: 0.18rem; margin-top: 0.3rem; }
   /* Every signal is shown, alarmed or not — "GMM is calm about this one" is information too. */
   .sig {
-    display: inline-flex; align-items: baseline; gap: 0.3rem;
-    padding: 0.1rem 0.45rem; border-radius: 5px;
-    font-size: 0.66rem; color: var(--dim);
-    background: rgba(255, 255, 255, 0.04);
+    display: grid;
+    grid-template-columns: 5.6rem 1fr 3.1rem 2.4rem;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.12rem 0.3rem;
+    border-radius: 5px;
+    font-size: 0.72rem;
+    color: var(--muted);
     font-variant-numeric: tabular-nums;
   }
-  .sig b { font-weight: 500; color: var(--dim); }
-  .sig i { font-style: normal; font-size: 0.58rem; opacity: 0.75; }
-  .sig.hot { color: #f0b47a; background: rgba(240, 180, 122, 0.14); }
-  .sig.hot b { color: #f0b47a; }
-  .sig.drove { outline: 1px solid color-mix(in srgb, var(--accent) 60%, transparent); color: var(--accent); }
-  .sig.drove b { color: var(--accent); }
+  .sig .s-l { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sig .s-drove { font-style: normal; margin-left: 0.25rem; font-size: 0.58rem; color: var(--accent); }
+  .sig .s-bar {
+    position: relative;
+    height: 0.5rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+    overflow: hidden;
+  }
+  .sig .s-bar i { position: absolute; inset: 0 auto 0 0; background: #6b7686; border-radius: 999px; }
+  /* the 95th — the line the ranking itself uses, so the bar can be read against the rule */
+  .sig .s-bar u { position: absolute; left: 95%; top: -1px; bottom: -1px; width: 1px; background: rgba(255,255,255,0.35); }
+  .sig .s-v { text-align: right; color: var(--text); }
+  .sig .s-p { text-align: right; font-size: 0.64rem; color: var(--dim); }
+  .sig.none { opacity: 0.45; }
+  .sig.hot { background: rgba(240, 180, 122, 0.1); }
+  .sig.hot .s-l, .sig.hot .s-v { color: #f0b47a; }
+  .sig.hot .s-bar i { background: #f0b47a; }
+  .sig.drove { outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); }
+  .sig.drove .s-bar i { background: var(--accent); }
   .v-also { margin: 0; font-size: 0.6rem; color: var(--dim); }
   .npos { flex: 1 1 auto; font-size: 0.64rem; color: var(--dim); font-variant-numeric: tabular-nums; }
   .npos b { color: var(--text); font-weight: 600; }
@@ -855,7 +890,7 @@
   .kp .nm { font-size: 0.62rem; }
 
   .hint { margin: 0; font-size: 0.6rem; color: #f0b47a; }
-  .legend { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem 0.8rem; font-size: 0.66rem; color: var(--dim); }
+  .legend { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem 0.9rem; font-size: 0.68rem; color: var(--dim); }
   .legend span { display: inline-flex; align-items: center; gap: 0.3rem; }
   .fno { color: var(--text); }
   .score {
@@ -896,6 +931,16 @@
   .d-item.angle .d-bar i { background: #f0b47a; }
   .d-item b { color: var(--muted); font-weight: 600; }
   .d-tot { margin-left: auto; color: var(--dim); }
+  .rank-note > summary {
+    cursor: pointer;
+    font-size: 0.64rem;
+    color: var(--dim);
+    list-style: none;
+  }
+  .rank-note > summary::-webkit-details-marker { display: none; }
+  .rank-note > summary::before { content: "▸ "; }
+  .rank-note[open] > summary::before { content: "▾ "; }
+  .rank-note > p { margin: 0.3rem 0 0; }
   .rank-note { margin: 0; font-size: 0.58rem; color: var(--dim); line-height: 1.4; }
   .rank-note b { color: var(--muted); font-weight: 600; }
   .legend kbd { font-size: 0.66rem; padding: 0.08rem 0.32rem; color: var(--muted); }
