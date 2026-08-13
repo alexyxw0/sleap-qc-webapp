@@ -17,7 +17,12 @@ import { analyzerFromSkeleton } from "./qc/checks/features/skeleton.js";
 
 const FIX = fileURLToPath(new URL("./qc/fixtures/tracked-preds.slp", import.meta.url));
 const fake = { labels: null, frames: [], rev: 0, index: 0, fileName: "tracked-preds.slp", skeleton: null };
-vi.mock("./labelsStore.svelte.js", () => ({ store: fake }));
+vi.mock("./labelsStore.svelte.js", () => ({
+  // These fixtures are single-video, so index 0 is the whole story. The real derivation — and the
+  // miss case that made the write and read sides disagree — is tested against the real module in
+  // labelsStore.frameKey.test.js.
+  frameKey: (f) => (f ? (f.fkey ?? `0:${f.frameIdx}`) : null),
+ store: fake }));
 
 const { qc } = await import("./qcStore.svelte.js");
 

@@ -51,6 +51,11 @@ const frame = (frameIdx, nInst) => ({
 });
 const fakeFrames = [frame(0, 2), frame(1, 2), frame(2, 2), frame(3, 2), frame(4, 2), frame(5, 2)];
 vi.mock("./labelsStore.svelte.js", () => ({
+  // These fixtures are single-video, so index 0 is the whole story. The real derivation — and the
+  // miss case that made the write and read sides disagree — is tested against the real module in
+  // labelsStore.frameKey.test.js.
+  frameKey: (f) => (f ? (f.fkey ?? `0:${f.frameIdx}`) : null),
+
   // Node NAMES matter: keypoint labels are keyed by name, so training cannot join without them.
   store: { labels: { videos: [vA] }, frames: fakeFrames, fileName: "test.pkg.slp",
            skeleton: { nodeNames: ["nose", "ear", "tail"] },

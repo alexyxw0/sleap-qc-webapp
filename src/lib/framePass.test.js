@@ -40,7 +40,12 @@ const fakeQc = {
 const fakeEdit = { selInstance: -1, selNode: -1, select(i, n) { this.selInstance = i; this.selNode = n; } };
 const dispatched = [];
 
-vi.mock("./labelsStore.svelte.js", () => ({ store: fakeStore }));
+vi.mock("./labelsStore.svelte.js", () => ({
+  // These fixtures are single-video, so index 0 is the whole story. The real derivation — and the
+  // miss case that made the write and read sides disagree — is tested against the real module in
+  // labelsStore.frameKey.test.js.
+  frameKey: (f) => (f ? (f.fkey ?? `0:${f.frameIdx}`) : null),
+ store: fakeStore }));
 vi.mock("./qcStore.svelte.js", () => ({ qc: fakeQc }));
 vi.mock("./editStore.svelte.js", () => ({ edit: fakeEdit }));
 vi.mock("./viewStore.svelte.js", () => ({ view: { requestFocus() {} } }));

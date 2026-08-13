@@ -20,6 +20,7 @@ import { edit } from "./editStore.svelte.js";
 import { view } from "./viewStore.svelte.js";
 import { instancePointsBox } from "./qc/focusBox.js";
 import { keypointLabels } from "./keypointLabels.svelte.js";
+import { frameKey } from "./labelsStore.svelte.js";
 import { proofread } from "./proofreadSession.svelte.js";
 import { proofreadWindow } from "./proofreadWindow.svelte.js";
 
@@ -67,7 +68,7 @@ class FramePass {
   #fkey() {
     const it = this.item;
     if (!it) return null;
-    return it.fkey ?? `${store.labels?.videos?.indexOf(it.video) ?? 0}:${it.frameIdx}`;
+    return frameKey(it);
   }
 
   /** Has THIS animal been judged? Per-instance, because that is what a row is — a frame-level ✓ would
@@ -75,8 +76,9 @@ class FramePass {
   reviewedRow(row) {
     const f = store.frames?.[row?.i];
     if (!f) return false;
-    const v = store.labels?.videos?.indexOf(f.video) ?? 0;
-    return keypointLabels.isReviewed(v, f.frameIdx, row.inst);
+    // Same stamped key the verdict was written under. Re-deriving it here left a judged row showing
+    // as unreviewed whenever the two derivations disagreed.
+    return keypointLabels.isReviewedAt(frameKey(f), row.inst);
   }
   /** Convenience for the current row. */
   get reviewedHere() { return this.current ? this.reviewedRow(this.current) : false; }
@@ -176,12 +178,8 @@ class FramePass {
   unset() {
     if (this.#staleGuard()) return;
     const fk = this.#fkey();
-    if (fk) keypointLabels.unreview(...this.#triple());
+    if (fk) keypointLabels.unreviewAt(fk, this.instIdx);   // the key the verdict was written under
     this.hint = "";
-  }
-  #triple() {
-    const it = this.item;
-    return [store.labels?.videos?.indexOf(it?.video) ?? 0, it?.frameIdx ?? -1, this.instIdx];
   }
 
   cycleKeypoint() {

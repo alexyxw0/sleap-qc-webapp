@@ -3,7 +3,12 @@
 // vanished from both — indistinguishable from "not supported here".
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
-vi.mock("./labelsStore.svelte.js", () => ({ store: { frames: [], labels: null, skeleton: null } }));
+vi.mock("./labelsStore.svelte.js", () => ({
+  // These fixtures are single-video, so index 0 is the whole story. The real derivation — and the
+  // miss case that made the write and read sides disagree — is tested against the real module in
+  // labelsStore.frameKey.test.js.
+  frameKey: (f) => (f ? (f.fkey ?? `0:${f.frameIdx}`) : null),
+ store: { frames: [], labels: null, skeleton: null } }));
 const { store } = await import("./labelsStore.svelte.js");
 const { qc, APPEARANCE_LABELS } = await import("./qcStore.svelte.js");
 const { keypointModels } = await import("./keypointModels.svelte.js");

@@ -4,6 +4,11 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
 vi.mock("./labelsStore.svelte.js", () => ({
+  // These fixtures are single-video, so index 0 is the whole story. The real derivation — and the
+  // miss case that made the write and read sides disagree — is tested against the real module in
+  // labelsStore.frameKey.test.js.
+  frameKey: (f) => (f ? (f.fkey ?? `0:${f.frameIdx}`) : null),
+
   store: { labels: null, frames: [], rev: 0, fileName: "", index: 0, skeleton: null },
 }));
 

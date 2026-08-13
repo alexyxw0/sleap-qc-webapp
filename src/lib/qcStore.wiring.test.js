@@ -5,7 +5,12 @@
 // This test makes the wiring invariant explicit for every future check.
 import { describe, it, expect, vi } from "vitest";
 
-vi.mock("./labelsStore.svelte.js", () => ({ store: { frames: [], labels: null } }));
+vi.mock("./labelsStore.svelte.js", () => ({
+  // These fixtures are single-video, so index 0 is the whole story. The real derivation — and the
+  // miss case that made the write and read sides disagree — is tested against the real module in
+  // labelsStore.frameKey.test.js.
+  frameKey: (f) => (f ? (f.fkey ?? `0:${f.frameIdx}`) : null),
+ store: { frames: [], labels: null } }));
 const { qc } = await import("./qcStore.svelte.js");
 
 describe("check wiring invariants", () => {

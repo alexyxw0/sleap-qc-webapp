@@ -17,6 +17,7 @@ import { rbfDecision } from "./qc/embedding/svm.js";
 import { prototypeDirection, prototypeScores, blendByRank } from "./qc/embedding/fewshot.js";
 import { fitSvm, MIN_POSITIVES } from "./qc/embedding/svmFit.js";
 import { keypointLabels } from "./keypointLabels.svelte.js";
+import { frameKey } from "./labelsStore.svelte.js";
 import { loadAll as loadCache, putMany as saveCache, requestPersist } from "./qc/embedding/embcache.js";
 
 const BACKENDS = { dino: dinoBackend };
@@ -204,10 +205,12 @@ export class NodeEmbeddingStore {
       if (rec.node !== ni || !this.#embs[r]) continue;
       const f = frames[rec.fi];
       if (!f) continue;
-      const v = store.labels?.videos?.indexOf(f.video) ?? 0;
-      if (!keypointLabels.isReviewed(v, f.frameIdx, rec.ii)) continue;
+      // Join on the STAMPED key, the same one the labels were written under. Re-deriving it here is
+      // what let the two sides disagree and report an empty training set.
+      const fk = frameKey(f);
+      if (!keypointLabels.isReviewedAt(fk, rec.ii)) continue;
       rows.push(this.#embs[r]);
-      y.push(keypointLabels.isBad(v, f.frameIdx, rec.ii, nm) ? 1 : -1);
+      y.push(keypointLabels.isBadAt(fk, rec.ii, nm) ? 1 : -1);
     }
     return { rows, y };
   }
@@ -337,9 +340,9 @@ export class NodeEmbeddingStore {
     idxs.forEach((r, k) => {
       const f = frames[this.#recs[r].fi];
       if (!f) return;
-      const v = store.labels?.videos?.indexOf(f.video) ?? 0;
-      if (!keypointLabels.isReviewed(v, f.frameIdx, this.#recs[r].ii)) return;
-      (keypointLabels.isBad(v, f.frameIdx, this.#recs[r].ii, nm) ? pos : neg).push(k);
+      const fk = frameKey(f);   // the stamped key, as above — not a second derivation
+      if (!keypointLabels.isReviewedAt(fk, this.#recs[r].ii)) return;
+      (keypointLabels.isBadAt(fk, this.#recs[r].ii, nm) ? pos : neg).push(k);
     });
     const proto = prototypeDirection(embs, pos, neg);
     if (!proto) return null;

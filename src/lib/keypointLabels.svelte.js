@@ -137,6 +137,18 @@ class KeypointLabels {
     return out;
   }
 
+  /** Reviewed, addressed by the stamped frame key — the form every caller actually holds. */
+  isReviewedAt(fkey, inst) {
+    this.rev;
+    return this.#reviewed.has(`${fkey}:${inst}`);
+  }
+
+  /** Undo a review, by the stamped key. */
+  unreviewAt(fkey, inst) {
+    const [v, f] = String(fkey).split(":");
+    return this.unreview(Number(v), Number(f), inst);
+  }
+
   isBadAt(fkey, inst, node) {
     this.rev;
     return this.#bad.get(`${fkey}:${inst}`)?.has(node) ?? false;

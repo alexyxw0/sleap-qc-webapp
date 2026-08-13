@@ -443,4 +443,22 @@ class LabelsStore {
 }
 
 // Singleton, shared across components via plain ESM import.
+/**
+ * THE key every per-frame lookup uses: "videoIdx:frameIdx".
+ *
+ * labelsStore stamps `f.fkey` once at load; everything else re-derived it, and the derivations did
+ * not agree. The stamp falls back to 0 when the video is not in `labels.videos` (`vOrder.get() ?? 0`),
+ * while `videos.indexOf(...) ?? 0` yields -1 there — `??` does not catch -1. So a label WRITTEN under
+ * "0:frame:inst" was READ back under "-1:frame:inst" and silently found nothing, which is what made
+ * the SVM fitter report zero labels on a file where marks plainly existed.
+ *
+ * One function, so the write side and the read side cannot drift again.
+ */
+export function frameKey(f) {
+  if (!f) return null;
+  if (f.fkey) return f.fkey;
+  const vi = store.labels?.videos?.indexOf(f.video) ?? -1;
+  return `${vi < 0 ? 0 : vi}:${f.frameIdx}`;   // match the stamp exactly, including its miss case
+}
+
 export const store = new LabelsStore();
