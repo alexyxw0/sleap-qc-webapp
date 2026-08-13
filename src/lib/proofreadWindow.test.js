@@ -229,6 +229,14 @@ describe("the pass shows the verdict, not a reference card", () => {
     expect(win).toMatch(/\.s-bar u \{[^}]*left: 95%/s);   // the line the ranking itself uses
   });
 
+  it("the detectors lie ACROSS, not stacked — the canvas gets the height", () => {
+    // Everything above the stage is picture the reviewer does not get, because the frame is
+    // contain-fitted into whatever is left. Four stacked rows squashed it to a letterbox.
+    expect(win).toMatch(/\.sigs \{[^}]*grid-template-columns: repeat\(auto-fit, minmax\([\d.]+rem, 1fr\)\)/s);
+    // one line per detector: label, bar, value — not a row per field
+    expect(win).toMatch(/\.sig \{[^}]*grid-template-columns: auto 1fr auto/s);
+  });
+
   it("still shows every detector, including the calm ones", () => {
     // "GMM is not alarmed about this one" is information; dropping quiet rows would hide it.
     expect(win).toContain("{#each SIGNALS as [k, label, fmt] (k)}");

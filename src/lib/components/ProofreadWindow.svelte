@@ -375,10 +375,9 @@
                   <div class="sig" class:hot={p != null && p >= 0.95} class:drove={cur.by === k} class:none={v == null}
                        title={v == null ? "not scored on this animal"
                          : `${label} = ${fmt(v)} — higher than ${Math.round((p ?? 0) * 100)}% of animals in this file${cur.by === k ? " · this is what put it here" : ""}${k === "angle" || k === "meanAngle" ? " · angle checks are weighted heaviest and sort first" : ""}`}>
-                    <span class="s-l">{label}{#if cur.by === k}<i class="s-drove" title="this is what put it here">◂ drove</i>{/if}</span>
+                    <span class="s-l">{label}{#if cur.by === k}<i class="s-drove" title="this is what put it here">◂</i>{/if}</span>
                     <span class="s-bar"><i style:width="{Math.round((p ?? 0) * 100)}%"></i><u></u></span>
-                    <span class="s-v">{v == null ? "—" : fmt(v)}</span>
-                    <span class="s-p">{p == null ? "" : `${Math.round(p * 100)}%`}</span>
+                    <span class="s-v">{v == null ? "—" : fmt(v)}{#if p != null}&nbsp;<i class="s-p">{Math.round(p * 100)}%</i>{/if}</span>
                   </div>
                 {/each}
               </div>
@@ -731,8 +730,8 @@
   .nav .skip { font-size: 0.58rem; }
   .nav .skip.on { color: var(--accent); border-color: var(--accent); }
   .verdict {
-    display: flex; flex-direction: column; gap: 0.3rem;
-    padding: 0.4rem 0.55rem;
+    display: flex; flex-direction: column; gap: 0.18rem;
+    padding: 0.28rem 0.5rem;
     border: 1px solid var(--border);
     border-left: 2px solid color-mix(in srgb, var(--accent) 55%, var(--border));
     border-radius: 6px;
@@ -740,7 +739,7 @@
   }
   .v-head { margin: 0; display: flex; align-items: baseline; gap: 0.4rem; flex-wrap: wrap; }
   /* The headline answer. It earns the space the ten-key legend used to take. */
-  .v-issue { font-size: 0.95rem; line-height: 1.3; color: var(--text); font-weight: 600; }
+  .v-issue { font-size: 0.8rem; line-height: 1.25; color: var(--text); font-weight: 600; }
   .v-issue.dim { color: var(--dim); font-weight: 400; font-style: italic; }
   .v-node {
     font-size: 0.68rem; color: var(--accent);
@@ -748,40 +747,47 @@
     background: color-mix(in srgb, var(--accent) 16%, transparent);
   }
   .v-where { margin-left: auto; font-size: 0.62rem; color: var(--dim); }
-  /* A row per detector: label, percentile bar, value, percentile. Reads top-to-bottom as "which of
-     these is extreme", which is the question, instead of as four chips of unrelated numbers. */
-  .sigs { display: grid; gap: 0.18rem; margin-top: 0.3rem; }
+  /* Four detectors ACROSS, not stacked. The canvas is contain-fitted into whatever is left, so every
+     line here is picture the reviewer does not get — and the bar carries the meaning, so it does not
+     need a row of its own. Wraps to 2x2 when the window is narrow. */
+  .sigs {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+    gap: 0.1rem 0.7rem;
+    margin-top: 0.1rem;
+  }
   /* Every signal is shown, alarmed or not — "GMM is calm about this one" is information too. */
   .sig {
     display: grid;
-    grid-template-columns: 5.6rem 1fr 3.1rem 2.4rem;
+    grid-template-columns: auto 1fr auto;
     align-items: center;
-    gap: 0.45rem;
-    padding: 0.12rem 0.3rem;
-    border-radius: 5px;
-    font-size: 0.72rem;
+    gap: 0.35rem;
+    padding: 0.05rem 0.2rem;
+    border-radius: 4px;
+    font-size: 0.63rem;
     color: var(--muted);
     font-variant-numeric: tabular-nums;
+    min-width: 0;
   }
-  .sig .s-l { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .sig .s-drove { font-style: normal; margin-left: 0.25rem; font-size: 0.58rem; color: var(--accent); }
+  .sig .s-l { color: var(--dim); white-space: nowrap; }
+  .sig .s-drove { font-style: normal; margin-left: 0.2rem; color: var(--accent); }
   .sig .s-bar {
     position: relative;
-    height: 0.5rem;
+    height: 0.32rem;
+    min-width: 1.5rem;
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.06);
+    background: rgba(255, 255, 255, 0.07);
     overflow: hidden;
   }
   .sig .s-bar i { position: absolute; inset: 0 auto 0 0; background: #6b7686; border-radius: 999px; }
   /* the 95th — the line the ranking itself uses, so the bar can be read against the rule */
-  .sig .s-bar u { position: absolute; left: 95%; top: -1px; bottom: -1px; width: 1px; background: rgba(255,255,255,0.35); }
-  .sig .s-v { text-align: right; color: var(--text); }
-  .sig .s-p { text-align: right; font-size: 0.64rem; color: var(--dim); }
+  .sig .s-bar u { position: absolute; left: 95%; top: -1px; bottom: -1px; width: 1px; background: rgba(255,255,255,0.4); }
+  .sig .s-v { text-align: right; color: var(--text); white-space: nowrap; }
+  .sig .s-p { font-style: normal; font-size: 0.56rem; color: var(--dim); }
   .sig.none { opacity: 0.45; }
-  .sig.hot { background: rgba(240, 180, 122, 0.1); }
   .sig.hot .s-l, .sig.hot .s-v { color: #f0b47a; }
   .sig.hot .s-bar i { background: #f0b47a; }
-  .sig.drove { outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); }
+  .sig.drove .s-l, .sig.drove .s-v { color: var(--accent); }
   .sig.drove .s-bar i { background: var(--accent); }
   .v-also { margin: 0; font-size: 0.6rem; color: var(--dim); }
   .npos { flex: 1 1 auto; font-size: 0.64rem; color: var(--dim); font-variant-numeric: tabular-nums; }
