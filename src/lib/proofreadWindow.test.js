@@ -102,11 +102,33 @@ describe("proofread window wiring", () => {
   });
 
   it("shows ONE frame at a time, drawn with the same drawer as the viewer", () => {
-    expect(win).toContain("<canvas bind:this={canvas}");
+    expect(win).toMatch(/<canvas\s[\s\S]{0,400}?bind:this=\{canvas\}/);  // one canvas, however it wraps
+    expect((win.match(/<canvas/g) ?? []).length, "more than one canvas").toBe(1);
     expect(win).toContain("drawScene(");
     expect(win).toContain("store.getFrameImage(it)");
     expect(win).not.toMatch(/class="grid"/); // the thumbnail grid is gone
     expect(win).not.toMatch(/thumbWhenVisible/);
+  });
+
+  it("the frame can be zoomed and panned, not just looked at", () => {
+    // It used to be a static contain-fit. The pass is about spotting a wrong pose, but judging a
+    // borderline one means leaning in, and sending it to the main viewer to do that loses your place
+    // in the queue.
+    expect(win).toContain("onwheel={onWheel}");
+    expect(win).toContain("onpointerdown={onPointerDown}");
+    expect(win).toContain('from "../qc/zoomView.js"');
+    expect(win).toContain("panForZoom(");
+  });
+
+  it("the view re-fits on every new candidate", () => {
+    // Each candidate is a different animal somewhere else in the frame; a view parked where the last
+    // one happened to be would open on empty background.
+    expect(win).toMatch(/void framePass\.at;[\s\S]{0,120}resetView\(\)/);
+  });
+
+  it("no keyboard zoom bindings — digits already toggle keypoints here", () => {
+    // A `0` or `+` binding would collide with the labelling keys this window exists for.
+    expect(win).not.toMatch(/title="Zoom (in|out) \([+\-0]\)"/);
   });
 
   it("the pass is keyboard-driven through the ONE existing handler", () => {

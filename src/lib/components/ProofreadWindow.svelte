@@ -23,6 +23,7 @@
   import { framePass } from "../framePass.svelte.js";
   import { edit } from "../editStore.svelte.js";
   import { drawScene, frameDims } from "../draw.js";
+  import { fitScale, clampCenter, panForZoom, clampZoom } from "../qc/zoomView.js";
   import { keybinds, keyLabel } from "../keybinds.svelte.js";
   import { KEY_GROUP_HINTS } from "../qc/proofreadKeymap.js";
   import PopoutWindow from "./PopoutWindow.svelte";
@@ -38,9 +39,21 @@
   const names = $derived(framePass.nodeNames);
   const faulty = $derived(framePass.faultySet);
 
-  // Draw the queue's current frame at whatever size the window is. Deliberately the WHOLE frame, no pan
-  // or zoom: the pass is about spotting a wrong pose, and `z` sends the main viewer in for a closer look.
+  // Draw the queue's current frame at whatever size the window is.
+  //
+  // The auto-fit (whole frame, or the candidate's focus box) is the BASELINE; the user's zoom and pan
+  // ride on top of it as a multiplier and an image-space offset. Keeping them separate is what lets
+  // the view re-fit itself on every new candidate — which is the behaviour the pass needs, since each
+  // one is a different animal in a different place — while still letting you lean in on the one in
+  // front of you. Both reset when the candidate changes.
   let canvas = $state.raw(null);
+  let uz = $state(1);        // user zoom, 1 = the auto-fit
+  let upx = $state(0);       // user pan, image-space px
+  let upy = $state(0);
+  let drag = null;           // { sx, sy, px, py, moved }
+  let lastFit = null;        // { s, view } from the most recent paint — pointer math needs it
+  const MAX_UZ = 12;
+  const resetView = () => { uz = 1; upx = 0; upy = 0; };
   let stage = $state.raw(null);
   let box = $state({ w: 0, h: 0 }); // measured, so the frame can CONTAIN-fit the space it is given
   let img = $state.raw(null);
@@ -56,6 +69,10 @@
     ro.observe(el);
     return () => ro.disconnect();
   });
+
+  // A new candidate is a new animal somewhere else in the frame: re-fit rather than leave the view
+  // parked where the last one happened to be.
+  $effect(() => { void framePass.at; void framePass.instIdx; void whole; resetView(); });
 
   $effect(() => {
     const it = item;
@@ -93,20 +110,34 @@
           w: Math.min(w, fb.x + fb.w) - Math.max(0, fb.x), h: Math.min(h, fb.y + fb.h) - Math.max(0, fb.y) }
       : { x: 0, y: 0, w, h };
     if (!(view.w > 0 && view.h > 0)) { view.x = 0; view.y = 0; view.w = w; view.h = h; }
-    // CONTAIN-fit the measured stage: the view is the window, so it takes whatever space is left after
-    // the two thin bars, in whichever dimension binds.
+    // CONTAIN-fit the measured stage, then apply the user's zoom. The canvas now fills the stage
+    // rather than being sized to the fitted crop: at zoom > 1 there is more picture than window, and a
+    // canvas shaped to the crop would simply overflow it.
     const bw = box.w || 640, bh = box.h || 420;
-    const sc = Math.min(bw / view.w, bh / view.h);
+    const fit = fitScale({ w: bw, h: bh }, view);
+    const z = clampZoom(uz, MAX_UZ);
+    const sc = fit * z;
     const dpr = Math.min(2, globalThis.devicePixelRatio || 1);
-    c.width = Math.max(1, Math.round(view.w * sc * dpr));
-    c.height = Math.max(1, Math.round(view.h * sc * dpr));
-    c.style.width = `${Math.round(view.w * sc)}px`;
-    c.style.height = `${Math.round(view.h * sc)}px`;
+    c.width = Math.max(1, Math.round(bw * dpr));
+    c.height = Math.max(1, Math.round(bh * dpr));
+    c.style.width = `${Math.round(bw)}px`;
+    c.style.height = `${Math.round(bh)}px`;
     const ctx = c.getContext("2d");
     if (!ctx) return;
+    ctx.clearRect(0, 0, c.width, c.height);
+
+    // Centre of the visible region, in image space: the fitted view's centre, panned, then clamped so
+    // the picture cannot be dragged off the window.
+    const bx = view.x + view.w / 2, by = view.y + view.h / 2;
+    const cx = clampCenter(bx + upx, bw / sc / 2, w);
+    const cy = clampCenter(by + upy, bh / sc / 2, h);
     const k = sc * dpr;
+    // bx/by = the fitted centre BEFORE the user's pan; the pointer math needs it to set an exact
+    // pan rather than accumulate drift through the clamp.
+    lastFit = { s: sc, fit, dpr, cx, cy, bw, bh, w, h, bx, by };
+
     drawScene(ctx, image, it, store.skeleton, {
-      transform: { s: k, offX: -view.x * k, offY: -view.y * k },
+      transform: { s: k, offX: (c.width / 2) - cx * k, offY: (c.height / 2) - cy * k },
       dims: { w, h },
       scale: 1 / k,
       selInstance: sel,
@@ -114,6 +145,36 @@
       gtFaulty: fset,
     });
   });
+
+  /** Zoom about the POINTER, so the thing you are looking at stays under the cursor. */
+  function onWheel(e) {
+    if (!lastFit) return;
+    e.preventDefault();
+    const f = lastFit;
+    const r = canvas.getBoundingClientRect();
+    const mx = e.clientX - r.left - f.bw / 2;   // pointer offset from the canvas centre, CSS px
+    const my = e.clientY - r.top - f.bh / 2;
+    const nz = clampZoom(uz * (e.deltaY < 0 ? 1.15 : 1 / 1.15), MAX_UZ);
+    if (nz === uz) return;
+    const ns = f.fit * nz;
+    upx = panForZoom(f.cx, f.bx, mx, f.s, ns);
+    upy = panForZoom(f.cy, f.by, my, f.s, ns);
+    uz = nz;
+  }
+  function onPointerDown(e) {
+    if (uz <= 1) return;                        // nothing to pan at fit
+    drag = { sx: e.clientX, sy: e.clientY, px: upx, py: upy, moved: false };
+    canvas.setPointerCapture?.(e.pointerId);
+  }
+  function onPointerMove(e) {
+    if (!drag || !lastFit) return;
+    if (!drag.moved && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < 3) return;
+    drag.moved = true;
+    upx = drag.px - (e.clientX - drag.sx) / lastFit.s;
+    upy = drag.py - (e.clientY - drag.sy) / lastFit.s;
+  }
+  function onPointerUp(e) { drag = null; canvas.releasePointerCapture?.(e.pointerId); }
+  const zoomBy = (f) => { uz = clampZoom(uz * f, MAX_UZ); };
 
   const isFaulty = (ni) => faulty.has(`${framePass.instIdx}:${ni}`);
   // Only THIS animal's marks — the ✓/count belongs to a row, and judging one animal must not tick the
@@ -320,9 +381,26 @@
             </div>
           {/if}
           <div class="stage" class:idle={!on} bind:this={stage}>
-            <!-- The whole frame, no pan/zoom: the pass is about spotting a wrong pose. `z` sends the
-                 main viewer in for a close look at the targeted keypoint. -->
-            <canvas bind:this={canvas} class="frame"></canvas>
+            <!-- Auto-fits each candidate (focus box, or the whole frame), and zooms from there: wheel
+                 about the pointer, drag to pan once past the fit. `z` still sends the main viewer in. -->
+            <canvas
+              bind:this={canvas}
+              class="frame"
+              style:cursor={uz > 1 ? (drag ? "grabbing" : "grab") : "default"}
+              onwheel={onWheel}
+              onpointerdown={onPointerDown}
+              onpointermove={onPointerMove}
+              onpointerup={onPointerUp}
+              onpointercancel={onPointerUp}
+            ></canvas>
+            {#if on}
+              <div class="zoomctl">
+                <button type="button" onclick={() => zoomBy(1 / 1.25)} disabled={uz <= 1} title="Zoom out">−</button>
+                <span class="zpct">{Math.round(uz * 100)}%</span>
+                <button type="button" onclick={() => zoomBy(1.25)} disabled={uz >= MAX_UZ} title="Zoom in">＋</button>
+                <button type="button" onclick={resetView} disabled={uz === 1 && !upx && !upy} title="Refit to this candidate">⤢</button>
+              </div>
+            {/if}
             {#if loading}<span class="wait">decoding…</span>{/if}
             {#if !on}
               <button class="arm" onclick={() => (keypointLabels.proofreading = true)}>
@@ -704,6 +782,39 @@
   }
   .frame { display: block; max-width: 100%; max-height: 100%; }
   .stage.idle .frame { opacity: 0.5; }
+  /* Sits over the canvas, bottom-right, out of the way of the pose. */
+  .zoomctl {
+    position: absolute;
+    right: 0.5rem;
+    bottom: 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.15rem;
+    padding: 0.15rem 0.25rem;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    backdrop-filter: blur(2px);
+  }
+  .zoomctl button {
+    min-width: 1.35rem;
+    padding: 0.1rem 0.25rem;
+    border: 0;
+    border-radius: 4px;
+    background: none;
+    color: var(--fg);
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+  .zoomctl button:hover:not(:disabled) { background: var(--line); }
+  .zoomctl button:disabled { opacity: 0.35; cursor: default; }
+  .zpct {
+    min-width: 2.6rem;
+    text-align: center;
+    font-size: 0.66rem;
+    color: var(--dim);
+    font-variant-numeric: tabular-nums;
+  }
   .wait {
     position: absolute; inset: 0; display: grid; place-items: center;
     font-size: 0.62rem; color: var(--dim); pointer-events: none;
