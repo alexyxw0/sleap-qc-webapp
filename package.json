@@ -1,5 +1,5 @@
 {
-  "name": "sleap-web-app",
+  "name": "sleap-qc-webapp",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -18,5 +18,10 @@
     "svelte": "^5.56.3",
     "vite": "^8.0.16",
     "vitest": "^3.2.4"
+  },
+  "description": "In-browser QC for SLEAP pose annotations: geometric checks ported from sleap.qc, plus DINOv2 appearance detectors.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alexwu-z/sleap-qc-webapp"
   }
 }

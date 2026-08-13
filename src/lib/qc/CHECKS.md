@@ -243,8 +243,11 @@ Edge cases: edge/angle/pairwise z-scores are only computed over nodes visible *a
 
 The `sleap/qc` update (`origin/develop e89db4696`, issue #2756) added seven detectors. **Chirality** and **pose-split / chimera** (both above) are ported; **curvature** was already present as the `max_curvature`/`curvature_std` features (see "The 18-feature vector"). The rest:
 
+**Implemented since this note was written:**
+- **Chain order** (`ordering`, default OFF, needs a declared chain) — wired as a check with its own threshold (`orderingThreshold`, 0.3). Inert unless `orderedChains` is configured, which is why it ships off.
+
 **Coordinate-only, port specs verified, pending implementation:**
-- **Chain order** (`ordering.py`, default OFF, needs a chain ≥4 nodes) — keypoints out of sequence along an ordered chain: `order_inversion_rate` (fraction of interior nodes whose turning angle > 60°) + `chain_intersection_count` (non-adjacent segment crossings); hard rule (intersections ≥1 or rate ≥0.3) → "Wrong keypoint order along chain". Translation/rotation/scale-invariant, no learned stats.
+- ~~**Chain order**~~ (`ordering.py`, default OFF, needs a chain ≥4 nodes) — keypoints out of sequence along an ordered chain: `order_inversion_rate` (fraction of interior nodes whose turning angle > 60°) + `chain_intersection_count` (non-adjacent segment crossings); hard rule (intersections ≥1 or rate ≥0.3) → "Wrong keypoint order along chain". Translation/rotation/scale-invariant, no learned stats.
 - **Missing node** (`missing_node.py`, default OFF) — an invisible node whose visible peers almost always keep it: `p_expected[k] = mean over visible i of P(k visible | i visible) >= 0.9`, reusing the co-visibility `VisibilityModel`. Channel detector (`final = max(gmm, channel)` in Python). Catches *outlier* drops, not dataset-wide systematic under-labeling.
 - **Split duplicate** (`duplicate_split.py`) — enhances `detectDuplicates`: the "split" case where one animal is split across two instances on largely-disjoint (0.55–0.85), spatially-contiguous, coherently-gapped node sets; `duplicate_score = saturating max(IoU, node-overlap, split)`.
 

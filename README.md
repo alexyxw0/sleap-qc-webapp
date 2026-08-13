@@ -139,15 +139,36 @@ A JS port of the `sleap.qc` detection pipeline (`src/lib/qc/checks/`) is wired i
   *definitely wrong* — and the issue label lets you verify/dismiss it quickly.
 
 The detector port is validated against the real Python `sleap.qc` (Python 3.13): 17/18
-features bit-exact, ZScore ~1e-8, GMM scoring exact. The deterministic **ZScore** path is
-used in the UI (the GMM is seed-unstable even in sklearn, so it's excluded). Heavy compute
-runs on the main thread for now (fine for typical files; a Web Worker is the next step for
-very large ones).
+features bit-exact, ZScore ~1e-8, GMM scoring exact. Both the deterministic **ZScore**
+("Anomaly") and the **GMM** path are available and on by default. Heavy compute runs in
+Web Workers — DINOv2 inference in one, the kNN/AnomalyDINO scoring pass in another — so
+frame traversal stays responsive during a run that takes minutes.
 
-## Scope (still not the full GUI)
+## Scope
 
-**Not yet**: track creation/reassignment, prediction-review workflow, suggestions,
-multi-instance copy/interpolate. The data model supports these; they're UI work.
+This is a QC and correction tool, not a replacement for the SLEAP GUI. **Not implemented**:
+track creation/reassignment, suggestions, multi-instance copy/interpolate. The data model
+supports these; they are UI work.
+
+## Sample data
+
+`samples/` carries two files from the [SLEAP](https://sleap.ai) project's own demo data
+(`demo-flies13-preds`, `minimal_instance`), and `src/lib/qc/fixtures/tracked-preds.slp` —
+used by the test suite — is from the same source. SLEAP is © Talmo Lab, released under the
+Clear BSD License; those files are redistributed under it. Nothing in `samples/` is
+experimental data from this project.
+
+## Your data stays in the browser
+
+There is no server and no upload. A `.slp`/`.pkg.slp` is read with h5wasm in the page, every
+check runs locally, and results are written back to a file you save yourself. The only
+outbound requests are for code and model weights:
+
+- `cdn.jsdelivr.net` — transformers.js and h5wasm, fetched on demand
+- the Hugging Face hub — the DINOv2 ViT-S/14 weights, the first time an appearance check runs
+
+Embeddings are cached in IndexedDB, which is per-origin and stays on the machine. Nothing
+about your frames, poses or labels is sent anywhere.
 
 ## Notes / known edges
 - Pure client-side SPA — no server. Production: `@sveltejs/adapter-static` under SvelteKit
