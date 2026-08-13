@@ -128,6 +128,14 @@
 
   function nudge(ni) { es.applyFewShot(ni, 0.5); }
 
+  /** Take the trained model off this keypoint and put it back on the unsupervised baseline. */
+  async function revert(ni, nodeName) {
+    const back = es.scorer === "anomalyDino" ? "AnomalyDINO" : "kNN";
+    await es.clearTrainedModel(ni);
+    lastFit.delete(ni);
+    fitMsg = `${nodeName} is back on ${back} — the model is gone, the labels are not.`;
+  }
+
   function doExport(ni, nodeName) {
     const clf = es.trainedModelFor(ni);
     if (!clf) return;
@@ -573,7 +581,13 @@
               {#if upErr}<p class="s-err">{upErr}</p>{/if}
               {#if upWarn}<p class="s-warn">⚠ {upWarn}</p>{/if}
               {#if scoredMode === "svm"}
-                <p class="s-note">✓ applied — {es.patchCount(ni).toLocaleString()} patches re-scored by the model.</p>
+                <p class="s-note">
+                  ✓ applied — {es.patchCount(ni).toLocaleString()} patches re-scored by the model.
+                  <button class="fs-undo" onclick={() => revert(ni, nodeName)}
+                          title="Drop this model and score {nodeName} with the unsupervised baseline again">
+                    revert to {es.scorer === "anomalyDino" ? "AnomalyDINO" : "kNN"}
+                  </button>
+                </p>
               {/if}
               <p class="s-note dim">
                 Only a model exported here fits: this pass crops a fraction of each instance's bbox, while the
@@ -616,9 +630,19 @@
                     {#if fitMsg}<br /><span class="fs-msg">{fitMsg}</span>{/if}
                   </span>
                   {#if t.enough}
-                    <button class="fs-go" disabled={fitting} onclick={() => doFit(ni, nodeName)}>
-                      {fitting ? "fitting…" : scoredMode === "svm" ? "re-fit" : "fit the SVM"}
-                    </button>
+                    <span class="fs-acts">
+                      <button class="fs-go" disabled={fitting} onclick={() => doFit(ni, nodeName)}>
+                        {fitting ? "fitting…" : scoredMode === "svm" ? "re-fit" : "fit the SVM"}
+                      </button>
+                      <!-- Fitting used to be a one-way door: the only way off a model you decided was
+                           worse than the baseline was re-embedding the whole file. -->
+                      {#if scoredMode === "svm"}
+                        <button class="fs-undo" onclick={() => revert(ni, nodeName)}
+                                title="Drop this model and score {nodeName} with {es.scorer === 'anomalyDino' ? 'AnomalyDINO' : 'kNN'} again. Your labels stay.">
+                          revert to {es.scorer === "anomalyDino" ? "AnomalyDINO" : "kNN"}
+                        </button>
+                      {/if}
+                    </span>
                   {:else}
                     <button class="fs-go" disabled={!t.pos} onclick={() => nudge(ni)}>
                       {scoredMode === "fewshot" ? "re-nudge" : "nudge instead"}
@@ -928,6 +952,17 @@
   .sopt-sm:hover {
     background: color-mix(in srgb, var(--accent) 14%, transparent);
   }
+  .fs-acts { display: inline-flex; align-items: center; gap: 0.35rem; }
+  .fs-undo {
+    padding: 0.16rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: transparent;
+    color: var(--dim);
+    font-size: 0.68rem;
+    cursor: pointer;
+  }
+  .fs-undo:hover { color: var(--text); border-color: var(--muted); }
   .s-req {
     display: flex;
     align-items: center;

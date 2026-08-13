@@ -603,6 +603,38 @@ describe("the bundle route hands off to its own question", () => {
 // Picking an unsupervised scorer settles the BASELINE; a trained boundary layers on top of it per
 // keypoint. The UI has to say so, and — the bug — must not report the supervised route as already
 // finished just because the baseline is no longer kNN.
+describe("a fitted model can be taken back off", () => {
+  const win = () => read("src/lib/components/AppearanceWindow.svelte");
+
+  it("offers the revert wherever a model is applied", () => {
+    const w = win();
+    // both routes that apply one: fitting here, and uploading a bundle
+    expect((w.match(/revert\(ni, nodeName\)/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    expect(w).toContain("es.clearTrainedModel(ni)");
+  });
+
+  it("names the baseline it returns to, rather than saying 'revert'", () => {
+    expect(win()).toMatch(/revert to \{es\.scorer === "anomalyDino" \? "AnomalyDINO" : "kNN"\}/);
+  });
+
+  it("says the labels survive — reverting is not un-judging", () => {
+    expect(win()).toMatch(/the model is gone, the labels are not/);
+  });
+
+  it("only shows it when there IS a model", () => {
+    const w = win();
+    // the BUTTONS, not the function definition above them
+    const calls = [...w.matchAll(/onclick=\{\(\) => revert\(ni, nodeName\)\}/g)];
+    expect(calls.length, "no revert buttons found").toBeGreaterThanOrEqual(2);
+    // The GUARD form specifically. A 500-char lookbehind also matched the re-fit label's ternary
+    // (`scoredMode === "svm" ? "re-fit"`), so removing the guard still passed.
+    for (const btn of [...w.matchAll(/class="fs-undo"/g)]) {
+      expect(w.slice(Math.max(0, btn.index - 320), btn.index), "a revert button with no model to revert")
+        .toMatch(/\{#if scoredMode === "svm"\}/);
+    }
+  });
+});
+
 describe("unsupervised and supervised compose", () => {
   const win = () => read("src/lib/components/AppearanceWindow.svelte");
 

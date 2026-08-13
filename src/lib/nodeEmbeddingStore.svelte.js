@@ -254,6 +254,38 @@ export class NodeEmbeddingStore {
     this.#scoreSig = null; this.#scoreRes = null;
     this.rev++; this.resultRev++;
   }
+  /**
+   * Drop a keypoint's trained model and put it back on the unsupervised baseline.
+   *
+   * Fitting was a one-way door: #trainedNodes was only ever written by applyTrainedModel or cleared
+   * wholesale by a re-run, so a model you decided was worse than kNN could only be undone by
+   * re-embedding the whole file. The two layers are supposed to compose, and composing means being
+   * able to take one off.
+   *
+   * The group is RE-SCORED, not just unmarked — leaving the SVM's z values in place under a "kNN"
+   * label would report one thing and show another. Any few-shot blend goes too: it was computed over
+   * the scores that are being replaced.
+   */
+  async clearTrainedModel(ni) {
+    if (!this.#trainedNodes.has(ni)) return false;
+    this.#trainedNodes.delete(ni);
+    this.#fewShot.delete(ni); this.#fsBase.delete(ni);
+    const idxs = this.#nodeIndex.get(ni) ?? [];
+    const vidx = new Map((store.labels?.videos ?? []).map((v, i) => [v, i]));
+    if (idxs.length >= NodeEmbeddingStore.MIN_PER_NODE) {
+      const { res, usedScorer, refCount } = await this.#scoreGroup(idxs, vidx);
+      idxs.forEach((r, k) => { this.#z[r] = res.z[k]; this.#coords[r] = res.coords[k]; });
+      const st = this.#nodeStats.find((x) => x.node === ni);
+      if (st) { st.scored = true; st.refCount = refCount; st.scorer = usedScorer; }
+    } else {
+      idxs.forEach((r) => { this.#z[r] = 0; });
+    }
+    ({ frameZ: this.#frameZ, worstByInst: this.#worstByInst } = buildScoreMaps(this.#recs, this.#z, store.frames, vidx));
+    this.#scoreSig = null; this.#scoreRes = null;   // the memo describes a state that no longer holds
+    this.rev++; this.resultRev++;
+    return true;
+  }
+
   /** Which keypoints are scored by a locally-trained model rather than by unsupervised kNN. */
   trainedNode(ni) { this.resultRev; return this.#trainedNodes.has(ni); }
   /** How a keypoint is currently scored. The supervised modes override whichever unsupervised
@@ -673,6 +705,27 @@ export class NodeEmbeddingStore {
   /** Score each node group independently: kNN outlier + robust-z + 2-D PCA over the SAME node's patches
    *  (a per-video-stratified reference within the node), so each keypoint type gets its own graph and its
    *  own "normal". Groups below MIN_PER_NODE are left unscored (z=0) — too few for a reference. */
+  /**
+   * Score ONE keypoint group with the current unsupervised baseline. Factored out so the full run and
+   * a single group being reverted from a trained model cannot drift apart on the reference, the
+   * fallback rule, or which scorer they report.
+   */
+  async #scoreGroup(idxs, vidx) {
+    const embsN = idxs.map((r) => this.#embs[r]);
+    const vkeys = idxs.map((r) => vidx.get(store.frames[this.#recs[r].fi]?.video) ?? 0);
+    const refIdx = stratifiedReference(vkeys, this.referenceFraction, NodeEmbeddingStore.REF_MIN_PER_VIDEO);
+    // AnomalyDINO needs patch features, and a group whose reference has none would score every patch 0
+    // and read as "all clean" — the worst possible failure for a QC check. Fall the group back to kNN
+    // and SAY which scorer ran, rather than silently returning zeros.
+    const ptsN = idxs.map((r) => this.#pts[r]);
+    const haveAd = this.scorer === "anomalyDino"
+      && refIdx.some((i) => ptsN[i]?.length) && ptsN.some((d) => d?.length);
+    const res = await scoreEmbeddings(embsN, refIdx, this.k, haveAd
+      ? { scorer: "anomalyDino", patches: ptsN, P: PATCH.dim, opts: { q: this.anomalyQ, bankTokens: ANOMALY_DINO.bankTokens } }
+      : null); // off-thread; falls back on the main thread
+    return { res, usedScorer: haveAd ? "anomalyDino" : "knn", refCount: refIdx.length };
+  }
+
   async #scoreAllNodes(vidx) {
     const byNode = new Map();
     for (let r = 0; r < this.#recs.length; r++) { const ni = this.#recs[r].node; if (!byNode.has(ni)) byNode.set(ni, []); byNode.get(ni).push(r); }
@@ -691,22 +744,10 @@ export class NodeEmbeddingStore {
         nodeStats.push({ node: ni, count: idxs.length, scored: false, refCount: 0, scorer: null });
         continue;
       }
-      const embsN = idxs.map((r) => this.#embs[r]);
-      const vkeys = idxs.map((r) => vidx.get(store.frames[this.#recs[r].fi]?.video) ?? 0);
-      const refIdx = stratifiedReference(vkeys, this.referenceFraction, NodeEmbeddingStore.REF_MIN_PER_VIDEO);
-      // AnomalyDINO needs patch features, and a group whose reference has none would score every
-      // patch 0 and read as "all clean" — the worst possible failure for a QC check. Fall the group
-      // back to kNN and SAY which scorer ran, rather than silently returning zeros.
-      const ptsN = idxs.map((r) => this.#pts[r]);
-      const wantAd = this.scorer === "anomalyDino";
-      const haveAd = wantAd && refIdx.some((i) => ptsN[i]?.length) && ptsN.some((d) => d?.length);
-      const usedScorer = haveAd ? "anomalyDino" : "knn";
-      this.message = `Scoring keypoint ${done}/${nodes.length}${wantAd ? " · AnomalyDINO" : ""}…`; this.rev++;
-      const res = await scoreEmbeddings(embsN, refIdx, this.k, haveAd
-        ? { scorer: "anomalyDino", patches: ptsN, P: PATCH.dim, opts: { q: this.anomalyQ, bankTokens: ANOMALY_DINO.bankTokens } }
-        : null); // off-thread; falls back on the main thread
+      this.message = `Scoring keypoint ${done}/${nodes.length}${this.scorer === "anomalyDino" ? " · AnomalyDINO" : ""}…`; this.rev++;
+      const { res, usedScorer, refCount } = await this.#scoreGroup(idxs, vidx);
       for (let s = 0; s < idxs.length; s++) { const r = idxs[s]; z[r] = res.z[s]; coords[r] = res.coords[s]; }
-      nodeStats.push({ node: ni, count: idxs.length, scored: true, refCount: refIdx.length, scorer: usedScorer });
+      nodeStats.push({ node: ni, count: idxs.length, scored: true, refCount, scorer: usedScorer });
     }
     this.#z = z; this.#coords = coords; this.#nodeIndex = nodeIndex; this.#nodeStats = nodeStats;
     ({ frameZ: this.#frameZ, worstByInst: this.#worstByInst } = buildScoreMaps(this.#recs, z, store.frames, vidx));

@@ -530,3 +530,106 @@ describe("unsupervised baseline + supervised override compose", () => {
     kl.clear();
   });
 });
+
+// Fitting was a one-way door: #trainedNodes was only ever written by applyTrainedModel or cleared
+// wholesale by a re-run, so a model you decided was worse than the baseline could only be undone by
+// re-embedding the whole file. The two layers are meant to compose, and composing means taking one off.
+describe("a trained model can be taken back off", () => {
+  const label = async () => {
+    const { keypointLabels } = await import("./keypointLabels.svelte.js");
+    keypointLabels.clear();
+    for (let f = 0; f < 6; f++) for (let ii = 0; ii < 2; ii++) keypointLabels.markAt(`0:${f}`, ii, "nose", ii === 0);
+    return keypointLabels;
+  };
+
+  it("restores the unsupervised scores exactly, not just the label", async () => {
+    const st = new NodeEmbeddingStore("dino");
+    await st.run();
+    const baseline = st.pointsForNode(0).map((p) => p.z);
+    const kl = await label();
+
+    st.applyTrainedModel(0, st.trainFor(0).clf);
+    expect(st.scoringOf(0)).toBe("svm");
+    expect(st.pointsForNode(0).map((p) => p.z)).not.toEqual(baseline);
+
+    expect(await st.clearTrainedModel(0)).toBe(true);
+    expect(st.scoringOf(0), "still reports the model").toBe("knn");
+    // RE-SCORED, not merely unmarked — leaving the SVM's z under a "kNN" label would report one thing
+    // and show another.
+    st.pointsForNode(0).forEach((p, i) => expect(p.z).toBeCloseTo(baseline[i], 10));
+    kl.clear();
+  });
+
+  it("reverts to whichever baseline is live, not always kNN", async () => {
+    const st = new NodeEmbeddingStore("dino");
+    await st.run();
+    await st.setScorer("anomalyDino");
+    const baseline = st.pointsForNode(0).map((p) => p.z);
+    const kl = await label();
+    st.applyTrainedModel(0, st.trainFor(0).clf);
+    await st.clearTrainedModel(0);
+    expect(st.scoringOf(0)).toBe("anomalyDino");
+    st.pointsForNode(0).forEach((p, i) => expect(p.z).toBeCloseTo(baseline[i], 10));
+    kl.clear();
+  });
+
+  it("leaves the LABELS alone — reverting is not un-judging", async () => {
+    const st = new NodeEmbeddingStore("dino");
+    await st.run();
+    const kl = await label();
+    st.applyTrainedModel(0, st.trainFor(0).clf);
+    await st.clearTrainedModel(0);
+    expect(st.trainableFor(0).n, "the training set was destroyed").toBeGreaterThan(0);
+    expect(st.trainableFor(0).pos).toBeGreaterThan(0);   // so it can be re-fitted immediately
+    kl.clear();
+  });
+
+  it("drops a few-shot blend with it — that was computed over the scores being replaced", async () => {
+    const st = new NodeEmbeddingStore("dino");
+    await st.run();
+    const kl = await label();
+    st.applyTrainedModel(0, st.trainFor(0).clf);
+    st.applyFewShot(0, 0.5);
+    expect(st.scoringOf(0)).toBe("fewshot");
+    await st.clearTrainedModel(0);
+    expect(st.scoringOf(0)).toBe("knn");
+    expect(st.fewShotInfoFor(0)).toBeNull();
+    kl.clear();
+  });
+
+  it("only touches its own keypoint, and no-ops when there is nothing to clear", async () => {
+    const st = new NodeEmbeddingStore("dino");
+    await st.run();
+    const kl = await label();
+    st.applyTrainedModel(0, st.trainFor(0).clf);
+    const other = st.pointsForNode(1).map((p) => p.z);
+    await st.clearTrainedModel(0);
+    expect(st.pointsForNode(1).map((p) => p.z)).toEqual(other);
+    expect(await st.clearTrainedModel(1), "claimed to clear an untrained keypoint").toBe(false);
+    kl.clear();
+  });
+
+  it("the frame-level QC maps follow the revert", async () => {
+    // frameZ is the max over EVERY node of a frame, so comparing one frame's value before and after
+    // proves nothing — a change in node 0 is invisible whenever another node is the max. Assert the
+    // invariant instead: every frame's stored max equals the max of the scores now in the store.
+    const st = new NodeEmbeddingStore("dino");
+    await st.run();
+    const kl = await label();
+    st.applyTrainedModel(0, st.trainFor(0).clf);
+    await st.clearTrainedModel(0);
+
+    const expected = new Map();
+    for (const st2 of st.nodeStats) {
+      for (const rec of st.outlierRecordsForNode(st2.node)) {
+        const key = `0:${rec.fi}`;
+        if (!expected.has(key) || rec.z > expected.get(key)) expected.set(key, rec.z);
+      }
+    }
+    expect(expected.size).toBeGreaterThan(0);
+    for (const [key, z] of expected) {
+      expect(st.frameZByKey(key), `${key} kept a stale max`).toBeCloseTo(z, 10);
+    }
+    kl.clear();
+  });
+});
