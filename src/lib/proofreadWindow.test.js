@@ -248,3 +248,54 @@ describe("the pass shows the verdict, not a reference card", () => {
     expect(win).toContain("How this order was built");
   });
 });
+
+// The frame is CONTAIN-fitted into the height left over, so on a wide-and-short window it
+// letterboxes and no amount of layout tuning helps — only more height does, and only the user knows
+// how much of their screen to give it.
+describe("the window can be made bigger", () => {
+  const pop = read("src/lib/components/PopoutWindow.svelte");
+
+  it("proofreading asks for a resizable window", () => {
+    expect(read("src/lib/components/ProofreadWindow.svelte")).toMatch(/<PopoutWindow[\s\S]{0,200}?\sresizable/);
+  });
+
+  it("the grip drives width AND height, with a floor", () => {
+    expect(pop).toContain('class="rgrip"');
+    expect(pop).toMatch(/w = Math\.max\(MIN_W/);
+    expect(pop).toMatch(/h = Math\.max\(MIN_H/);
+  });
+
+  it("the size is remembered, like the position", () => {
+    expect(pop).toContain("SIZE.set(title,");
+    expect(pop).toMatch(/const savedSize = SIZE\.get\(title\)/);
+  });
+
+  it("double-clicking the bar resets size as well as place", () => {
+    expect(pop).toMatch(/x = null; y = null; w = null; h = null;/);
+    expect(pop).toContain("SIZE.delete(title)");
+  });
+
+  it("the CSS cap does not silently override a resize", () => {
+    // max-height: 88vh quietly ate the last 12% of every drag.
+    const cap = pop.match(/max-height: (\d+)vh/)[1];
+    expect(Number(cap)).toBeGreaterThanOrEqual(96);
+  });
+});
+
+describe("the strip under the frame carries only per-candidate information", () => {
+  const w2 = read("src/lib/components/ProofreadWindow.svelte");
+
+  it("the run-level detector histogram lives in the explainer, not under every frame", () => {
+    // It is identical on every candidate — a fixed cost in picture height for information that never
+    // changes — and it answers "why is the order like this", which is what that disclosure is for.
+    const details = w2.slice(w2.indexOf('<details class="rank-note">'), w2.indexOf("</details>"));
+    expect(details, "the histogram is not inside the explainer").toContain('class="dist"');
+    const strip = w2.slice(w2.indexOf('class="legend"'), w2.indexOf('<details class="rank-note">'));
+    expect(strip, "the histogram is still printed under the frame").not.toContain('class="dist"');
+  });
+
+  it("what remains under the frame is per-candidate", () => {
+    const strip = w2.slice(w2.indexOf('class="legend"'), w2.indexOf('<details class="rank-note">'));
+    expect(strip).toContain("upnext");     // which candidates come next — changes every step
+  });
+});

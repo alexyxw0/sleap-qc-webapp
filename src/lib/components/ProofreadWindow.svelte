@@ -274,7 +274,7 @@
 {#if proofreadWindow.open}
   <!-- Sized like a workspace, not a palette: the frame is the content, so it gets the window. -->
   <PopoutWindow title="Proofreading" width="min(1080px, 92vw)" height={ready ? "min(840px, 86vh)" : null}
-                fill={ready} onclose={() => proofreadWindow.close()}>
+                fill={ready} resizable onclose={() => proofreadWindow.close()}>
     <div class="win">
       {#if !ready}
         <!-- Nothing to show, and saying so beats an empty list that looks like "no faults found". -->
@@ -455,20 +455,6 @@
                 >{store.frames?.[u.i]?.frameIdx ?? u.i}{#if framePass.instances.length > 1 || u.inst > 0}<i>a{u.inst + 1}</i>{/if}</span>{/each}
             </p>
           {/if}
-          {#if dist}
-            <!-- How many animals each detector is alarmed about, by the same top-5% rule the ranking
-                 uses — so the numbers explain the order rather than describing something else. -->
-            <div class="dist" title="Animals each detector rates in its own top 5%, out of {dist.total}. {dist.priority} are promoted by an angle check; {dist.agree[2] + dist.agree[3] + dist.agree[4]} have two or more detectors agreeing.">
-              {#each SIGNALS as [k, label] (k)}
-                <span class="d-item" class:angle={k === "angle" || k === "meanAngle"}>
-                  <span class="d-l">{label}</span>
-                  <span class="d-bar"><i style:width="{(dist.per[k] / distMax) * 100}%"></i></span>
-                  <b>{dist.per[k]}</b>
-                </span>
-              {/each}
-              <span class="d-item d-tot">∠ {dist.priority} first · {dist.total} animals</span>
-            </div>
-          {/if}
           <!-- The ranking explainer used to sit under every candidate. It does not change between
                them, so it belongs where you go to ask about the order, not in the pass. -->
           <details class="rank-note">
@@ -480,7 +466,21 @@
               5% sorts ahead of everything else.</b> The <b>score</b> is this animal's percentile in that
               order. Fixed to the run behind it; re-run QC to rebuild.
             </p>
-          </details>
+            {#if dist}
+                <!-- How many animals each detector is alarmed about, by the same top-5% rule the ranking
+                     uses — so the numbers explain the order rather than describing something else. -->
+                <div class="dist" title="Animals each detector rates in its own top 5%, out of {dist.total}. {dist.priority} are promoted by an angle check; {dist.agree[2] + dist.agree[3] + dist.agree[4]} have two or more detectors agreeing.">
+                  {#each SIGNALS as [k, label] (k)}
+                    <span class="d-item" class:angle={k === "angle" || k === "meanAngle"}>
+                      <span class="d-l">{label}</span>
+                      <span class="d-bar"><i style:width="{(dist.per[k] / distMax) * 100}%"></i></span>
+                      <b>{dist.per[k]}</b>
+                    </span>
+                  {/each}
+                  <span class="d-item d-tot">∠ {dist.priority} first · {dist.total} animals</span>
+                </div>
+              {/if}
+            </details>
         {:else if proofreadWindow.tab === "keys"}
           <div class="keyspane">
             <p class="kp-h">
