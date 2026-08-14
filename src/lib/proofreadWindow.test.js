@@ -318,9 +318,14 @@ describe("the priority tier is shown, not just applied", () => {
       .not.toMatch(/k === "angle" \|\| k === "meanAngle"/);
   });
 
-  it("the explainer no longer claims only angles promote", () => {
-    expect(w3).toMatch(/max_angle, mean_angle and AnomalyDINO carry 3× the weight/);
-    expect(w3).toMatch(/counts only\s+when the per-keypoint pass actually ran it/);
+  it("the explainer states the weights as MEASURED LIFT, and names the tier", () => {
+    // The weights are not preferences; each is PR-AUC over the base rate on gily_only. Saying "3x the
+    // weight" hid where the numbers came from, and hid that they differ per detector.
+    expect(w3).toMatch(/measured lift/);
+    expect(w3).toMatch(/AnomalyDINO 11×, max_angle 4\.5×/);
+    expect(w3).toMatch(/max_angle and AnomalyDINO also form a priority tier/);
+    // ...and that a kNN pass is weighed but not promoted
+    expect(w3).toMatch(/kNN\s+pass contributes its weight but does not earn that promotion/);
   });
 });
 

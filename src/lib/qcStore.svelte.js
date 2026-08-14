@@ -125,21 +125,61 @@ const FRAME_SEVERITY = {
 const PROOFREAD_ANGLE = "max_angle_zscore";
 const PROOFREAD_MEAN_ANGLE = "mean_angle_zscore";
 
-// The ANGLE features and ANOMALYDINO are prioritised: a bent joint is the most direct evidence that a
-// pose is wrong, and AnomalyDINO is the only signal here that looks at the IMAGE at keypoint scale —
-// where Anomaly and GMM are diffuse "this geometry looks unusual" scores over the same 18 numbers.
-// Priority is applied twice —
-//   1. an animal any priority check rates in its own top 5% sorts AHEAD of everything else, and
-//   2. within a tier those terms carry 3x the weight in the combined evidence.
-// A tier rather than weight alone, because "always sort them first" has to be a guarantee you can
-// check, not a tendency that a big enough anomaly score can overturn.
+// RANKING WEIGHTS — every one is a measured LIFT, not a preference.
 //
-// `nodeDino` is present only when the per-keypoint pass actually RAN AnomalyDINO. Absent, it is null
-// on every row, which the Fisher term below treats as no evidence either way (a constant added to
-// every row) — so a file without it ranks exactly as it did before this signal existed.
+// weight = PR-AUC / base rate: "how many times better than reviewing at random this detector is at
+// its own task". A lift is the right currency because the two families are measured on different
+// populations (all-faults at ~6.5% base, nose-faults at 2.6%) and raw PR is not comparable across
+// them, while "x chance" is. Sources, all on gily_only:
+//
+//   detector                       PR     base    lift    source
+//   DINO-SVM (per keypoint)       0.689   2.61%   26.4    nose-fault sweep
+//   AnomalyDINO (per keypoint)    0.286   2.61%   11.0    nose-fault sweep
+//   DINO-kNN / PatchCore          0.133   2.61%    5.1    nose-fault sweep
+//   max_angle |z|                 0.292   6.52%    4.5    measured, presentation/eval
+//   mean_angle |z|                0.226   6.52%    3.5    measured, presentation/eval
+//   GMM (18-feature, 5-component) 0.155   6.52%    2.4    measured, presentation/eval
+//   Anomaly (ZScore)              0.141   6.52%    2.2    measured, presentation/eval
+//
+// Two detectors from the same sweep are deliberately absent: pose-disagreement (lift 2.5) and SAM
+// containment (1.76) are not implemented here. And note the app's GMM is the 18-feature 5-component
+// one measured above at 2.4 — NOT the angle-vector K=1 GMM in the geometry figure, which reaches 3.9.
+// Weighting the app's GMM with that number would credit it for a detector it does not run.
 const PF_SIGNALS = ["anomaly", "gmm", "angle", "meanAngle", "nodeDino"];
-const PF_PRIORITY_SIGNALS = ["angle", "meanAngle", "nodeDino"];
-const PF_WEIGHT = { anomaly: 1, gmm: 1, angle: 3, meanAngle: 3, nodeDino: 3 };
+
+// PRIORITY: an animal that max_angle or AnomalyDINO rates in its own top 5% sorts AHEAD of
+// everything else, whatever the rest of the evidence says. A tier rather than weight alone, because
+// "these always come first" has to be a guarantee you can check, not a tendency a big enough anomaly
+// score can overturn. mean_angle is NOT in it — it is the weaker half of the angle pair (3.5 vs 4.5)
+// and it earns its place through weight like the others.
+//
+// The appearance slot only enters the tier when what is scoring it EARNED the tier: AnomalyDINO or a
+// fitted model. A plain kNN pass over the same patches (lift 5.1 against AnomalyDINO's 11.0) still
+// contributes its weight, but promoting on it would hand the guarantee to a detector less than half
+// as good as the one the guarantee is for.
+const PF_PRIORITY_SIGNALS = ["angle", "nodeDino"];
+const PF_NODE_PRIORITY = new Set(["anomalyDino", "svm", "fewshot"]);
+
+const PF_WEIGHT = { anomaly: 2.2, gmm: 2.4, angle: 4.5, meanAngle: 3.5, nodeDino: 11.0 };
+// The per-keypoint appearance signal is worth wildly different amounts depending on what is scoring
+// it, so its weight follows the scorer rather than the slot. Keyed by what nodeEmbeddingStore
+// reports for the majority of its scored groups.
+const PF_NODE_WEIGHT = { svm: 26.4, fewshot: 26.4, anomalyDino: 11.0, knn: 5.1 };
+/** The scorer behind the MAJORITY of the per-keypoint store's scored groups, or null if it has none.
+ *  A per-keypoint model overrides its group's baseline, so scoringOf is consulted first. */
+function pfNodeScorer(nes) {
+  if (!nes?.hasResults) return null;
+  const tally = new Map();
+  for (const st of nes.nodeStats ?? []) {
+    if (!st.scored) continue;
+    const k = nes.scoringOf?.(st.node) ?? st.scorer ?? "knn";
+    tally.set(k, (tally.get(k) ?? 0) + 1);
+  }
+  let best = null, n = 0;
+  for (const [k, c] of tally) if (c > n) { n = c; best = k; }
+  return best;
+}
+
 const PF_HOT = 0.95; // "this detector is alarmed"
 
 const DETECTOR_LABELS = { anomaly: "Anomaly", gmm: "GMM", chirality: "Chirality", ordering: "Ordering", poseSplit: "Pose split", count: "Count", sparse: "Sparse", confidence: "Confidence", instConfidence: "Inst conf", negative: "Negative", outOfFrame: "Out of frame", duplicates: "Duplicates", ...Object.fromEntries(Object.entries(APPEARANCE_LABELS).map(([k, v]) => [k, v.full])) };
@@ -1207,6 +1247,9 @@ class QCStore {
    * Absent signals are null on every row, which the Fisher combination treats as no evidence either
    * way, so a partial set ranks correctly — it just ranks on less.
    */
+  /** What the appearance ranking signal is currently worth — see PF_NODE_WEIGHT. */
+  get proofreadNodeScorer() { this.rev; return pfNodeScorer(nodeEmbeddingStores.dino); }
+
   get proofreadSignals() {
     this.rev;
     const nes = nodeEmbeddingStores.dino;
@@ -1378,14 +1421,22 @@ class QCStore {
     const a = this.#computed.anomaly, g = this.#computed.gmm;
     const c = this.#pfCache;
     const nes0 = nodeEmbeddingStores.dino;
-    const adRev = nes0.hasResults ? nes0.resultRev : -1;   // a new appearance run re-ranks
+    const adRev = nes0.hasResults ? `${nes0.resultRev}:${pfNodeScorer(nes0)}` : "-";  // new run OR new scorer re-ranks
     if (c && c.a === a && c.g === g && c.n === frames.length && c.ad === adRev) return c.rows;
 
     const angleInst = this.#instZFor(PROOFREAD_ANGLE);
     const meanAngleInst = this.#instZFor(PROOFREAD_MEAN_ANGLE);
-    // Only when the per-keypoint pass actually ran AnomalyDINO — a kNN pass leaves the ranking alone.
+    // The per-keypoint appearance signal, weighted by what is ACTUALLY scoring it — a kNN pass and a
+    // fitted SVM over the same patches differ by 5x in measured lift, so one slot with one weight
+    // would either flatter the weak case or short-change the strong one. A file with a mixture takes
+    // the majority scorer; in practice a user either fits models for their keypoints or does not.
     const nes = nodeEmbeddingStores.dino;
-    const adLive = nes.hasResults && (nes.nodeStats ?? []).some((st) => st.scorer === "anomalyDino");
+    const nodeScorer = pfNodeScorer(nes);
+    const adLive = nes.hasResults && nodeScorer != null;
+    const nodeWeight = PF_NODE_WEIGHT[nodeScorer] ?? PF_WEIGHT.nodeDino;
+    const prioSignals = PF_NODE_PRIORITY.has(nodeScorer)
+      ? PF_PRIORITY_SIGNALS
+      : PF_PRIORITY_SIGNALS.filter((k) => k !== "nodeDino");
     const rows = [];
     for (let i = 0; i < frames.length; i++) {
       const fk = this.#fkey(frames[i]);
@@ -1420,10 +1471,10 @@ class QCStore {
       }
     }
     for (const r of rows) {
-      r.anglePriority = PF_PRIORITY_SIGNALS.some((k) => (r.pct[k] ?? 0) >= PF_HOT);
+      r.anglePriority = prioSignals.some((k) => (r.pct[k] ?? 0) >= PF_HOT);
       // The verdict should name why the row is where it is: the priority signal when that is what
       // promoted it, otherwise whichever detector is loudest.
-      const pool = r.anglePriority ? PF_PRIORITY_SIGNALS : PF_SIGNALS;
+      const pool = r.anglePriority ? prioSignals : PF_SIGNALS;
       r.by = pool.reduce((best, k) => ((r.pct[k] ?? -1) > (r.pct[best] ?? -1) ? k : best), pool[0]);
     }
     // Fisher: sum the evidence, then normalise so the worst row reads 1.0.
@@ -1432,7 +1483,7 @@ class QCStore {
       for (const key of PF_SIGNALS) {
         const pct = r.pct[key];
         const pv = pct == null ? 0.5 : Math.max(MIN_P, 1 - pct); // unmeasured = no evidence either way
-        x += PF_WEIGHT[key] * -2 * Math.log(pv);
+        x += (key === "nodeDino" ? nodeWeight : PF_WEIGHT[key]) * -2 * Math.log(pv);
       }
       r.evidence = x;
     }

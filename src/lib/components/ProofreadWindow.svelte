@@ -250,7 +250,7 @@
   // and now that Keybinds is a tab, a reference card is what that tab IS. The space buys a QC readout
   // you can actually read at a glance, which is the thing you look at on every single candidate.
   // Mirrors PF_PRIORITY_SIGNALS in qcStore: the signals that promote an animal ahead of the rest.
-  const PRIORITY = new Set(["angle", "meanAngle", "nodeDino"]);
+  const PRIORITY = new Set(["angle", "nodeDino"]);
   const LEGEND_IDS = ["faulty", "clean", "next", "prev"];
   const KEYS = $derived(LEGEND_IDS.map((id) => keybinds.allEntries.find((e) => e.id === id)).filter(Boolean));
 
@@ -494,10 +494,12 @@
             <p>
               One row per <b>animal</b>, worst first. Each detector is rank-normalized across every animal
               in the file, then combined as evidence — so detectors that agree outrank one that is merely
-              extreme. <b>max_angle, mean_angle and AnomalyDINO carry 3× the weight, and any animal one of
-              them rates in its own top 5% sorts ahead of everything else.</b> AnomalyDINO counts only
-              when the per-keypoint pass actually ran it — a kNN pass is a weaker claim about the same
-              patches. The <b>score</b> is this animal's percentile in that
+              extreme. <b>Each detector's weight is its measured lift — PR-AUC over the base rate, i.e. how
+              many times better than reviewing at random it is.</b> AnomalyDINO 11×, max_angle 4.5×,
+              mean_angle 3.5×, GMM 2.4×, Anomaly 2.2×; a fitted per-keypoint model counts 26×, a plain
+              kNN pass 5.1×. <b>max_angle and AnomalyDINO also form a priority tier: any animal either
+              rates in its own top 5% sorts ahead of everything else</b>, whatever the rest says. A kNN
+              pass contributes its weight but does not earn that promotion. The <b>score</b> is this animal's percentile in that
               order. Fixed to the run behind it; re-run QC to rebuild.
             </p>
             {#if dist}

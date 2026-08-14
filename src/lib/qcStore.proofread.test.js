@@ -38,6 +38,13 @@ describe("before the automatic QC has run", () => {
   });
 });
 
+// Read the pools from the source rather than restating them: the tier changed once (mean_angle out,
+// AnomalyDINO in) and a hard-coded copy here silently kept testing the old rule.
+const SRC = readFileSync("src/lib/qcStore.svelte.js", "utf8");
+const listFrom = (name) => SRC.match(new RegExp(`${name} = \\[([^\\]]*)\\]`))[1].match(/"(\w+)"/g).map((q) => q.slice(1, -1));
+const SIGNALS = listFrom("PF_SIGNALS");
+const PRIORITY = listFrom("PF_PRIORITY_SIGNALS");
+
 describe("after a run", () => {
   beforeAll(async () => {
     qc.setChecks(["anomaly", "gmm"], true);
@@ -156,16 +163,16 @@ describe("after a run", () => {
     for (const p of prio) for (const d of ["anomaly", "gmm"]) {
       expect(weights[p], `${p} does not outweigh ${d}`).toBeGreaterThan(weights[d]);
     }
-    expect(s).toContain("PF_WEIGHT[key] * -2 * Math.log(pv)");
+    expect(s).toMatch(/-2 \* Math\.log\(pv\)/);   // Fisher, whichever weight the key resolves to
   });
 
-  it("AnomalyDINO is a priority signal, alongside the angle checks", () => {
-    // "prioritise the image-scale evidence": a bent joint, and the one detector that looks at pixels
-    // at keypoint scale. Anomaly and GMM are diffuse scores over the same 18 geometric numbers.
+  it("max_angle and AnomalyDINO — and only those — are the priority tier", () => {
+    // The explicit requirement: those two ALWAYS come first. mean_angle is the weaker half of the
+    // angle pair (lift 3.5 vs 4.5) and earns its place through weight like everything else.
+    expect(PRIORITY).toEqual(["angle", "nodeDino"]);
     const s = readFileSync("src/lib/qcStore.svelte.js", "utf8");
     const prio = s.match(/PF_PRIORITY_SIGNALS = \[([^\]]*)\]/)[1];
-    for (const k of ["angle", "meanAngle", "nodeDino"]) expect(prio).toContain(`"${k}"`);
-    for (const k of ["anomaly", "gmm"]) expect(prio).not.toContain(`"${k}"`);
+    for (const k of ["anomaly", "gmm", "meanAngle"]) expect(prio).not.toContain(`"${k}"`);
     // ...and it only exists when the pass actually ran AnomalyDINO
     expect(s).toMatch(/st\.scorer === "anomalyDino"/);
     expect(s).toContain("adLive ? (nes.worstNodeAtKey(fk, ii)?.z ?? null) : null");
@@ -237,7 +244,7 @@ describe("after a run", () => {
       expect(r.inst).toBeLessThan(n); // a real instance, not a stale index
       // `by` names why the row is where it is: the loudest ANGLE signal when an angle promoted it,
       // otherwise the loudest of all four.
-      const pool = r.anglePriority ? ["angle", "meanAngle"] : ["anomaly", "gmm", "angle", "meanAngle"];
+      const pool = r.anglePriority ? PRIORITY : SIGNALS;
       expect(pool).toContain(r.by);
       for (const k of pool) {
         if (r.pct[k] != null) expect(r.pct[k]).toBeLessThanOrEqual(r.pct[r.by] + 1e-12);
@@ -331,6 +338,7 @@ describe("AnomalyDINO joins the priority tier", () => {
   const restore = () => {
     def("hasResults", { get: () => false });
     def("nodeStats", { get: () => [] });
+    def("scoringOf", { value: () => "knn" });
     def("worstNodeAtKey", { value: () => null });
     nes.resultRev++;
   };
@@ -339,6 +347,9 @@ describe("AnomalyDINO joins the priority tier", () => {
   const stub = (scorer, hot) => {
     def("hasResults", { get: () => true });
     def("nodeStats", { get: () => [{ node: 0, count: 50, scored: true, refCount: 10, scorer }] });
+    // scoringOf is what a per-keypoint MODEL overrides its baseline through, and the weight resolver
+    // consults it first — a stub without it reports "knn" whatever nodeStats says.
+    def("scoringOf", { value: () => scorer });
     def("worstNodeAtKey", { value: (fk, ii) => ({ node: 0, z: hot.has(`${fk}:${ii}`) ? 99 : 0.1 }) });
     nes.resultRev++;
   };
@@ -377,20 +388,56 @@ describe("AnomalyDINO joins the priority tier", () => {
     restore();
   });
 
-  it("a kNN per-keypoint pass does NOT get the priority — different claim, same patches", () => {
+  it("a kNN per-keypoint pass contributes evidence but NOT the priority", () => {
+    // kNN over the same patches measures 5.1x chance against AnomalyDINO's 11.0. It is real signal,
+    // so it carries weight — but promoting on it would hand the "always first" guarantee to a
+    // detector less than half as good as the one the guarantee is for.
     restore();
-    const base = qc.proofreadRanked.map((r) => `${r.i}:${r.inst}`);
     const victim = qc.proofreadRanked[qc.proofreadRanked.length - 1];
+    const key = `${victim.i}:${victim.inst}`;
     const item = fake.frames[victim.i];
+
     stub("knn", new Set([`${item.fkey ?? `0:${item.frameIdx}`}:${victim.inst}`]));
-    expect(qc.proofreadRanked.map((r) => `${r.i}:${r.inst}`), "a kNN pass re-ranked the queue").toEqual(base);
+    const knnRow = qc.proofreadRanked.find((r) => `${r.i}:${r.inst}` === key);
+    expect(knnRow.anglePriority, "a kNN pass was promoted into the tier").toBe(false);
+    const knnAt = qc.proofreadRanked.findIndex((r) => `${r.i}:${r.inst}` === key);
+
+    // ...and the SAME animal under AnomalyDINO is promoted, on identical scores
+    stub("anomalyDino", new Set([`${item.fkey ?? `0:${item.frameIdx}`}:${victim.inst}`]));
+    const adRow = qc.proofreadRanked.find((r) => `${r.i}:${r.inst}` === key);
+    expect(adRow.anglePriority).toBe(true);
+    expect(qc.proofreadRanked.findIndex((r) => `${r.i}:${r.inst}` === key)).toBeLessThan(knnAt);
+    restore();
+  });
+
+  it("the appearance weight follows the SCORER, not the slot", () => {
+    // kNN 5.1x, AnomalyDINO 11.0x, a fitted model 26.4x — measured lifts over the same patches. One
+    // weight for the slot would either flatter the weak case or short-change the strong one, and the
+    // difference has to reach the combined evidence, not just sit in a table.
+    restore();
+    const victim = qc.proofreadRanked[Math.floor(qc.proofreadRanked.length / 2)];
+    const key = `${victim.i}:${victim.inst}`;
+    const item = fake.frames[victim.i];
+    const hot = new Set([`${item.fkey ?? `0:${item.frameIdx}`}:${victim.inst}`]);
+    const evidenceUnder = (scorer) => {
+      stub(scorer, hot);
+      return qc.proofreadRanked.find((r) => `${r.i}:${r.inst}` === key).evidence;
+    };
+    const knn = evidenceUnder("knn");
+    const ad = evidenceUnder("anomalyDino");
+    const svm = evidenceUnder("svm");
+    expect(ad, "AnomalyDINO weighed no more than kNN").toBeGreaterThan(knn);
+    expect(svm, "a fitted model weighed no more than AnomalyDINO").toBeGreaterThan(ad);
     restore();
   });
 
   it("the angle tier still leads — AnomalyDINO joins it rather than replacing it", () => {
     restore();
     const s = readFileSync("src/lib/qcStore.svelte.js", "utf8");
-    expect(s).toMatch(/PF_PRIORITY_SIGNALS\.some\(\(k\) => \(r\.pct\[k\] \?\? 0\) >= PF_HOT\)/);
+    // the tier is computed from the run's effective priority list (PF_PRIORITY_SIGNALS, minus the
+    // appearance slot when a plain kNN pass is what is scoring it)
+    expect(s).toMatch(/prioSignals\.some\(\(k\) => \(r\.pct\[k\] \?\? 0\) >= PF_HOT\)/);
+    expect(s).toMatch(/prioSignals = PF_NODE_PRIORITY\.has\(nodeScorer\)/);
     // every priority row sorts ahead of every non-priority row, whichever signal earned it
     const rows = qc.proofreadRanked;
     const lastPrio = rows.reduce((acc, r, k) => (r.anglePriority ? k : acc), -1);
