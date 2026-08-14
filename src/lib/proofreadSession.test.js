@@ -1,5 +1,6 @@
 // The loop is a state machine over the ranked queue. Tested headless: the components only forward keys.
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { readFileSync } from "node:fs";
 
 vi.mock("./labelsStore.svelte.js", () => ({
   // These fixtures are single-video, so index 0 is the whole story. The real derivation — and the
@@ -148,3 +149,32 @@ describe("keyboard-only session controls", () => {
   });
 });
 
+
+// The paint gate is a pure decision (draw.test.js proves it), but the WIRING is where the black frame
+// actually came from: the effect must consult it, remember the canvas it painted, and never hand
+// drawScene a picture of a different frame than the pose it is drawing.
+describe("the proofread canvas is wired to the paint gate", () => {
+  const w = readFileSync("src/lib/components/ProofreadWindow.svelte", "utf8");
+
+  it("asks shouldHoldPaint instead of testing the pair inline", () => {
+    expect(w).toContain("const havePair = imgFor === it;");
+    expect(w).toMatch(/if \(shouldHoldPaint\(\{ havePair, paintedEl, canvasEl: c, dimsKnown: hasKnownDims\(it\) \}\)\) return;/);
+    // the old inline form is what withheld the very first paint
+    expect(w, "still bailing on the raw pair test").not.toMatch(/^\s*if \(imgFor !== it\) return;/m);
+  });
+
+  it("remembers WHICH canvas it painted, and records it after painting", () => {
+    // A boolean would survive the canvas being destroyed and re-created on close/re-open, and hold a
+    // paint that is no longer on screen.
+    expect(w).toMatch(/let paintedEl = null;/);
+    expect(w).toMatch(/paintedEl = c;\s*\n\s*\}\);/);
+    // ...and not as $state: the effect both reads and writes it, so a reactive read would re-run it
+    expect(w).not.toMatch(/paintedEl = \$state/);
+  });
+
+  it("never draws a picture of one frame under the pose of another", () => {
+    // The early paint is the whole point of the change, and this is the line that keeps it honest.
+    expect(w).toContain("const image = havePair ? img : null;");
+    expect(w).toContain("decoding: !havePair,");
+  });
+});

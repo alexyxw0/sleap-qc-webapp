@@ -3,7 +3,7 @@
 // this is what you have targeted. Those are easy to break silently — nothing throws when a fill colour
 // stops being applied. So: run it against a recording context and read back what it actually painted.
 import { describe, it, expect } from "vitest";
-import { drawScene } from "./draw.js";
+import { drawScene, shouldHoldPaint, hasKnownDims, frameDims } from "./draw.js";
 
 const RED = "#ff3b30"; // GT_FAULTY — what YOU labelled
 const DASH = "#ff2d55"; // the detector's guess
@@ -37,7 +37,9 @@ function recorder() {
     stroke() {
       if (path) paints.push({ op: "stroke", ...path, color: state.strokeStyle, width: state.lineWidth, dashed: state.dash.length > 0 });
     },
-    fillText() {}, strokeText() {},
+    // Recorded, not discarded: the placeholder's caption is the only thing that tells the user whether
+    // the frame is loading or the file simply has no pixels, and those are opposite diagnoses.
+    fillText(text) { paints.push({ op: "text", text: String(text) }); }, strokeText() {},
   };
   return { ctx, paints };
 }
@@ -214,5 +216,85 @@ describe("the visibility flag says WHICH WAY the node is wrong", () => {
     expect(p.some((q) => q.op === "stroke" && q.kind === "arc" && q.color === PINK && q.dashed)).toBe(true);
     expect(p.some((q) => q.kind === "line" && q.color === PINK)).toBe(false);
     expect(p.some((q) => q.op === "fill" && q.color === PINK && q.x === 100)).toBe(false);
+  });
+});
+
+// The proofreader "showed a black frame at first before updating". Nothing was drawing it black — the
+// canvas simply had not been painted, so the stage's own background (#0b0e13) showed through for the
+// ~50-100 ms of the first decode. The paint was being withheld by the rule that keeps the pose and the
+// picture in step, which is right for a frame CHANGE and wrong for the first frame: there was no
+// previous paint to hold, so it held nothing.
+describe("shouldHoldPaint", () => {
+  const EL = { id: "canvas-a" }, OTHER = { id: "canvas-b" };
+
+  it("never holds once the picture and the pose are the same frame", () => {
+    for (const paintedEl of [null, EL, OTHER]) {
+      expect(shouldHoldPaint({ havePair: true, paintedEl, canvasEl: EL }), String(paintedEl?.id)).toBe(false);
+    }
+  });
+
+  it("holds a mismatched pair, so the new pose never lands on the old photograph", () => {
+    expect(shouldHoldPaint({ havePair: false, paintedEl: EL, canvasEl: EL })).toBe(true);
+  });
+
+  it("does NOT hold on a canvas that has never been painted — that is the black rectangle", () => {
+    expect(shouldHoldPaint({ havePair: false, paintedEl: null, canvasEl: EL })).toBe(false);
+  });
+
+  it("treats a re-created canvas as never painted, because it is blank again", () => {
+    // Closing the proofreader destroys the canvas; re-opening makes a new, empty one. Remembering
+    // "we have painted" as a boolean would hold a paint that no longer exists — black again.
+    expect(shouldHoldPaint({ havePair: false, paintedEl: OTHER, canvasEl: EL })).toBe(false);
+  });
+
+  it("holds rather than guess the frame size — a jump is worse than a brief wait", () => {
+    // Without the file stating the shape, the early paint would scale the pose to a guessed 1024x768
+    // and then snap when the real pixels arrive.
+    expect(shouldHoldPaint({ havePair: false, paintedEl: null, canvasEl: EL, dimsKnown: false })).toBe(true);
+    expect(shouldHoldPaint({ havePair: false, paintedEl: null, canvasEl: EL, dimsKnown: true })).toBe(false);
+  });
+});
+
+describe("hasKnownDims", () => {
+  it("reads the size off the file when it is there", () => {
+    expect(hasKnownDims({ video: { shape: [10, 480, 640, 1] } })).toBe(true);
+  });
+  it("says no to a missing, short, or zeroed shape rather than throwing", () => {
+    for (const v of [undefined, null, { video: {} }, { video: { shape: [10] } },
+                     { video: { shape: [10, 0, 640] } }, { video: { shape: [10, 480, 0] } }]) {
+      expect(hasKnownDims(v), JSON.stringify(v)).toBe(false);
+    }
+  });
+  it("agrees with frameDims — one is the precondition of the other", () => {
+    const known = { video: { shape: [10, 480, 640, 1] } };
+    expect(frameDims(known, null)).toEqual({ w: 640, h: 480 });
+    const unknown = { video: {} };
+    expect(hasKnownDims(unknown)).toBe(false);
+    expect(frameDims(unknown, null)).toEqual({ w: 1024, h: 768 }); // the guess this guards against
+  });
+});
+
+describe("a decode in flight does not accuse the file of having no pixels", () => {
+  const item = { ...ITEM, frameIdx: 42 };
+
+  const said = (paints) => paints.filter((p) => p.op === "text").map((p) => p.text).join(" | ");
+
+  it("says 'decoding…' while the picture is on its way", () => {
+    const { ctx, paints } = recorder();
+    drawScene(ctx, null, item, SK, { ...OPTS, decoding: true });
+    expect(said(paints)).toContain("decoding");
+    expect(said(paints), "told the user to upload a video that is already loading").not.toContain("upload the video");
+  });
+
+  it("still says what is wrong when the pixels genuinely are not there", () => {
+    const { ctx, paints } = recorder();
+    drawScene(ctx, null, item, SK, OPTS);
+    expect(said(paints)).toContain("no image pixels");
+  });
+
+  it("draws the pose either way — the whole point is that something is there to look at", () => {
+    const { ctx, paints } = recorder();
+    drawScene(ctx, null, ITEM, SK, { ...OPTS, decoding: true });
+    expect(paints.some((p) => p.kind === "arc"), "no keypoints drawn over the placeholder").toBe(true);
   });
 });

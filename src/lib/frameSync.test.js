@@ -89,7 +89,12 @@ describe("every canvas computation agrees on which frame is shown", () => {
     const w = read("src/lib/components/ProofreadWindow.svelte");
     expect(w).toMatch(/let imgFor = \$state\.raw\(null\)/);
     expect(w).toContain("img = r ?? null; imgFor = it;"); // published together
-    expect(w).toContain("if (imgFor !== it) return;"); // and nothing paints until they match
+    // It no longer withholds the paint outright — that is what showed a black rectangle for the first
+    // decode, since there was no previous frame to hold. It paints the pose over the placeholder and
+    // hands drawScene a null image, so the two halves still describe the same frame.
+    expect(w).toContain("const havePair = imgFor === it;");
+    expect(w).toContain("const image = havePair ? img : null;");
+    expect(w).toContain("shouldHoldPaint({ havePair, paintedEl, canvasEl: c");
   });
 
   it("the viewer draws the shown frame, not the index", () => {

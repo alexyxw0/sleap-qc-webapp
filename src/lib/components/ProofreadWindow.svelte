@@ -22,7 +22,7 @@
   import { proofreadWindow, PROOFREAD_TABS } from "../proofreadWindow.svelte.js";
   import { framePass } from "../framePass.svelte.js";
   import { edit } from "../editStore.svelte.js";
-  import { drawScene, frameDims } from "../draw.js";
+  import { drawScene, frameDims, shouldHoldPaint, hasKnownDims } from "../draw.js";
   import { fitScale, clampCenter, panForZoom, clampZoom } from "../qc/zoomView.js";
   import { keybinds, keyLabel } from "../keybinds.svelte.js";
   import { KEY_GROUP_HINTS } from "../qc/proofreadKeymap.js";
@@ -92,16 +92,25 @@
     return () => { stale = true; };
   });
 
+  // The canvas element this component last painted. Deliberately NOT $state: the paint effect consults
+  // it and writes it, and a reactive read there would re-run the effect on its own write.
+  let paintedEl = null;
+
   $effect(() => {
     const c = canvas, it = item;
     if (!c || !it) return;
+    // Is the picture we hold a picture of THIS frame?
+    const havePair = imgFor === it;
     // NOT our picture yet: leave the last complete paint on the canvas rather than repainting the new
     // pose over the previous frame. Canvas keeps its pixels until something draws, so skipping here
-    // means the swap happens once, with both halves at the same time.
-    if (imgFor !== it) return;
+    // means the swap happens once, with both halves at the same time. The exception is a canvas that
+    // has never been painted — see shouldHoldPaint.
+    if (shouldHoldPaint({ havePair, paintedEl, canvasEl: c, dimsKnown: hasKnownDims(it) })) return;
     void store.rev;            // an edited pose must redraw
     void keypointLabels.rev;  // a new label must redraw its ring
-    const fset = faulty, sel = edit.selInstance, selN = edit.selNode, image = img;
+    const fset = faulty, sel = edit.selInstance, selN = edit.selNode;
+    // Only ever draw a picture of the frame we are drawing the pose of.
+    const image = havePair ? img : null;
     void qc.rev;   // a re-scored instance must redraw its mark
     // The QC marks, resolved exactly as the main viewer resolves them: one shape per flagged
     // instance (angle > edge > node), plus the box around each. Without these the pane showed the
@@ -169,7 +178,9 @@
       worstAngles,
       worstNodeVariants,
       flaggedInstances,
+      decoding: !havePair,
     });
+    paintedEl = c;
   });
 
   /** Zoom about the POINTER, so the thing you are looking at stays under the cursor. */

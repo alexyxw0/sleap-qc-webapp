@@ -26,10 +26,16 @@ export function colorFor(instance, fallbackIdx) {
   return PALETTE[fallbackIdx % PALETTE.length];
 }
 
+/** Does the FILE state this frame's size, without needing the pixels decoded? */
+export function hasKnownDims(item) {
+  const shape = item?.video?.shape; // [nFrames, height, width, channels]
+  return Array.isArray(shape) && shape.length >= 3 && !!shape[1] && !!shape[2];
+}
+
 // Desired internal canvas resolution for a navigable frame.
 export function frameDims(item, image) {
   const shape = item?.video?.shape; // [nFrames, height, width, channels]
-  if (Array.isArray(shape) && shape.length >= 3 && shape[1] && shape[2]) {
+  if (hasKnownDims(item)) {
     return { w: shape[2], h: shape[1] };
   }
   if (image && image.width && image.height) {
@@ -53,7 +59,7 @@ function blit(ctx, image) {
 
 // Drawn in image coordinates (the caller has applied the view transform). `dims` and
 // `scale` (image px per screen px) keep the grid/text a sensible on-screen size.
-function drawPlaceholder(ctx, item, dims = {}, scale = 1) {
+function drawPlaceholder(ctx, item, dims = {}, scale = 1, decoding = false) {
   const w = dims.w ?? 1024;
   const h = dims.h ?? 768;
   ctx.fillStyle = "#0e1218";
@@ -75,8 +81,12 @@ function drawPlaceholder(ctx, item, dims = {}, scale = 1) {
   }
   ctx.fillStyle = "rgba(255,255,255,0.35)";
   ctx.font = `${14 * scale}px system-ui, sans-serif`;
+  // "no image pixels (upload the video)" is a diagnosis, and it is the WRONG one while a decode is in
+  // flight — the pixels are on their way. Say what is actually happening instead.
   ctx.fillText(
-    `frame ${item?.frameIdx ?? "?"} — no image pixels (upload the video to see frames)`,
+    decoding
+      ? `frame ${item?.frameIdx ?? "?"} — decoding…`
+      : `frame ${item?.frameIdx ?? "?"} — no image pixels (upload the video to see frames)`,
     14 * scale,
     24 * scale,
   );
@@ -377,10 +387,35 @@ export function hitTestNode(lf, radius) {
   };
 }
 
+/**
+ * Should the canvas keep the frame it is already showing rather than paint this one?
+ *
+ * YES while the pose and the picture describe different frames — repainting there would put the new
+ * animal on top of the old photograph, and the swap should happen once, with both halves together.
+ *
+ * NO when the canvas has never been painted, which is the case this was missing. There was no previous
+ * frame to hold, so holding one held NOTHING: the proofreader opened on its stage's own background —
+ * a black rectangle — for the ~50-100 ms of the first decode, then the picture appeared. Painting the
+ * pose over the placeholder immediately makes that read as loading rather than as broken.
+ *
+ * `paintedEl` is the canvas ELEMENT last painted, not a boolean: closing the proofreader destroys the
+ * canvas and re-opening it makes a new, blank one, so "we have painted before" has to mean "we have
+ * painted THIS canvas before".
+ *
+ * YES again when the frame's size is unknown until its pixels arrive: the early paint would have to
+ * guess the dimensions, putting the pose at the wrong scale and jumping when the picture lands. A brief
+ * hold beats a jump.
+ */
+export function shouldHoldPaint({ havePair, paintedEl, canvasEl, dimsKnown = true }) {
+  if (havePair) return false;
+  if (paintedEl != null && paintedEl === canvasEl) return true;
+  return !dimsKnown;
+}
+
 // Main entry: clear, apply the view transform (zoom/pan baked into the canvas so the
 // overlay re-rasterizes crisply), draw the frame image, then the pose overlay.
 export function drawScene(ctx, image, item, skeleton, opts = {}) {
-  const { transform, dims, scale = 1, overlay = true } = opts;
+  const { transform, dims, scale = 1, overlay = true, decoding = false } = opts;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
   if (transform) {
@@ -390,7 +425,7 @@ export function drawScene(ctx, image, item, skeleton, opts = {}) {
     ctx.imageSmoothingEnabled = true;
     blit(ctx, image);
   } else {
-    drawPlaceholder(ctx, item, dims, scale);
+    drawPlaceholder(ctx, item, dims, scale, decoding);
   }
   if (overlay) drawSkeleton(ctx, item?.lf, skeleton, opts);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
