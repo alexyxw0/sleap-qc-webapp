@@ -680,26 +680,34 @@ describe("drag across the keypoint chips", () => {
     // spreadsheet, a file manager, or any checkbox list.
     const w = win();
     expect(w).toMatch(/function paintStart\(ni, isOn, e\) \{[\s\S]{0,200}?paint = !isOn;/);
-    expect(w).toMatch(/paintOver = \(ni\) => \{ if \(paint !== null\) setNode\(ni, paint\); \}/);
+    expect(w).toMatch(/paintMove = \(e\) => \{ if \(paint !== null\) paintAt\(e\.clientX, e\.clientY\); \}/);
     // setNode takes the state explicitly, so a repeat over the same chip is a no-op
     expect(w).toMatch(/const want = on \?\? !has;\s*\n\s*if \(want === has\) return;/);
   });
 
-  it("uses pointerenter on the siblings, and must NOT capture the pointer", () => {
-    // setPointerCapture would route every later event to the chip the drag started on, so no sibling
-    // would ever see pointerenter — which is the entire mechanism.
+  it("hit-tests with a tolerance instead of waiting to enter a chip", () => {
+    // The chips are small and the gaps are real: relying on pointerenter meant a drag along the row
+    // skipped whichever chip the pointer happened to pass between. It now takes the NEAREST chip
+    // within a slop, which is what makes the drag forgiving.
     const w = win();
-    expect(w).toContain("onpointerenter={() => paintOver(ni)}");
     expect(w).toContain("onpointerdown={(e) => paintStart(ni, on, e)}");
-    // CODE only — the comment above paintStart names setPointerCapture to explain why it is absent.
-    const src = code("src/lib/components/AppearanceWindow.svelte");
-    const fn = src.slice(src.indexOf("function paintStart"), src.indexOf("const paintOver"));
-    expect(fn, "capturing the pointer would break the sibling enters").not.toContain("setPointerCapture");
+    expect(w).toContain("onpointermove={paintMove}");
+    expect(w).toContain("nearestChip(");
+    expect(w).toMatch(/data-ni=\{ni\}/);          // the hit test needs to map a rect back to a node
+    expect(w).toMatch(/const SLOP = \d+;/);
+  });
+
+  it("captures on the ROW, so the drag keeps its events after leaving it", () => {
+    // Capture on a CHIP would have been wrong when siblings had to receive enters. With hit-testing
+    // the opposite is true: we want every move, including outside the row, and we decide what is hit.
+    const w = win();
+    expect(w).toMatch(/chipRow\?\.setPointerCapture\?\.\(e\.pointerId\)/);
+    expect(w).toContain("onlostpointercapture={paintEnd}");
   });
 
   it("a drag released anywhere stops painting", () => {
     // Release outside the chips is the common case — the pointer leaves the row on the way out.
-    expect(win()).toMatch(/<svelte:window onpointerup=\{\(\) => \(paint = null\)\} onpointercancel=/);
+    expect(win()).toMatch(/<svelte:window onpointerup=\{paintEnd\} onpointercancel=\{paintEnd\} \/>/);
   });
 
   it("dragging paints instead of scrolling on touch", () => {

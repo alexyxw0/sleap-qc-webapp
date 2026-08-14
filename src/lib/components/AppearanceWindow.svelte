@@ -24,6 +24,7 @@
   import FewShotPanel from "./FewShotPanel.svelte";
   import { keypointModels, ingestLabelCsv } from "../keypointModels.svelte.js";
   import { keypointLabels } from "../keypointLabels.svelte.js";
+  import { nearestChip } from "../qc/chipHit.js";
   import { appearanceCoverageNote, APPEARANCE_LABELS } from "../qcStore.svelte.js";
   import { countFor } from "../qc/embedding/embcache.js";
   import { proofreadWindow } from "../proofreadWindow.svelte.js";
@@ -204,15 +205,31 @@
   // chip would make a drag that doubles back undo itself, which is not what a drag means anywhere
   // else — spreadsheets, file managers and checkbox lists all paint.
   let paint = $state(null);   // the state being painted, or null when not dragging
+  let chipRow = $state.raw(null);
+  // The chips are small and the gaps between them are real: a drag along a row kept skipping one
+  // because the pointer passed through the gap, or drifted a few pixels above the row. So the drag
+  // does not rely on entering a chip — it hit-tests every chip against the pointer and takes the
+  // NEAREST one within SLOP px. Zero distance means inside, so a straight pass still behaves exactly
+  // as before; the tolerance only rescues the near-misses.
+  const SLOP = 12;
+  function paintAt(x, y) {
+    if (paint === null || !chipRow) return;
+    const els = [...chipRow.querySelectorAll("[data-ni]")];
+    const i = nearestChip(els.map((el) => el.getBoundingClientRect()), x, y, SLOP);
+    if (i >= 0) setNode(Number(els[i].dataset.ni), paint);
+  }
+
   function paintStart(ni, isOn, e) {
     if (busy) return;
     paint = !isOn;
     setNode(ni, paint);
-    // NOT setPointerCapture: capture would send every later event to this chip and its siblings would
-    // never see pointerenter, which is the whole mechanism.
+    // Capture on the ROW, not the chip. Hit-testing means we no longer need a sibling to receive the
+    // event — we need to keep receiving them ourselves, including once the pointer leaves the row.
+    chipRow?.setPointerCapture?.(e.pointerId);
     e.preventDefault();
   }
-  const paintOver = (ni) => { if (paint !== null) setNode(ni, paint); };
+  const paintMove = (e) => { if (paint !== null) paintAt(e.clientX, e.clientY); };
+  const paintEnd = () => { paint = null; };
   const covNote = $derived(appearanceCoverageNote(appRun.checkKey));
 
   // A warm IndexedDB cache is only discovered inside run(), after the model load — so the cost line
@@ -338,7 +355,7 @@
 </script>
 
 <!-- A drag can end anywhere: releasing outside the chips must still stop painting. -->
-<svelte:window onpointerup={() => (paint = null)} onpointercancel={() => (paint = null)} />
+<svelte:window onpointerup={paintEnd} onpointercancel={paintEnd} />
 
 {#if appRun.open}
   <PopoutWindow title="Appearance · DINOv2" width="820px" onclose={() => appRun.close()}>
@@ -747,12 +764,12 @@
           <div class="row kprow">
             <span class="lbl">Keypoints</span>
             <!-- touch-action: none so a drag across the chips paints instead of scrolling the pane. -->
-            <div class="chips" style:touch-action="none">
+            <div class="chips" style:touch-action="none" bind:this={chipRow}
+                 onpointermove={paintMove} onlostpointercapture={paintEnd}>
               {#each allNodes as nm, ni (nm)}
                 {@const on = picked == null || picked.includes(ni)}
-                <button type="button" class="kchip" class:on disabled={busy}
+                <button type="button" class="kchip" class:on disabled={busy} data-ni={ni}
                         onpointerdown={(e) => paintStart(ni, on, e)}
-                        onpointerenter={() => paintOver(ni)}
                         onkeydown={(e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggleNode(ni); } }}
                         aria-pressed={on}
                         title={on ? `${nm} will be embedded — click to skip it, or drag across to skip several` : `${nm} will NOT be embedded, so nothing will be known about it`}>{nm}</button>
