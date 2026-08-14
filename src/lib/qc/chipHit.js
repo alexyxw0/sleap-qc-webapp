@@ -27,3 +27,26 @@ export function nearestChip(rects, x, y, slop = 12) {
   }
   return best;
 }
+
+/**
+ * The selection a drag from `anchor` to `cur` produces, given what was selected BEFORE it started.
+ *
+ * A drag is a RANGE, not a trail of paint. Painting could only ever add to what it had touched, so
+ * sweeping forward and back in one motion left everything selected — the reverse stroke did nothing,
+ * because those chips were already in the painted state. Deriving the whole selection from (anchor,
+ * cur) instead means the range shrinks as the pointer comes back and every chip it leaves behind
+ * returns to `baseline`, which is what "swipe back to undo it" means.
+ *
+ * `baseline` is a Set of selected indices; the result is a new Set. `on` is the direction the anchor
+ * decided: true selects the range, false deselects it.
+ */
+export function rangeSelection(baseline, anchor, cur, on) {
+  const next = new Set(baseline);
+  if (anchor < 0 || cur < 0) return next;
+  const lo = Math.min(anchor, cur), hi = Math.max(anchor, cur);
+  for (let i = lo; i <= hi; i++) {
+    if (on) next.add(i);
+    else next.delete(i);
+  }
+  return next;
+}

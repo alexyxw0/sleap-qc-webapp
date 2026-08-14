@@ -674,15 +674,28 @@ describe("the flow nav goes back one step", () => {
 describe("drag across the keypoint chips", () => {
   const win = () => read("src/lib/components/AppearanceWindow.svelte");
 
-  it("the drag PAINTS one state — it does not toggle each chip it crosses", () => {
-    // The first chip decides the direction; every chip entered is set to that same state. Toggling
-    // per chip would make a drag that doubles back undo itself, which is not what a drag means in a
-    // spreadsheet, a file manager, or any checkbox list.
+  it("the drag is a RANGE from its anchor, so sweeping back undoes it", () => {
+    // The first chip decides the direction AND anchors the range; the selection is re-derived from
+    // (anchor, current) on every move. Painting could only ADD to what it had touched, so a sweep
+    // forward and back left everything selected — the reverse stroke was a no-op.
     const w = win();
-    expect(w).toMatch(/function paintStart\(ni, isOn, e\) \{[\s\S]{0,200}?paint = !isOn;/);
+    expect(w).toMatch(/function paintStart\(ni, isOn, e\) \{[\s\S]{0,240}?paint = !isOn;/);
+    expect(w).toContain("anchor = ni;");
+    expect(w).toMatch(/baseline = new Set\(picked \?\? allNodes\.map/);   // the PRE-drag state
+    expect(w).toContain("rangeSelection(baseline, anchor, lastHit, paint)");
     expect(w).toMatch(/paintMove = \(e\) => \{ if \(paint !== null\) paintAt\(e\.clientX, e\.clientY\); \}/);
-    // setNode takes the state explicitly, so a repeat over the same chip is a no-op
-    expect(w).toMatch(/const want = on \?\? !has;\s*\n\s*if \(want === has\) return;/);
+  });
+
+  it("straying off the chips holds the range instead of collapsing it", () => {
+    // A drag that dips below the row on its way across must not undo everything behind it.
+    const w = win();
+    expect(w).toContain("if (i >= 0) lastHit = Number(els[i].dataset.ni);");
+    expect(w).toMatch(/if \(lastHit >= 0\) writeNodes\(/);
+  });
+
+  it("the drag state is fully reset when it ends", () => {
+    // A stale anchor or baseline would make the NEXT drag re-derive from the wrong starting point.
+    expect(win()).toContain("paintEnd = () => { paint = null; anchor = -1; baseline = null; lastHit = -1; };");
   });
 
   it("hit-tests with a tolerance instead of waiting to enter a chip", () => {

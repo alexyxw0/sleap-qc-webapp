@@ -24,7 +24,7 @@
   import FewShotPanel from "./FewShotPanel.svelte";
   import { keypointModels, ingestLabelCsv } from "../keypointModels.svelte.js";
   import { keypointLabels } from "../keypointLabels.svelte.js";
-  import { nearestChip } from "../qc/chipHit.js";
+  import { nearestChip, rangeSelection } from "../qc/chipHit.js";
   import { appearanceCoverageNote, APPEARANCE_LABELS } from "../qcStore.svelte.js";
   import { countFor } from "../qc/embedding/embcache.js";
   import { proofreadWindow } from "../proofreadWindow.svelte.js";
@@ -204,7 +204,10 @@
   // so this is a deselect), and every chip the pointer enters is set to that same state. Toggling per
   // chip would make a drag that doubles back undo itself, which is not what a drag means anywhere
   // else — spreadsheets, file managers and checkbox lists all paint.
-  let paint = $state(null);   // the state being painted, or null when not dragging
+  let paint = $state(null);   // the direction the drag is applying, or null when not dragging
+  let anchor = -1;            // the chip the drag started on
+  let baseline = null;        // the selection BEFORE the drag, so a reverse stroke can restore it
+  let lastHit = -1;           // last chip the pointer was near; kept when it strays off the row
   let chipRow = $state.raw(null);
   // The chips are small and the gaps between them are real: a drag along a row kept skipping one
   // because the pointer passed through the gap, or drifted a few pixels above the row. So the drag
@@ -212,24 +215,37 @@
   // NEAREST one within SLOP px. Zero distance means inside, so a straight pass still behaves exactly
   // as before; the tolerance only rescues the near-misses.
   const SLOP = 12;
+  /** Write a selection Set back to the store, collapsing "everything" to null as the store expects. */
+  function writeNodes(set) {
+    if (!es) return;
+    const next = [...set].sort((a, b) => a - b);
+    es.nodes = next.length === allNodes.length ? null : next;
+  }
+
   function paintAt(x, y) {
     if (paint === null || !chipRow) return;
     const els = [...chipRow.querySelectorAll("[data-ni]")];
     const i = nearestChip(els.map((el) => el.getBoundingClientRect()), x, y, SLOP);
-    if (i >= 0) setNode(Number(els[i].dataset.ni), paint);
+    // Straying off the chips holds the range where it was rather than collapsing it — a drag that
+    // dips below the row on its way across should not undo everything behind it.
+    if (i >= 0) lastHit = Number(els[i].dataset.ni);
+    if (lastHit >= 0) writeNodes(rangeSelection(baseline, anchor, lastHit, paint));
   }
 
   function paintStart(ni, isOn, e) {
     if (busy) return;
     paint = !isOn;
-    setNode(ni, paint);
+    anchor = ni;
+    lastHit = ni;
+    baseline = new Set(picked ?? allNodes.map((_, k) => k));
+    writeNodes(rangeSelection(baseline, anchor, ni, paint));
     // Capture on the ROW, not the chip. Hit-testing means we no longer need a sibling to receive the
     // event — we need to keep receiving them ourselves, including once the pointer leaves the row.
     chipRow?.setPointerCapture?.(e.pointerId);
     e.preventDefault();
   }
   const paintMove = (e) => { if (paint !== null) paintAt(e.clientX, e.clientY); };
-  const paintEnd = () => { paint = null; };
+  const paintEnd = () => { paint = null; anchor = -1; baseline = null; lastHit = -1; };
   const covNote = $derived(appearanceCoverageNote(appRun.checkKey));
 
   // A warm IndexedDB cache is only discovered inside run(), after the model load — so the cost line

@@ -3,7 +3,7 @@
 // These pin the tolerance — and, just as importantly, that the tolerance does not make the drag
 // grab things it should not.
 import { describe, it, expect } from "vitest";
-import { distToRect, nearestChip } from "./chipHit.js";
+import { distToRect, nearestChip, rangeSelection } from "./chipHit.js";
 
 /** 13 chips of 46x22, 6px apart, wrapping to a second row 6px below — a real skeleton's row. */
 function row() {
@@ -80,5 +80,56 @@ describe("nearestChip", () => {
 
   it("an empty row hits nothing rather than throwing", () => {
     expect(nearestChip([], 5, 5)).toBe(-1);
+  });
+});
+
+// A drag is a RANGE, not a trail of paint. Painting could only add to what it had touched, so
+// sweeping forward and back in one motion left everything selected — the reverse stroke did nothing,
+// because those chips were already in the painted state.
+describe("rangeSelection", () => {
+  const all = (n) => new Set([...Array(n).keys()]);
+  const sorted = (set) => [...set].sort((a, b) => a - b);
+
+  it("deselects the range the drag covers", () => {
+    expect(sorted(rangeSelection(all(6), 1, 3, false))).toEqual([0, 4, 5]);
+  });
+
+  it("selects it when the anchor was off", () => {
+    expect(sorted(rangeSelection(new Set([0]), 2, 4, true))).toEqual([0, 2, 3, 4]);
+  });
+
+  it("SHRINKS as the pointer comes back — the whole point", () => {
+    const base = all(6);
+    const out = sorted(rangeSelection(base, 1, 4, false));
+    expect(out).toEqual([0, 5]);                     // swiped 1→4
+    const back = sorted(rangeSelection(base, 1, 2, false));
+    expect(back, "chips left behind did not come back").toEqual([0, 3, 4, 5]);
+  });
+
+  it("returns chips to their PRIOR state, not to 'on'", () => {
+    // 3 was already deselected before the drag; sweeping over it and back must leave it deselected.
+    const base = new Set([0, 1, 2, 4, 5]);           // 3 is off to begin with
+    expect(sorted(rangeSelection(base, 0, 4, false))).toEqual([5]);
+    expect(sorted(rangeSelection(base, 0, 1, false)), "3 was resurrected").toEqual([2, 4, 5]);
+  });
+
+  it("works in both directions from the anchor", () => {
+    expect(sorted(rangeSelection(all(6), 4, 1, false))).toEqual([0, 5]);   // dragged right-to-left
+    expect(sorted(rangeSelection(all(6), 1, 4, false))).toEqual([0, 5]);   // same range, either way
+  });
+
+  it("a drag that never leaves its own chip touches only that one", () => {
+    expect(sorted(rangeSelection(all(4), 2, 2, false))).toEqual([0, 1, 3]);
+  });
+
+  it("never mutates the baseline — a live drag re-derives from it every move", () => {
+    const base = all(4);
+    rangeSelection(base, 0, 3, false);
+    expect(sorted(base)).toEqual([0, 1, 2, 3]);
+  });
+
+  it("is a no-op when there is no anchor or no hit", () => {
+    expect(sorted(rangeSelection(all(3), -1, 2, false))).toEqual([0, 1, 2]);
+    expect(sorted(rangeSelection(all(3), 1, -1, false))).toEqual([0, 1, 2]);
   });
 });
