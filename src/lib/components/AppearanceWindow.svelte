@@ -1076,13 +1076,13 @@
   .xnote { font-size: 0.62rem; color: var(--dim); cursor: help; }
   .note { margin: 0; font-size: 0.62rem; color: var(--dim); line-height: 1.4; }
   .kprow { align-items: flex-start; }
-  .ksum { flex: none; font-size: 0.6rem; color: var(--dim); font-variant-numeric: tabular-nums; }
-  .chips { display: flex; flex-wrap: wrap; gap: 0.22rem; flex: 1 1 14rem; }
+  .ksum { flex: none; font-size: 0.66rem; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .chips { display: flex; flex-wrap: wrap; gap: 0.3rem; flex: 1 1 14rem; }
   /* Off is the LOUD state here: an un-embedded keypoint is one nothing will be known about, which is
      easier to miss than an extra one selected. */
   .kchip {
-    font-size: 0.62rem; padding: 0.1rem 0.4rem; cursor: pointer;
-    border: 1px dashed var(--border); border-radius: var(--r-xs);
+    font-size: 0.72rem; padding: 0.28rem 0.6rem; min-height: 1.6rem; cursor: pointer;
+    border: 1px dashed var(--border); border-radius: 5px;
     background: transparent; color: var(--dim); text-decoration: line-through;
   }
   .kchip.on {

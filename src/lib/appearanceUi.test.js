@@ -714,6 +714,18 @@ describe("drag across the keypoint chips", () => {
     expect(win()).toMatch(/class="chips" style:touch-action="none"/);
   });
 
+  it("the chips are big enough to aim at", () => {
+    // 0.62rem text in 0.1rem padding is roughly a 10px-tall target — under any sane minimum, and the
+    // reason the drag needed a 12px rescue at all. The tolerance treats the symptom; size treats the
+    // cause, and the two are meant to work together.
+    const w = win();
+    const chip = w.slice(w.indexOf("  .kchip {"), w.indexOf("  .kchip.on"));
+    const px = (m) => Number(m[1]);
+    expect(px(chip.match(/font-size: ([\d.]+)rem/)), "chip text is still tiny").toBeGreaterThanOrEqual(0.7);
+    expect(px(chip.match(/padding: ([\d.]+)rem/)), "chip padding is still hairline").toBeGreaterThanOrEqual(0.2);
+    expect(chip, "no floor on the target height").toMatch(/min-height: [\d.]+rem/);
+  });
+
   it("still works from the keyboard", () => {
     // The chips lost their onclick to pointerdown; without this a keyboard user could not toggle one.
     const w = win();
