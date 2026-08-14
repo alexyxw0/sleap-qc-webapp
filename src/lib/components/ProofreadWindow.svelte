@@ -102,6 +102,27 @@
     void store.rev;            // an edited pose must redraw
     void keypointLabels.rev;  // a new label must redraw its ring
     const fset = faulty, sel = edit.selInstance, selN = edit.selNode, image = img;
+    void qc.rev;   // a re-scored instance must redraw its mark
+    // The QC marks, resolved exactly as the main viewer resolves them: one shape per flagged
+    // instance (angle > edge > node), plus the box around each. Without these the pane showed the
+    // pose but not the accusation.
+    const insts = it.lf?.instances ?? [];
+    const worstEdges = [], worstNodes = [], worstAngles = [], worstNodeVariants = [];
+    for (let i = 0; i < insts.length; i++) {
+      if (!qc.instanceFlagged(it, i)) {
+        worstEdges.push(null); worstNodes.push(-1); worstAngles.push(null); worstNodeVariants.push(null);
+        continue;
+      }
+      const ang = qc.faultyAngleFor(it, i);
+      const edge = ang ? null : qc.faultyEdgeFor(it, i);
+      worstAngles.push(ang);
+      worstEdges.push(edge);
+      worstNodes.push(ang || edge ? -1 : qc.faultyNodeFor(it, i));
+      worstNodeVariants.push(ang || edge ? null : qc.faultyNodeVariantFor(it, i));
+    }
+    // Only the animal being JUDGED gets a box. Boxing every flagged animal on the frame is what made
+    // "which one am I looking at" ambiguous on a multi-animal frame.
+    const flaggedInstances = insts.map((_, i) => i === framePass.instIdx);
     const { w, h } = frameDims(it, image);
     // Clamp the crop to the image: a pose near an edge would otherwise pan the view off the picture.
     const fb = whole ? null : framePass.focusBox;
@@ -143,6 +164,11 @@
       selInstance: sel,
       selNode: selN,
       gtFaulty: fset,
+      worstNodes,
+      worstEdges,
+      worstAngles,
+      worstNodeVariants,
+      flaggedInstances,
     });
   });
 
@@ -287,10 +313,11 @@
           <p class="g-h">Run the automatic QC first</p>
           <p class="g-b">
             Proofreading works down a queue of ANIMALS, ordered by how faulty the detectors think each
-            one is. That order comes from <b>max_angle</b>, <b>mean_angle</b>, <b>Anomaly</b> and
-            <b>GMM</b>, so there is nothing to rank until they have run once.
+            one is. Any one of <b>max_angle</b>, <b>mean_angle</b>, <b>Anomaly</b>, <b>GMM</b> or
+            <b>AnomalyDINO</b> can build that order — there is nothing to rank until at least one of
+            them has run.
           </p>
-          <p class="g-m">Still needed: {qc.proofreadMissing.join(" · ")}</p>
+          <p class="g-m">None have run yet: {qc.proofreadMissing.join(" · ")}</p>
           <button class="g-run" disabled={qc.status === "running" || !store.ready} onclick={() => qc.run()}>
             {qc.status === "running" ? "Running QC…" : "Run QC"}
           </button>

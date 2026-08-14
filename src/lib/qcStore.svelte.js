@@ -1194,18 +1194,37 @@ class QCStore {
   /** Have the detectors the proofreading queue ranks by actually RUN? (Units computed — not ticked.) */
   get proofreadReady() {
     this.rev;
-    return this.proofreadMissing.length === 0;
+    return this.proofreadUsing.length > 0;   // one signal is an order; four is a better one
   }
 
   /** Which of the three are missing, so the UI can say what to run rather than just "run QC". */
-  get proofreadMissing() {
+  /**
+   * Which ranking signals actually have data behind them right now.
+   *
+   * The queue is an ORDER, and an order needs at least one signal — not all of them. Requiring the
+   * full geometric set meant a file scored only by AnomalyDINO reported "run the automatic QC first"
+   * while holding a perfectly good ranking, with the one detector the user had deliberately chosen.
+   * Absent signals are null on every row, which the Fisher combination treats as no evidence either
+   * way, so a partial set ranks correctly — it just ranks on less.
+   */
+  get proofreadSignals() {
     this.rev;
-    const m = [];
-    if (!this.checkReady("anomaly")) m.push("Anomaly");
-    if (!this.checkReady("gmm")) m.push("GMM");
-    if (!this.vectorFeatures.includes(PROOFREAD_ANGLE)) m.push("max_angle");
-    if (!this.vectorFeatures.includes(PROOFREAD_MEAN_ANGLE)) m.push("mean_angle");
-    return m;
+    const nes = nodeEmbeddingStores.dino;
+    return {
+      Anomaly: this.checkReady("anomaly"),
+      GMM: this.checkReady("gmm"),
+      max_angle: this.vectorFeatures.includes(PROOFREAD_ANGLE),
+      mean_angle: this.vectorFeatures.includes(PROOFREAD_MEAN_ANGLE),
+      AnomalyDINO: nes.hasResults && (nes.nodeStats ?? []).some((st) => st.scorer === "anomalyDino"),
+    };
+  }
+  /** The signals NOT available — shown so a thin ranking says what would thicken it. */
+  get proofreadMissing() {
+    return Object.entries(this.proofreadSignals).filter(([, ok]) => !ok).map(([k]) => k);
+  }
+  /** The signals that ARE available — what the current order is actually built from. */
+  get proofreadUsing() {
+    return Object.entries(this.proofreadSignals).filter(([, ok]) => ok).map(([k]) => k);
   }
 
   /** Per-INSTANCE |z| for one feature-vector entry ("v:f:i" -> |z|), using the Anomaly det's fitted

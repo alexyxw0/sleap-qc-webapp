@@ -323,3 +323,43 @@ describe("the priority tier is shown, not just applied", () => {
     expect(w3).toMatch(/counts only\s+when the per-keypoint pass actually ran it/);
   });
 });
+
+// The preview drew the pose and your own GT marks, and none of the QC output — so on a two-animal
+// frame nothing said which one you had been sent to judge, and the detector's verdict was invisible
+// in the one place it matters most.
+describe("the preview shows the accusation, not just the pose", () => {
+  const w4 = read("src/lib/components/ProofreadWindow.svelte");
+
+  it("draws the QC marks, resolved the same way the main viewer resolves them", () => {
+    const at = w4.indexOf("drawScene(ctx, image, it");
+    const call = w4.slice(at, w4.indexOf("});", at));
+    for (const k of ["worstNodes", "worstEdges", "worstAngles", "worstNodeVariants", "flaggedInstances"]) {
+      expect(call, `${k} never reaches drawScene`).toContain(k);
+    }
+    // one shape per instance, angle > edge > node — the same precedence, not a second opinion
+    expect(w4).toContain("qc.faultyAngleFor(it, i)");
+    expect(w4).toContain("ang ? null : qc.faultyEdgeFor(it, i)");
+    expect(w4).toContain("ang || edge ? -1 : qc.faultyNodeFor(it, i)");
+  });
+
+  it("boxes ONLY the animal being judged", () => {
+    // Boxing every flagged animal is what made "which one am I looking at" ambiguous on a
+    // multi-animal frame — the whole question the pane exists to answer.
+    expect(w4).toMatch(/flaggedInstances = insts\.map\(\(_, i\) => i === framePass\.instIdx\)/);
+  });
+
+  it("redraws when a correction re-scores the instance", () => {
+    const draw = w4.slice(w4.indexOf("const fset = faulty"), w4.indexOf("drawScene(ctx"));
+    expect(draw, "the mark would go stale after an edit").toContain("void qc.rev;");
+  });
+});
+
+describe("the queue needs one signal, not all of them", () => {
+  const w5 = read("src/lib/components/ProofreadWindow.svelte");
+
+  it("the gate says any one signal is enough, and names AnomalyDINO", () => {
+    expect(w5).toMatch(/Any one of/);
+    expect(w5).toContain("<b>AnomalyDINO</b>");
+    expect(w5).not.toMatch(/so there is nothing to rank until they have run once/);
+  });
+});

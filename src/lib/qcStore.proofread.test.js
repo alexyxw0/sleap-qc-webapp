@@ -33,7 +33,8 @@ describe("before the automatic QC has run", () => {
   it("has no queue, and names everything that is missing", () => {
     expect(qc.proofreadReady).toBe(false);
     expect(qc.proofreadRanked).toEqual([]);
-    expect(qc.proofreadMissing).toEqual(["Anomaly", "GMM", "max_angle", "mean_angle"]);
+    expect(qc.proofreadUsing).toEqual([]);
+    expect(qc.proofreadMissing).toEqual(["Anomaly", "GMM", "max_angle", "mean_angle", "AnomalyDINO"]);
   });
 });
 
@@ -45,8 +46,24 @@ describe("after a run", () => {
 
   it("is ready once the units are computed", () => {
     expect(qc.status).toBe("done");
-    expect(qc.proofreadMissing).toEqual([]);
     expect(qc.proofreadReady).toBe(true);
+    // The geometric set is complete; AnomalyDINO simply was not run here, and its absence is
+    // reported rather than treated as an error — ONE signal is an order, four is a better one.
+    expect(qc.proofreadUsing).toEqual(["Anomaly", "GMM", "max_angle", "mean_angle"]);
+    expect(qc.proofreadMissing).toEqual(["AnomalyDINO"]);
+  });
+
+  it("ONE signal is enough — the queue does not demand the whole set", () => {
+    // A file scored only by AnomalyDINO reported "run the automatic QC first" while holding a
+    // perfectly good ranking, built from the one detector the user had deliberately chosen.
+    const sig = qc.proofreadSignals;
+    expect(Object.values(sig).filter(Boolean).length).toBeGreaterThan(0);
+    expect(qc.proofreadReady).toBe(true);
+    // and the gate is "some", not "every"
+    const src = readFileSync("src/lib/qcStore.svelte.js", "utf8");
+    const ready = src.slice(src.indexOf("get proofreadReady()"), src.indexOf("get proofreadRanked()"));
+    expect(ready).toMatch(/proofreadUsing\.length > 0/);
+    expect(ready).not.toMatch(/proofreadMissing\.length === 0/);
   });
 
   it("ranks every ANIMAL, not every frame — a frame with two suspects appears twice", () => {
