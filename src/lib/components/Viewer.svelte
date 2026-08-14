@@ -3,7 +3,7 @@
   import { edit } from "../editStore.svelte.js";
   import { view } from "../viewStore.svelte.js";
   import { qc, heatColor } from "../qcStore.svelte.js";
-  import { ui } from "../uiStore.svelte.js";
+  import { ui , isTypingTarget } from "../uiStore.svelte.js";
   import { toast } from "../toastStore.svelte.js";
   import { drawScene, frameDims, hitTestNode } from "../draw.js";
   import { keypointLabels } from "../keypointLabels.svelte.js";
@@ -361,6 +361,9 @@
   }
 
   function onKey(e) {
+    // Only the top surface acts. Without this the QC review popup and the viewer BOTH handled an
+    // arrow key — one press, two windows moving.
+    if (!ui.ownsKeys("viewer") || isTypingTarget(e)) return;
     // PROOFREADING owns the keyboard while active: a pass is meant to run entirely on the home row, and
     // the viewer's global keys (n/p seek, space play, v visibility) would otherwise fight the loop.
     // Unbound keys still fall through to the normal handler below.

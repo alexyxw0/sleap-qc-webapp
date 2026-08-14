@@ -1,5 +1,5 @@
 <script>
-  import { ui } from "../uiStore.svelte.js";
+  import { ui , isTypingTarget } from "../uiStore.svelte.js";
 
   const groups = [
     {
@@ -37,11 +37,13 @@
   ];
 
   function onKey(e) {
-    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-    if (e.key === "?" && !e.metaKey && !e.ctrlKey) {
+    if (isTypingTarget(e)) return;
+    // "?" opens help from the BASE layer only — typed into the palette's search box it is a
+    // character, not a shortcut.
+    if (e.key === "?" && !e.metaKey && !e.ctrlKey && ui.ownsKeys("viewer")) {
       ui.toggleHelp();
       e.preventDefault();
-    } else if (e.key === "Escape" && ui.helpOpen) {
+    } else if (e.key === "Escape" && ui.ownsKeys("help")) {
       ui.helpOpen = false;
       e.preventDefault();
     }

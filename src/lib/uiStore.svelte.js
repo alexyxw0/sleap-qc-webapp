@@ -49,6 +49,29 @@ class UIStore {
   setRailHover(v) { this.railHover = !!v; }
   togglePin() { this.railPinned = !this.railPinned; }
 
+  /**
+   * WHO OWNS THE KEYBOARD. Exactly one surface at a time.
+   *
+   * Every keyboard surface used to guard only on its OWN open flag, so nothing arbitrated between
+   * them: with the QC review popup open, an arrow key stepped the review AND seeked the main viewer
+   * underneath it — one keypress, two windows. The layers are ordered by what sits visually on top,
+   * so the answer matches what the user believes they are typing into. (togglePalette/toggleHelp/
+   * toggleReview already close some of each other; this settles the cases they do not.)
+   *
+   * The proofreading window is deliberately NOT a layer: its pass is driven through the viewer's
+   * handler on purpose — one listener, so a keystroke cannot fire twice — and its key-rebinding
+   * grabber sits above everything by being capture-phase and calling stopPropagation.
+   */
+  static KEY_LAYERS = ["palette", "help", "review", "viewer"];
+  get keyOwner() {
+    if (this.paletteOpen) return "palette";
+    if (this.helpOpen) return "help";
+    if (this.reviewOpen) return "review";
+    return "viewer";
+  }
+  /** Guard for a keyboard handler: `if (!ui.ownsKeys("viewer")) return;` */
+  ownsKeys(layer) { return this.keyOwner === layer; }
+
   isBlockOpen(id) { return this.activeBlock === id; }
   /** Click a tab: show it, or clear back to the blank slate if it was already showing. */
   toggleBlock(id) { this.activeBlock = this.activeBlock === id ? null : id; }
@@ -84,6 +107,21 @@ class UIStore {
     this.reviewOpen = false;
     this.collapseAll();   // a new file starts minimal, same as launch
   }
+}
+
+/**
+ * A key typed into a text field belongs to that field, whichever layer is on top — otherwise the
+ * skeleton editor's "new node name" box would also be seeking frames and toggling visibility.
+ */
+export function isTypingTarget(e) {
+  const t = e?.target;
+  if (!t) return false;
+  if (t.isContentEditable === true) return true;
+  // tagName rather than `instanceof HTMLInputElement`: the constructor is a per-realm global, so the
+  // instanceof form is false for a node from an iframe and THROWS anywhere the DOM globals do not
+  // exist at all (tests, SSR). A tag name is the same answer without either failure mode.
+  const tag = typeof t.tagName === "string" ? t.tagName.toUpperCase() : "";
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 }
 
 export const ui = new UIStore();

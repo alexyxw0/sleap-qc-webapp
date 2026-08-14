@@ -101,7 +101,7 @@
       ui.togglePalette();
       return;
     }
-    if (!ui.paletteOpen) return;
+    if (!ui.ownsKeys("palette")) return;   // open, and nothing above it
     if (e.key === "Escape") {
       ui.closeAll();
       e.preventDefault();

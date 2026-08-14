@@ -6,7 +6,7 @@
   import { store } from "../labelsStore.svelte.js";
   import { edit } from "../editStore.svelte.js";
   import { qc, heatColor } from "../qcStore.svelte.js";
-  import { ui } from "../uiStore.svelte.js";
+  import { ui , isTypingTarget } from "../uiStore.svelte.js";
   import { drawScene, frameDims, hitTestNode, colorFor } from "../draw.js";
   import { reviewFocusBox, flagPartners } from "../qc/focusBox.js";
 
@@ -331,7 +331,7 @@
   }
 
   function onKey(e) {
-    if (!ui.reviewOpen) return;
+    if (!ui.ownsKeys("review") || isTypingTarget(e)) return;   // palette/help sit above this
     const mod = e.ctrlKey || e.metaKey;
     if (mod && (e.key === "z" || e.key === "Z")) { e.shiftKey ? edit.redo() : edit.undo(); qc.rescoreInstance(store.current, edit.selInstance); e.preventDefault(); return; }
     if (e.key === "Escape") { close(); e.preventDefault(); }
