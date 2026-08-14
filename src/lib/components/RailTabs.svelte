@@ -82,11 +82,14 @@
 </aside>
 
 <style>
-  /* Always on screen. App.svelte reserves exactly --rail-mini so this never covers content. */
+  /* Always on screen. App.svelte reserves exactly --rail-mini so this never covers content.
+     Above the floating tool windows (z 300): navigation you cannot reach is worse than a window you
+     have to move, and these two icons are the ONLY way to open a section. Below the modal overlays
+     (palette/help at 400, review/toasts at 500), which are meant to take the whole screen. */
   .mini {
     position: fixed;
     top: 0; right: 0; bottom: 0;
-    z-index: 60;
+    z-index: 320;
     width: var(--rail-mini);
     display: flex;
     flex-direction: column;
@@ -118,7 +121,7 @@
   .tabs {
     position: fixed;
     top: 0; right: 0; bottom: 0;
-    z-index: 61;
+    z-index: 321;
     width: 15.5rem;
     display: flex;
     flex-direction: column;

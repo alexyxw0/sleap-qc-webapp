@@ -417,7 +417,11 @@
 <style>
   /* ---- docked content panel -----------------------------------------------------------------------
      In-flow (not fixed): opening a section resizes the viewer rather than covering it, and the panel
-     PERSISTS after the hover selector hides. The selector (RailTabs) overlays this at a higher z-index. */
+     PERSISTS after the hover selector hides. The selector (RailTabs) overlays this at a higher z-index.
+
+     z-index puts it above the floating tool windows (300). It is in-flow, so it does not overlap them
+     until one is dragged over it — but a window that DOES overlap used to bury the panel completely,
+     which read as "the tab will not open". Chrome wins; the window is the thing you can move. */
   .panel {
     display: flex;
     flex-direction: column;
@@ -425,6 +429,7 @@
     background: var(--panel, #12161b);
     border-left: 1px solid var(--border);
     position: relative;
+    z-index: 310;
   }
   /* The slate holds exactly one section body — the {#if}/{:else if} chain makes that structural. */
   .slate { flex: 1 1 auto; min-height: 0; }

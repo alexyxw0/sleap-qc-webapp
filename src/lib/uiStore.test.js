@@ -131,3 +131,28 @@ describe("selector visibility is independent of panel visibility", () => {
     }
   });
 });
+
+describe("chromeW — the width floating windows must keep clear of", () => {
+  it("is the tab strip alone when no section is open", () => {
+    ui.collapseAll();
+    expect(ui.chromeW).toBeCloseTo(2.6 * 16, 6);   // no document in this env: the 16px fallback
+  });
+
+  it("grows by the docked panel when a section is open, and follows a resize", () => {
+    ui.openBlock("checks");
+    ui.setRailW(320);
+    expect(ui.chromeW).toBeCloseTo(2.6 * 16 + 320, 6);
+    ui.setRailW(300);
+    expect(ui.chromeW).toBeCloseTo(2.6 * 16 + 300, 6);
+    ui.collapseAll();
+    expect(ui.chromeW).toBeCloseTo(2.6 * 16, 6);
+  });
+
+  it("the rem constant matches the CSS custom property it stands in for", async () => {
+    // Two hard-coded widths would drift, and the drift shows up as a window you cannot quite grab.
+    const { readFileSync } = await import("node:fs");
+    const m = /--rail-mini:\s*([\d.]+)rem/.exec(readFileSync("src/app.css", "utf8"));
+    expect(m).not.toBeNull();
+    expect(Number(m[1])).toBe(ui.constructor.RAIL_MINI_REM);
+  });
+});

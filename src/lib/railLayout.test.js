@@ -185,3 +185,84 @@ describe("the tab strip is always visible", () => {
     expect(tabs).toMatch(/\.mlbl \{[^}]*clip-path: inset\(50%\)/s);
   });
 });
+
+// ---------------------------------------------------------------------------------------------------
+// With the proofreading window open, clicking "Detection checks" or "Appearance" appeared to do
+// nothing. Both DID open — you could not see them. Two separate causes had to line up, and fixing
+// either one alone leaves the bug in place (verified in a real browser, one at a time):
+//
+//   1. `.app` animated with `animation-fill-mode: both`, which keeps the last keyframe applied
+//      forever. That keyframe sets `transform: translateY(0)` — a transform other than `none` makes
+//      the element a permanent STACKING CONTEXT, sealing every z-index inside it below any
+//      root-level sibling. The floating windows are root-level siblings.
+//   2. The chrome's z-indexes (60/61, and the in-flow panel) were below the windows' 300 anyway.
+//
+// So the window painted over the navigation, and the only route into a section is that navigation.
+describe("app chrome outranks the floating windows", () => {
+  const app = readFileSync("src/App.svelte", "utf8");
+  const panel = readFileSync("src/lib/components/Sidebar.svelte", "utf8");
+  const pop = readFileSync("src/lib/components/PopoutWindow.svelte", "utf8");
+  const zOf = (src, sel) => {
+    const at = src.indexOf(`${sel} {`);
+    expect(at, `no ${sel} rule`).toBeGreaterThan(-1);
+    const m = /z-index:\s*(\d+)/.exec(src.slice(at, at + 400));
+    expect(m, `${sel} declares no z-index`).not.toBeNull();
+    return Number(m[1]);
+  };
+
+  it("the shell does not leave a transform on itself, which would trap every z-index inside it", () => {
+    const at = app.indexOf(".app {");
+    const rule = app.slice(at, app.indexOf("\n  }", at));   // the whole rule; the comment in it is long
+    expect(rule).toMatch(/animation:[^;]*\bbackwards\b/);
+    // `both` and `forwards` both retain the final keyframe. The keyframe is identical to the base
+    // style, so retaining it buys nothing and costs the stacking context.
+    expect(rule).not.toMatch(/animation:[^;]*\b(both|forwards)\b/);
+  });
+
+  it("...and the keyframe it would have retained is indeed a transform", () => {
+    // If fade-up ever stops ending on a transform, the rule above is no longer load-bearing — but it
+    // is still correct, and this test is what tells the next reader which of the two it is.
+    const k = css.slice(css.indexOf("@keyframes fade-up"));
+    expect(k.slice(0, k.indexOf("}") + 1) + k.slice(k.indexOf("to"), k.indexOf("to") + 80))
+      .toMatch(/transform:/);
+  });
+
+  it("the tab strip and the docked panel both sit above a floating window", () => {
+    const win = zOf(pop, ".popwin");
+    expect(zOf(tabs, ".mini"), "the icon strip is the ONLY way to open a section").toBeGreaterThan(win);
+    expect(zOf(tabs, ".tabs")).toBeGreaterThan(win);
+    expect(zOf(panel, ".panel"), "the panel is what the tab opens").toBeGreaterThan(win);
+  });
+
+  it("the selector still overlays the panel, and both stay under the modal overlays", () => {
+    expect(zOf(tabs, ".tabs")).toBeGreaterThan(zOf(tabs, ".mini"));
+    expect(zOf(tabs, ".mini")).toBeGreaterThan(zOf(panel, ".panel"));
+    for (const f of ["CommandPalette", "ShortcutsHelp", "QcReview", "Toasts"]) {
+      const src = readFileSync(`src/lib/components/${f}.svelte`, "utf8");
+      const top = Math.max(...[...src.matchAll(/z-index:\s*(\d+)/g)].map((m) => Number(m[1])));
+      expect(top, `${f} must stay above the chrome`).toBeGreaterThan(zOf(tabs, ".tabs"));
+    }
+  });
+
+  it("a raised panel needs a position for the z-index to apply at all", () => {
+    // z-index on a static element is ignored, silently — the panel would still be buried.
+    const at = panel.indexOf(".panel {");
+    expect(panel.slice(at, at + 400)).toMatch(/position:\s*relative/);
+  });
+});
+
+describe("floating windows keep clear of the chrome", () => {
+  const pop = readFileSync("src/lib/components/PopoutWindow.svelte", "utf8");
+
+  it("an un-dragged window centres in the space the chrome leaves, not the viewport", () => {
+    // Centering on the viewport put a 1080px window straight under the docked panel the moment you
+    // opened one — legible now that the panel is on top, but still overlapping for no reason.
+    expect(pop).toContain("`calc(50% - ${ui.chromeW / 2}px)`");
+  });
+
+  it("a drag cannot park a window where its own title bar is unreachable", () => {
+    expect(pop).toContain("const right = window.innerWidth - ui.chromeW;");
+    expect(pop).toMatch(/Math\.min\(right - 100,/);
+    expect(pop, "still clamping to the raw viewport width").not.toMatch(/Math\.min\(window\.innerWidth - 100,/);
+  });
+});

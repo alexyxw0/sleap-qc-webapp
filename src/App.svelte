@@ -109,7 +109,14 @@
        width. Without this the strip would sit ON TOP of whatever is rightmost — usually the docked
        panel's scrollbar, occasionally a control. */
     padding-right: var(--rail-mini);
-    animation: fade-up 0.3s var(--ease) both;
+    /* `backwards`, NOT `both`. `both` keeps the last keyframe applied forever, and that keyframe
+       sets `transform: translateY(0)` — a transform other than `none`, which makes this element a
+       STACKING CONTEXT permanently. Every z-index inside the shell was then trapped below it, so a
+       floating window (z 300, a sibling of this element) painted over the tab strip and the docked
+       panel no matter how high their z-index went: with the proofreading window open you could not
+       see Detection checks or Appearance at all. The final keyframe is identical to the element's
+       own style, so dropping the forwards half changes nothing visually. */
+    animation: fade-up 0.3s var(--ease) backwards;
   }
   .row {
     flex: 1;

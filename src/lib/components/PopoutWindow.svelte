@@ -13,6 +13,8 @@
   // `resizable`: a corner grip. The proofreading frame is CONTAIN-fitted into the leftover height, so
   // on a wide-and-short window the picture letterboxes and there is nothing the layout can do about it
   // — only more height helps, and only the user knows how much of their screen to give it.
+  import { ui } from "../uiStore.svelte.js";
+
   let { title = "", onclose, width = "420px", height = null, fill = false, resizable = false, children } = $props();
 
   let el = $state.raw(null);
@@ -57,7 +59,10 @@
   function move(e) {
     if (!drag) return;
     const w = el.offsetWidth;
-    x = Math.max(-(w - 100), Math.min(window.innerWidth - 100, e.clientX - drag.ox)); // keep ≥100px on screen
+    // Right bound stops at the chrome, not the viewport edge: a window parked under the tab strip or
+    // the docked panel is behind them now, so its title bar would be there but ungrabbable.
+    const right = window.innerWidth - ui.chromeW;
+    x = Math.max(-(w - 100), Math.min(right - 100, e.clientX - drag.ox)); // keep ≥100px on screen
     y = Math.max(6, Math.min(window.innerHeight - 36, e.clientY - drag.oy)); // keep the bar reachable
   }
   function up(e) {
@@ -78,7 +83,7 @@
   bind:this={el}
   style:width={w == null ? width : `${w}px`}
   style:height={h == null ? (height ?? undefined) : `${h}px`}
-  style:left={x == null ? "50%" : `${x}px`}
+  style:left={x == null ? `calc(50% - ${ui.chromeW / 2}px)` : `${x}px`}
   style:top={y == null ? "10%" : `${y}px`}
   style:transform={x == null ? "translateX(-50%)" : "none"}
   role="dialog"

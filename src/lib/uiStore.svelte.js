@@ -45,6 +45,20 @@ class UIStore {
   static RAIL_MIN = 280;
   static RAIL_MAX = 440;
 
+  /** Must match --rail-mini in app.css; railLayout.test.js asserts the two agree. */
+  static RAIL_MINI_REM = 2.6;
+
+  /**
+   * Width of the right-hand chrome in px — the always-visible tab strip, plus the docked panel when a
+   * section is open. Floating windows centre in what is LEFT of this and cannot be dragged under it,
+   * so opening a section never lands a window on top of the navigation (and vice versa).
+   */
+  get chromeW() {
+    const root = typeof document === "undefined" ? null : document.documentElement;
+    const rem = root ? parseFloat(getComputedStyle(root).fontSize) || 16 : 16;
+    return UIStore.RAIL_MINI_REM * rem + (this.activeBlock ? this.railW : 0);
+  }
+
   get railOpen() { return this.railPinned || this.railHover; }
   setRailHover(v) { this.railHover = !!v; }
   togglePin() { this.railPinned = !this.railPinned; }
