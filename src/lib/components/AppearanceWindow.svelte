@@ -183,14 +183,36 @@
   const picked = $derived(appRun.gran === "node" && Array.isArray(es?.nodes) ? es.nodes : null);
   const nSel = $derived(picked ? picked.length : allNodes.length);
   const noneSelected = $derived(picked != null && picked.length === 0);
-  function toggleNode(ni) {
+  /** Set one keypoint's membership. `on === null` toggles. */
+  function setNode(ni, on = null) {
     if (!es) return;
     // null means "all" in the store; materialise it on the first deselect, and collapse back to null
     // when everything is on again so the config signature keeps one representation of the same pass.
     const cur = Array.isArray(es.nodes) ? es.nodes : allNodes.map((_, k) => k);
-    const next = cur.includes(ni) ? cur.filter((k) => k !== ni) : [...cur, ni].sort((a, b) => a - b);
+    const has = cur.includes(ni);
+    const want = on ?? !has;
+    if (want === has) return;
+    const next = want ? [...cur, ni].sort((a, b) => a - b) : cur.filter((k) => k !== ni);
     es.nodes = next.length === allNodes.length ? null : next;
   }
+  const toggleNode = (ni) => setNode(ni);
+
+  // ---- drag across the chips to select or deselect a run of them --------------------------------
+  // A 13-keypoint skeleton meant 13 clicks to pick 3, or 10 to drop the rest. The drag PAINTS one
+  // state rather than toggling each chip it crosses: the first chip decides the direction (it was on,
+  // so this is a deselect), and every chip the pointer enters is set to that same state. Toggling per
+  // chip would make a drag that doubles back undo itself, which is not what a drag means anywhere
+  // else — spreadsheets, file managers and checkbox lists all paint.
+  let paint = $state(null);   // the state being painted, or null when not dragging
+  function paintStart(ni, isOn, e) {
+    if (busy) return;
+    paint = !isOn;
+    setNode(ni, paint);
+    // NOT setPointerCapture: capture would send every later event to this chip and its siblings would
+    // never see pointerenter, which is the whole mechanism.
+    e.preventDefault();
+  }
+  const paintOver = (ni) => { if (paint !== null) setNode(ni, paint); };
   const covNote = $derived(appearanceCoverageNote(appRun.checkKey));
 
   // A warm IndexedDB cache is only discovered inside run(), after the model load — so the cost line
@@ -314,6 +336,9 @@
   ]);
   void _TABS_UNUSED; // the peer-tab strip is replaced by the ordered flow below
 </script>
+
+<!-- A drag can end anywhere: releasing outside the chips must still stop painting. -->
+<svelte:window onpointerup={() => (paint = null)} onpointercancel={() => (paint = null)} />
 
 {#if appRun.open}
   <PopoutWindow title="Appearance · DINOv2" width="820px" onclose={() => appRun.close()}>
@@ -721,15 +746,19 @@
         {#if es && appRun.gran === "node" && allNodes.length}
           <div class="row kprow">
             <span class="lbl">Keypoints</span>
-            <div class="chips">
+            <!-- touch-action: none so a drag across the chips paints instead of scrolling the pane. -->
+            <div class="chips" style:touch-action="none">
               {#each allNodes as nm, ni (nm)}
                 {@const on = picked == null || picked.includes(ni)}
                 <button type="button" class="kchip" class:on disabled={busy}
-                        onclick={() => toggleNode(ni)}
-                        title={on ? `${nm} will be embedded — click to skip it` : `${nm} will NOT be embedded, so nothing will be known about it`}>{nm}</button>
+                        onpointerdown={(e) => paintStart(ni, on, e)}
+                        onpointerenter={() => paintOver(ni)}
+                        onkeydown={(e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggleNode(ni); } }}
+                        aria-pressed={on}
+                        title={on ? `${nm} will be embedded — click to skip it, or drag across to skip several` : `${nm} will NOT be embedded, so nothing will be known about it`}>{nm}</button>
               {/each}
             </div>
-            <span class="ksum">{nSel} of {allNodes.length}</span>
+            <span class="ksum" title="Click a keypoint to toggle it, or drag across several">{nSel} of {allNodes.length}</span>
           </div>
         {/if}
 

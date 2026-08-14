@@ -668,3 +668,48 @@ describe("the flow nav goes back one step", () => {
     expect(nav, "the button does not say where it goes").toContain("appRun.backLabel");
   });
 });
+
+// Picking 3 of 13 keypoints was 13 clicks; dropping the rest was 10. Dragging across the chips
+// selects or deselects a run of them.
+describe("drag across the keypoint chips", () => {
+  const win = () => read("src/lib/components/AppearanceWindow.svelte");
+
+  it("the drag PAINTS one state — it does not toggle each chip it crosses", () => {
+    // The first chip decides the direction; every chip entered is set to that same state. Toggling
+    // per chip would make a drag that doubles back undo itself, which is not what a drag means in a
+    // spreadsheet, a file manager, or any checkbox list.
+    const w = win();
+    expect(w).toMatch(/function paintStart\(ni, isOn, e\) \{[\s\S]{0,200}?paint = !isOn;/);
+    expect(w).toMatch(/paintOver = \(ni\) => \{ if \(paint !== null\) setNode\(ni, paint\); \}/);
+    // setNode takes the state explicitly, so a repeat over the same chip is a no-op
+    expect(w).toMatch(/const want = on \?\? !has;\s*\n\s*if \(want === has\) return;/);
+  });
+
+  it("uses pointerenter on the siblings, and must NOT capture the pointer", () => {
+    // setPointerCapture would route every later event to the chip the drag started on, so no sibling
+    // would ever see pointerenter — which is the entire mechanism.
+    const w = win();
+    expect(w).toContain("onpointerenter={() => paintOver(ni)}");
+    expect(w).toContain("onpointerdown={(e) => paintStart(ni, on, e)}");
+    // CODE only — the comment above paintStart names setPointerCapture to explain why it is absent.
+    const src = code("src/lib/components/AppearanceWindow.svelte");
+    const fn = src.slice(src.indexOf("function paintStart"), src.indexOf("const paintOver"));
+    expect(fn, "capturing the pointer would break the sibling enters").not.toContain("setPointerCapture");
+  });
+
+  it("a drag released anywhere stops painting", () => {
+    // Release outside the chips is the common case — the pointer leaves the row on the way out.
+    expect(win()).toMatch(/<svelte:window onpointerup=\{\(\) => \(paint = null\)\} onpointercancel=/);
+  });
+
+  it("dragging paints instead of scrolling on touch", () => {
+    expect(win()).toMatch(/class="chips" style:touch-action="none"/);
+  });
+
+  it("still works from the keyboard", () => {
+    // The chips lost their onclick to pointerdown; without this a keyboard user could not toggle one.
+    const w = win();
+    expect(w).toMatch(/onkeydown=\{\(e\) => \{ if \(e\.key === " " \|\| e\.key === "Enter"\)/);
+    expect(w).toContain("aria-pressed={on}");
+  });
+});
