@@ -7,6 +7,8 @@ import { store } from "./labelsStore.svelte.js";
 import * as dinoBackend from "./qc/embedding/dinoRemote.js";
 import { l2norm, stratifiedReference, nearestNeighbors, buildScoreMaps, pca2 } from "./qc/embedding/outlier.js";
 import { scoreEmbeddings } from "./qc/embedding/scoreRemote.js";
+import { PATCH, tokenCount } from "./qc/embedding/patchTokens.js";
+import { ANOMALY_DINO, canScorePatches } from "./qc/embedding/anomalyDino.js";
 import { classifyDecisions, classifierInfo } from "./qc/embedding/appearanceClf.js";
 import { loadAll as loadCache, putMany as saveCache, requestPersist } from "./qc/embedding/embcache.js";
 
@@ -51,12 +53,20 @@ class EmbeddingStore {
   progress = $state({ done: 0, total: 0, startedAt: 0 });
   modelInfo = $state(null);
   backend; // pinned at construction; "dino" (ViT — slow, semantic) is the only one built
-  // Scoring method: "knn" = unsupervised kNN-outlier (robust-z); "trained" = the RBF-SVM ported from the
-  // dino_probe (supervised, ~0.82 ROC, DINO-ViT-S-only). threshold's meaning follows the method (robust-z
-  // for knn, SVM decision value for trained), so the flag logic (z >= threshold) is unchanged.
-  // Trained by default: the unsupervised kNN scored ~chance on whole-animal crops in the experiments,
-  // so it is no longer offered in the UI. setMethod("knn") still works (the pipeline is intact) but
-  // nothing selects it — per-keypoint patches are where the unsupervised route still discriminates.
+  // Scoring method, all three on the same "higher = more faulty, flag at z >= threshold" contract:
+  //   "trained"     the RBF-SVM ported from the dino_probe (supervised, ~0.82 CV ROC, DINO-ViT-S only)
+  //   "knn"         unsupervised kNN-outlier on the CLS vector, robust-z against a stratified reference
+  //   "anomalyDino" unsupervised patch-token scoring (Damm et al., WACV 2025) — see anomalyDino.js
+  //
+  // The unsupervised pair used to be unreachable here: kNN on a whole-animal crop scored ~chance in the
+  // experiments, so the UI offered only "trained" and the granularity switch doubled as a scorer switch.
+  // That reading is still in the UI — as a warning on the choice, which is where a measured result
+  // belongs — rather than as a missing option, because it is a statement about ONE dataset's faults and
+  // the same crop is the only thing on offer for a file the bundled SVM was never fitted for.
+  //
+  // AnomalyDINO is the more interesting of the two at this granularity: the CLS token of a whole animal
+  // averages a locally-wrong region away far harder than a keypoint patch does, which is precisely the
+  // failure the patch-token route exists to answer.
   method = $state("trained");
   threshold = $state(classifierInfo()?.threshold ?? -0.67); // trained: SVM decision cutoff · knn: robust-z
   referenceFraction = $state(0.2); // fraction of embedded instances forming the kNN "normal" reference
@@ -67,6 +77,14 @@ class EmbeddingStore {
 
   #recs = []; // { fi, ii, thumb }  (store-frame index, instance index, crop dataURL)
   #embs = []; // Float32Array (L2-normalized) per record, index-aligned with #recs
+  #pts = [];  // packed patch-token descriptor per record (int8; patchTokens.js), or null — AnomalyDINO only
+  /** What ACTUALLY scored the current results. Not the same as `method`: a run whose crops came from a
+   *  cache written before patch features existed has nothing for AnomalyDINO to read, and falls back to
+   *  kNN. Silently reporting the requested scorer there is the one failure this check cannot afford. */
+  usedScorer = $state(null);
+  /** Force a re-embed of crops whose cache entry predates patch features. Off by default: it turns a
+   *  warm cache into a full pass, so it is the user's call once patchCoverage has priced it. */
+  requirePatches = $state(false);
   #res = null; // { scores, z, coords }
   #frameZ = new Map(); // "videoIdx:frameIdx" -> max embedding z over that frame's instances
   #instZ = new Map();  // "videoIdx:frameIdx:instIdx" -> that instance's z (one record per instance here)
@@ -77,6 +95,15 @@ class EmbeddingStore {
   #cache = new Map();
   cacheNote = $state(null); // set when persisting the embedding cache failed (e.g. quota)
   #cacheLabels = null; // the labels the cache was built for (cleared when a new file loads)
+
+  /** Is this crop's cached work enough for the run we are about to do? An entry written before patch
+   *  features existed has a CLS vector and no patch tokens: everything kNN needs, nothing AnomalyDINO
+   *  needs. Mirrors nodeEmbeddingStore's rule, deliberately — one cache, one meaning of "reusable". */
+  #reusable(key) {
+    const hit = this.#cache.get(key);
+    if (!hit) return false;
+    return !(this.requirePatches && !hit.pt);
+  }
 
   /** Write-behind for the embedding cache. Fire-and-forget on purpose — the run is done and the user
    *  should not wait on a large write — but a FAILED write is reported, because a quota wall used to
@@ -130,7 +157,8 @@ class EmbeddingStore {
   /** The settings this run used. referenceFraction is deliberately absent: the trained scorer — the only
    *  one the UI selects — returns before it is read, so including it would report a phantom change. */
   #configSig() {
-    return `${this.instanceCount}|${this.method}`;
+    // requirePatches changes which cache entries are reusable, so a run under it is a different run.
+    return `${this.instanceCount}|${this.method}|${this.requirePatches ? "pt" : ""}`;
   }
   #ranSig = null;
   get configDirty() { this.rev; return this.#ranSig != null && this.#ranSig !== this.#configSig(); }
@@ -195,7 +223,7 @@ class EmbeddingStore {
     // Best-effort: without this the origin is evictable, and a large embedding cache is exactly
     // the kind of thing a browser drops under disk pressure.
     requestPersist();
-    this.#abort = false; this.#recs = []; this.#embs = []; this.#res = null; this.#frameZ = new Map(); this.#instZ = new Map(); this.rev++; this.resultRev++;
+    this.#abort = false; this.#recs = []; this.#embs = []; this.#pts = []; this.#res = null; this.#frameZ = new Map(); this.#instZ = new Map(); this.rev++; this.resultRev++;
     const be = this.#be();
     this.status = "loading-model"; this.message = `Loading ${be.MODEL.name}…`;
     try {
@@ -249,7 +277,11 @@ class EmbeddingStore {
       const item = frames[fi];
       const vi = vidx.get(item.video) ?? 0;
       const plan = iis.map((ii) => { const sq = squareBox(item, ii); return { ii, sq, key: sq ? `${this.backend}:${cropKey(vi, item.frameIdx, sq)}` : null }; });
-      jobs.push({ fi, item, plan, needsImg: plan.some((p) => p.key && !this.#cache.has(p.key)) });
+      // #reusable, NOT #cache.has: with requirePatches on, a token-less entry IS in the cache and is
+      // still going to be re-embedded — so the frame has to be decoded. Asking `has` here skipped the
+      // decode, every crop then failed the `img?.width` test, and the run ended with zero records and
+      // "No crops could be embedded". The two questions have to be the same question.
+      jobs.push({ fi, item, plan, needsImg: plan.some((p) => p.key && !this.#reusable(p.key)) });
     }
     const decode = (j) => (j < jobs.length && jobs[j].needsImg ? store.getFrameImage(jobs[j].item).catch(() => null) : null);
 
@@ -262,12 +294,17 @@ class EmbeddingStore {
     const flush = async () => {
       if (!queue.length) return;
       const batch = queue; queue = [];
-      const { embs } = await be.embedBatch(batch.map((b) => b.img), null); // buffers may be transferred — consumed
+      // PATCH, not null: the model already computed every patch token to produce CLS, so taking them
+      // costs one pooling pass, while asking for them later costs the whole forward pass again. One
+      // descriptor per INSTANCE is ~1/13th of the per-keypoint route's storage, so it is always worth
+      // keeping — the choice of scorer can then be made, and remade, without re-embedding.
+      const { embs, patches } = await be.embedBatch(batch.map((b) => b.img), PATCH);
       for (let i = 0; i < batch.length; i++) {
         const { r, key } = batch[i];
         const emb = l2norm(embs[i]);
         this.#embs[r] = emb;
-        const hit = { emb, thumb: this.#recs[r].thumb };
+        this.#pts[r] = patches?.[i] ?? null;
+        const hit = { emb, thumb: this.#recs[r].thumb, pt: patches?.[i] ?? null };
         this.#cache.set(key, hit);
         fresh.push([key, hit]);
         embedded++;
@@ -281,10 +318,10 @@ class EmbeddingStore {
       const img = await imgP;
       imgP = decode(j + 1); // kick off the next frame's decode now — it overlaps this frame's embedding
       for (const { ii, sq, key } of plan) {
-        if (key && this.#cache.has(key)) {
+        if (key && this.#reusable(key)) {
           const hit = this.#cache.get(key);
           hits++;
-          this.#recs.push({ fi, ii, thumb: hit.thumb }); this.#embs.push(hit.emb); usedKeys.push(key);
+          this.#recs.push({ fi, ii, thumb: hit.thumb }); this.#embs.push(hit.emb); this.#pts.push(hit.pt ?? null); usedKeys.push(key);
           this.progress.done += 1;
         } else if (key && img?.width) {
           drawCrop(crop, img, sq);
@@ -292,7 +329,7 @@ class EmbeddingStore {
           thumbCtx.drawImage(crop, 0, 0, thumb.width, thumb.height); // thumb from the cropped canvas — one source sample, not two
           const r = this.#recs.length;
           this.#recs.push({ fi, ii, thumb: thumb.toDataURL("image/jpeg", 0.7) });
-          this.#embs.push(null); usedKeys.push(key); // reserved — filled by flush()
+          this.#embs.push(null); this.#pts.push(null); usedKeys.push(key); // reserved — filled by flush()
           queue.push({ r, key, img: { data: id.data, width: id.width, height: id.height } });
           if (queue.length >= BATCH) {
             try { await flush(); } catch (e) { this.status = "error"; this.message = `Embedding failed — ${e.message}`; return; }
@@ -310,7 +347,7 @@ class EmbeddingStore {
     try { if (!this.#abort) await flush(); } catch (e) { this.status = "error"; this.message = `Embedding failed — ${e.message}`; return; }
     if (this.#abort) {
       // Drop reservations whose batch never ran; the filled records remain valid partial output.
-      for (let r = this.#recs.length - 1; r >= 0; r--) if (!this.#embs[r]) { this.#recs.splice(r, 1); this.#embs.splice(r, 1); usedKeys.splice(r, 1); }
+      for (let r = this.#recs.length - 1; r >= 0; r--) if (!this.#embs[r]) { this.#recs.splice(r, 1); this.#embs.splice(r, 1); this.#pts.splice(r, 1); usedKeys.splice(r, 1); }
       // Persist first: a partially-embedded set is exactly as reusable as a complete one, and throwing
       // away a long DINO pass because someone pressed Stop is the most expensive bug on this path.
       // (nodeEmbeddingStore already does this; this route was still discarding it.)
@@ -333,7 +370,7 @@ class EmbeddingStore {
       } else {
         this.status = "scoring";
         this.message = this.method === "trained" ? `Scoring ${this.#embs.length} with the trained classifier…`
-                                                 : `Scoring ${this.#embs.length} vs reference…`;
+          : `Scoring ${this.#embs.length} vs reference${this.method === "anomalyDino" ? " · AnomalyDINO" : ""}…`;
         this.rev++;
         await new Promise((r) => setTimeout(r));
         this.#res = await this.#computeRes(vidx); // knn (off-thread) OR trained SVM (off-thread)
@@ -355,14 +392,40 @@ class EmbeddingStore {
       const dec = await classifyDecisions(this.#embs); // SVM decision value per instance
       const { coords } = pca2(this.#embs); // 2-D map is method-independent (just PCA of the embeddings)
       this.#refCount = 0;
+      this.usedScorer = "trained";
       return { scores: Array.from(dec), z: Array.from(dec), coords };
     }
     // Reference = an even, per-video-stratified subsample; every instance is scored against it.
     const refKeys = this.#recs.map((rec) => vidx.get(store.frames[rec.fi]?.video) ?? 0);
     const refIdx = stratifiedReference(refKeys, this.referenceFraction, EmbeddingStore.REF_MIN_PER_VIDEO);
     this.#refCount = refIdx.length;
-    return await scoreEmbeddings(this.#embs, refIdx, this.k);
+    // AnomalyDINO needs patch features on BOTH sides: a bank built from reference crops that have none
+    // would leave every distance at 0, i.e. every animal perfectly clean, for a bookkeeping reason. Fall
+    // back to kNN and record that we did — see usedScorer.
+    const haveAd = this.method === "anomalyDino" && canScorePatches(this.#pts, refIdx);
+    this.usedScorer = haveAd ? "anomalyDino" : "knn";
+    return await scoreEmbeddings(this.#embs, refIdx, this.k, haveAd
+      ? { scorer: "anomalyDino", patches: this.#pts, P: PATCH.dim, opts: { q: ANOMALY_DINO.q, bankTokens: ANOMALY_DINO.bankTokens } }
+      : null);
   }
+
+  /**
+   * How much of this run carries DINOv2 patch features — what AnomalyDINO needs and kNN does not.
+   *
+   * Never all-or-nothing, because the embedding cache predates patch features: a file embedded before
+   * they existed re-serves its CLS vectors happily and has none to give. Those crops are the difference
+   * between "AnomalyDINO scored your file" and "AnomalyDINO scored the part of it that was embedded
+   * recently", and quietly doing the second is worse than not offering the scorer at all.
+   */
+  get patchCoverage() {
+    this.resultRev;
+    const total = this.#recs.length;
+    let have = 0;
+    for (const d of this.#pts) if (d?.length) have++;
+    return { have, total, full: total > 0 && have === total, tokens: tokenCount(PATCH), dim: PATCH.dim };
+  }
+  /** Can AnomalyDINO run at all on the current results? */
+  get canAnomalyDino() { this.resultRev; return this.patchCoverage.have > 0; }
 
   /** Re-score the already-embedded set for the current method (used on a method switch — no re-embed). */
   async #rescore() {
@@ -394,10 +457,20 @@ class EmbeddingStore {
     return { rate, elapsed, etaSec: done < total ? (total - done) / rate : 0, frac: done / total };
   }
 
+  /**
+   * Switch the UNSUPERVISED scorer and re-score in place. Named to match nodeEmbeddingStore.setScorer
+   * so the flow can drive either granularity through one call — before this, the window's scoring
+   * question called `store.setScorer?.()` and whole-instance simply had no such method, so answering
+   * it changed nothing at all.
+   */
+  setScorer(which) { this.setMethod(which === "anomalyDino" ? "anomalyDino" : "knn"); }
+
   setMethod(m) {
-    if (m === this.method || (m !== "knn" && m !== "trained")) return;
+    if (m === this.method || !["knn", "trained", "anomalyDino"].includes(m)) return;
     if (m === "trained" && this.backend !== "dino") return; // classifier is DINO-specific
     this.method = m;
+    // robust-z for both unsupervised scorers (same scale, same meaning); the SVM's cutoff is a decision
+    // value and has nothing to do with a z.
     this.threshold = m === "trained" ? (classifierInfo()?.threshold ?? -0.67) : 3.5;
     this.#scoreSig = null;
     if (this.#embs.length && (this.status === "done" || this.status === "aborted")) this.#rescore();

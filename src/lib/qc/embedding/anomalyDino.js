@@ -42,6 +42,26 @@
 
 import { unpackPatchTokens } from "./patchTokens.js";
 
+/**
+ * Can AnomalyDINO actually run over this group, or must it fall back to kNN?
+ *
+ * BOTH sides have to carry patch tokens, and the reference side is the one that is easy to get wrong.
+ * The bank is built from the REFERENCE descriptors only, so a reference whose entries all predate patch
+ * features yields an empty bank — and an empty bank puts every distance at 0, i.e. every crop perfectly
+ * clean. That is indistinguishable from a flawless file, which is the worst answer a QC check can give.
+ *
+ * Shared by both embedding stores rather than written twice: it is the same rule about the same data,
+ * and the whole-instance copy of it was un-testable in place (with a small fixture the reference IS the
+ * whole set, so the two halves of the condition collapse into one).
+ */
+export function canScorePatches(descriptors, refIndices) {
+  if (!descriptors?.length || !refIndices?.length) return false;
+  // The reference alone answers it. Both stores also tested `descriptors.some(...)`, which cannot fail
+  // while this holds — refIndices index INTO descriptors, so a reference entry with tokens is a
+  // descriptor with tokens. No test could tell the two versions apart, so the second one is gone.
+  return refIndices.some((i) => descriptors[i]?.length > 0);
+}
+
 export const ANOMALY_DINO = {
   q: 0.25, // fraction of a crop's patch tokens averaged into its score (see the note above)
   bankTokens: 2048, // memory-bank budget per scored group

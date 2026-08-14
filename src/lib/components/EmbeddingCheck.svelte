@@ -10,7 +10,9 @@
 
   let jumpPos = $state(0);
   const es = embeddingStores.dino;
-  es.setMethod("trained"); // idempotent — pinned here too, so the scorer holds however the store is reached
+  // NOT setMethod("trained") any more. It was pinned here when the bundled SVM was the only whole-instance
+  // scorer; now that kNN and AnomalyDINO are offered, a viewer that re-pins on mount silently undoes the
+  // choice the user just made — and this viewer renders on the step right after they make it.
 
   // 2-D PCA scatter of every embedding (the learned appearance space).
   const scatter = $derived.by(() => {

@@ -89,7 +89,30 @@ describe("appearance run selection", () => {
   it("whole instance runs the instance store and arms the whole-instance check", () => {
     expect(appRun.store).toBe(embeddingStores.dino);
     expect(appRun.checkKey).toBe("dino");
-    expect(appRun.scorer).toBe("Trained SVM");
+    expect(appRun.scorer).toBe("Bundled RBF-SVM");
+  });
+
+  it("nothing is selected until the scope question is answered", () => {
+    // `gran` used to default to "instance", which is an answer nobody gave — the window opened already
+    // committed to a granularity, on a route whose first question is exactly that.
+    appRun.setGran(null);
+    expect(appRun.gran).toBeNull();
+    expect(appRun.store).toBeNull();
+    expect(appRun.checkKey).toBeNull();
+    expect(appRun.flow.id).toBe("scope");
+    expect(() => appRun.run()).not.toThrow();
+  });
+
+  it("whole instance now has the same unsupervised pair as per keypoint", () => {
+    // THE point of the scope question: the scorer is no longer implied by the granularity.
+    appRun.setScoreKind("unsup");
+    appRun.setUnsupChoice("anomalyDino");
+    expect(embeddingStores.dino.method).toBe("anomalyDino");
+    expect(appRun.scorer).toMatch(/AnomalyDINO/);
+    appRun.setUnsupChoice("knn");
+    expect(embeddingStores.dino.method).toBe("knn");
+    appRun.setScoreKind("sup");
+    expect(embeddingStores.dino.method).toBe("trained");  // "supervised" IS the bundled model here
   });
 
   it("per keypoint runs the per-node store, scored unsupervised", () => {
@@ -117,7 +140,7 @@ describe("appearance run selection", () => {
   it("unknown values fall back rather than producing an unresolvable selection", () => {
     appRun.setGran("nonsense");
     appRun.setTab("nonsense");
-    expect(appRun.gran).toBe("instance");
+    expect(appRun.gran).toBeNull();   // not an answer, so not answered
     expect(appRun.tab).toBe("compute");
   });
 
@@ -233,25 +256,53 @@ describe("formatting", () => {
 // offered only "‹ start", so backing out of a sub-question on step 2 discarded the route and both
 // steps with it. Back must pop exactly ONE, whichever was answered last, and say where it lands.
 describe("one step back", () => {
-  const at = () => [appRun.route, appRun.tab, appRun.scoreChoice, appRun.svmSource];
+  const at = () => [appRun.route, appRun.tab, appRun.gran, appRun.scoreKind, appRun.scoreNode, appRun.svmSource];
 
-  beforeEach(() => { appRun.clearRoute(); appRun.scoreChoice = null; appRun.svmSource = null; });
+  beforeEach(() => { appRun.clearRoute(); });
 
   it("walks the compute route back one answer at a time, in reverse order", () => {
     appRun.setRoute("compute");
+    appRun.setGran("node");
     appRun.setTab("score");
-    appRun.setScoreChoice("svm");
+    appRun.setScoreKind("sup");
+    appRun.setScoreNode(2);
     appRun.setSvmSource("upload");
-    expect(at()).toEqual(["compute", "score", "svm", "upload"]);
+    expect(at()).toEqual(["compute", "score", "node", "sup", 2, "upload"]);
 
-    appRun.back();                                    // sub-question only
-    expect(at()).toEqual(["compute", "score", "svm", null]);
-    appRun.back();                                    // the technique answer
-    expect(at()).toEqual(["compute", "score", null, null]);
+    appRun.back();                                    // where the boundary comes from
+    expect(at()).toEqual(["compute", "score", "node", "sup", 2, null]);
+    appRun.back();                                    // which keypoint
+    expect(at()).toEqual(["compute", "score", "node", "sup", null, null]);
+    appRun.back();                                    // supervised or not
+    expect(at()).toEqual(["compute", "score", "node", null, null, null]);
     appRun.back();                                    // the step
-    expect(at()).toEqual(["compute", "compute", null, null]);
+    expect(at()).toEqual(["compute", "compute", "node", null, null, null]);
+    appRun.back();                                    // what to embed
+    expect(at()).toEqual(["compute", "compute", null, null, null, null]);
     appRun.back();                                    // the route
     expect(appRun.route).toBeNull();
+  });
+
+  it("pops the unsupervised answer too — every page of the flow is reachable backwards", () => {
+    appRun.setRoute("compute");
+    appRun.setGran("instance");
+    appRun.setTab("score");
+    appRun.setScoreKind("unsup");
+    appRun.setUnsupChoice("anomalyDino");
+    expect(appRun.flow.id).toBe("score.done");
+    appRun.back();
+    expect(appRun.flow.id).toBe("score.unsup");
+    appRun.back();
+    expect(appRun.flow.id).toBe("score.kind");
+  });
+
+  it("the Use step steps back to Score, not out of the route", () => {
+    appRun.setRoute("compute");
+    appRun.setGran("node");
+    appRun.setTab("use");
+    expect(appRun.backLabel).toBe("Score");
+    appRun.back();
+    expect(appRun.tab).toBe("score");
   });
 
   it("stops at the fork instead of unwinding into nothing", () => {
@@ -264,10 +315,14 @@ describe("one step back", () => {
   it("names the destination on every step, so the button is not a guess", () => {
     appRun.setRoute("compute");
     expect(appRun.backLabel).toBe("start");
+    appRun.setGran("node");
+    expect(appRun.backLabel).toBe("what to embed");
     appRun.setTab("score");
     expect(appRun.backLabel).toBe("Embed");
-    appRun.setScoreChoice("svm");
+    appRun.setScoreKind("sup");
     expect(appRun.backLabel).toBe("technique");
+    appRun.setScoreNode(1);
+    expect(appRun.backLabel).toBe("keypoint");
     appRun.setSvmSource("fewshot");
     expect(appRun.backLabel).toBe("boundary");
   });

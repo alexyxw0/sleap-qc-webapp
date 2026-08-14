@@ -10,7 +10,7 @@ import { store } from "./labelsStore.svelte.js";
 import * as dinoBackend from "./qc/embedding/dinoRemote.js";
 import { l2norm, stratifiedReference, buildScoreMaps, robustZ } from "./qc/embedding/outlier.js";
 import { PATCH, tokenCount } from "./qc/embedding/patchTokens.js";
-import { ANOMALY_DINO } from "./qc/embedding/anomalyDino.js";
+import { ANOMALY_DINO, canScorePatches } from "./qc/embedding/anomalyDino.js";
 import { scoreEmbeddings } from "./qc/embedding/scoreRemote.js";
 import { nodePatchPlan } from "./qc/embedding/nodePatch.js";
 import { rbfDecision } from "./qc/embedding/svm.js";
@@ -718,8 +718,7 @@ export class NodeEmbeddingStore {
     // and read as "all clean" — the worst possible failure for a QC check. Fall the group back to kNN
     // and SAY which scorer ran, rather than silently returning zeros.
     const ptsN = idxs.map((r) => this.#pts[r]);
-    const haveAd = this.scorer === "anomalyDino"
-      && refIdx.some((i) => ptsN[i]?.length) && ptsN.some((d) => d?.length);
+    const haveAd = this.scorer === "anomalyDino" && canScorePatches(ptsN, refIdx);
     const res = await scoreEmbeddings(embsN, refIdx, this.k, haveAd
       ? { scorer: "anomalyDino", patches: ptsN, P: PATCH.dim, opts: { q: this.anomalyQ, bankTokens: ANOMALY_DINO.bankTokens } }
       : null); // off-thread; falls back on the main thread

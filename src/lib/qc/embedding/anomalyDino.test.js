@@ -3,7 +3,7 @@
 // nose, so its CLS token barely moves; only a handful of its patch tokens do. If that head-to-head
 // does not come out the right way, the option is not worth offering, so it is the first test here.
 import { describe, it, expect } from "vitest";
-import { buildMemoryBank, patchDistances, aggregate, anomalyDinoScores, ANOMALY_DINO } from "./anomalyDino.js";
+import { buildMemoryBank, patchDistances, aggregate, anomalyDinoScores, ANOMALY_DINO, canScorePatches } from "./anomalyDino.js";
 import { unpackPatchTokens } from "./patchTokens.js";
 import { knnOutlierScoresRef } from "./outlier.js";
 
@@ -202,5 +202,42 @@ describe("anomalyDinoScores", () => {
     const top = (a) => a.indexOf(Math.max(...a));
     expect(top(Array.from(small))).toBe(descs.length - 1);
     expect(top(Array.from(big))).toBe(descs.length - 1);
+  });
+});
+
+// The fall-back guard. Extracted from the two stores because it is the same rule about the same data,
+// and because the whole-instance copy could not be tested where it stood: on any fixture small enough
+// to be a test, the reference IS the whole set, so both halves of the condition say the same thing.
+describe("canScorePatches", () => {
+  const D = (...have) => have.map((h) => (h ? new Int8Array(16) : null));
+
+  it("runs when both the reference and the scored set carry tokens", () => {
+    expect(canScorePatches(D(1, 1, 1, 1), [0, 2])).toBe(true);
+  });
+
+  it("falls back when the REFERENCE has none, even though other crops do", () => {
+    // The bank is built from the reference alone. Without this half, a bank of nothing scores every
+    // distance 0 — a perfectly clean file, for a bookkeeping reason.
+    expect(canScorePatches(D(0, 1, 0, 1), [0, 2])).toBe(false);
+  });
+
+  it("falls back when nothing anywhere has tokens", () => {
+    expect(canScorePatches(D(0, 0, 0), [0, 1, 2])).toBe(false);
+  });
+
+  it("the reference is the whole question — a token outside it cannot build a bank", () => {
+    // Indices point INTO the descriptor list, so "some reference has tokens" already implies "some
+    // descriptor has tokens". The reverse does not hold, and this is that case.
+    expect(canScorePatches(D(0, 1), [0])).toBe(false);
+  });
+
+  it("runs on a partial set — those crops score 0 and the UI says so, but the bank is real", () => {
+    expect(canScorePatches(D(1, 0, 0, 1), [0, 3])).toBe(true);
+  });
+
+  it("says no rather than throwing on an empty or missing input", () => {
+    expect(canScorePatches([], [0])).toBe(false);
+    expect(canScorePatches(D(1, 1), [])).toBe(false);
+    expect(canScorePatches(null, null)).toBe(false);
   });
 });

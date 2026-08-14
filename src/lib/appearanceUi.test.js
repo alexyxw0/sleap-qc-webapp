@@ -53,9 +53,9 @@ describe("the classical backend is gone", () => {
     }
   });
 
-  it("the run window has no Backend axis — granularity is the only choice", () => {
+  it("the run window has no Backend axis — what to embed is the only first choice", () => {
     const w = read("src/lib/components/AppearanceWindow.svelte");
-    expect(w).toMatch(/>Granularity</);
+    expect(read("src/lib/qc/alFlow.js")).toContain("What should be embedded?");
     expect(w).not.toMatch(/>Backend</);
   });
 
@@ -82,36 +82,43 @@ describe("kNN is a per-keypoint option, not a whole-instance one", () => {
     expect(s).toMatch(/threshold = \$state\(classifierInfo\(\)\?\.threshold/);
   });
 
-  it("the whole-instance viewer offers no scoring-method choice", () => {
-    const s = read("src/lib/components/EmbeddingCheck.svelte");
+  it("the whole-instance VIEWER still owns no scoring choice — that is the flow's question", () => {
+    const s = code("src/lib/components/EmbeddingCheck.svelte");   // code, not comments: one records the removal
     expect(s).not.toMatch(/class="method"/);
-    expect(s).not.toMatch(/setMethod\("knn"\)/);
-    expect(s).toContain('es.setMethod("trained")'); // pinned even when opened directly / popped out
-    // no leftover branch that would render kNN copy
+    expect(s).not.toMatch(/setMethod\(/);   // including the old "trained" pin: see the test below
     expect(s).not.toMatch(/es\.method === "trained" \?/);
   });
 
-  it("nothing in the UI can select kNN for whole instance", () => {
+  it("the scorer is selected in ONE place — the flow — however the store is reached", () => {
+    // Two writers is how a viewer mounting on step ④ silently undid the answer given on step ③.
     const hits = sources()
       .filter((p) => p.includes("/components/"))
-      .filter((p) => /setMethod\(\s*["']knn["']\s*\)/.test(code(p)));
-    expect(hits, `a component still selects kNN:\n${hits.join("\n")}`).toEqual([]);
-    expect(read("src/lib/components/EmbeddingCheck.svelte")).toContain('es.setMethod("trained");');
+      .filter((p) => /\.setMethod\(|\.setScorer\(/.test(code(p)));
+    expect(hits, `a component sets the scorer directly:\n${hits.join("\n")}`).toEqual([]);
+    expect(read("src/lib/appearanceRun.svelte.js")).toMatch(/setScorer\?\.\(this\.unsupChoice\)/);
   });
 
-  it("the scorer is stated per granularity, not offered as a choice", () => {
-    const w = read("src/lib/components/AppearanceWindow.svelte");
-    expect(w).toMatch(/>Scorer</);
-    expect(w).toMatch(/class="fixed"/);
-    expect(w).not.toMatch(/setModel\(/); // no model toggle left to drift out of sync
+  it("the scorer is ASKED now, at both granularities — it is no longer implied by the crop", () => {
+    // The whole point of the scope/score split: granularity says what to embed, the score step says how
+    // to score it, and whole instance is no longer stuck on the one model that shipped with the app.
+    const s = read("src/lib/embeddingStore.svelte.js");
+    expect(s).toMatch(/setScorer\(which\)/);
+    expect(s).toMatch(/\["knn", "trained", "anomalyDino"\]\.includes\(m\)/);
     expect(read("src/lib/appearanceRun.svelte.js")).toMatch(/get scorer\(\)/);
   });
 
-  it("the window explains the unsupervised route where kNN now lives", () => {
+  it("the whole-instance viewer no longer re-pins the method when it mounts", () => {
+    // It did, from when "trained" was the only option — and the viewer renders on the step directly
+    // after the scorer is chosen, so mounting it silently undid the answer.
+    const e = read("src/lib/components/EmbeddingCheck.svelte");
+    expect(e).not.toMatch(/^\s*es\.setMethod\(/m);
+  });
+
+  it("the window explains the unsupervised route at both granularities", () => {
     const w = read("src/lib/components/AppearanceWindow.svelte");
-    const knn = w.slice(w.indexOf("{:else}", w.indexOf("<Explain>")));
-    expect(knn).toMatch(/<b>unsupervised<\/b>/i);
-    expect(knn).toMatch(/k nearest patches/);
+    const ex = w.slice(w.indexOf("<Explain>"));
+    expect(ex).toMatch(/<b>unsupervised<\/b>/i);      // whole instance
+    expect(ex).toMatch(/AnomalyDINO/);
   });
 });
 
@@ -174,8 +181,8 @@ describe("few-shot is its own tab", () => {
     const s = read("src/lib/appearanceRun.svelte.js");
     // The bundle-route panes have nothing to launch — but "score" is on the COMPUTE route and must
     // still see its store, so this keys off the route rather than the literal tab name.
-    expect(s).toContain("if (!this.onCompute) return null;")
-    expect(s).toMatch(/get onCompute\(\) \{ return this\.tab === "compute" \|\| this\.tab === "score"; \}/);
+    expect(s).toContain("if (!this.onCompute || this.gran == null) return null;")
+    expect(s).toMatch(/get onCompute\(\) \{ return this\.tab === "compute" \|\| this\.tab === "score" \|\| this\.tab === "use"; \}/);
     // "score" is a real pane and must be routable, but it reads a finished run rather than starting one.
     expect(s).toMatch(/TABS = \[[^\]]*"compute"[^\]]*"score"[^\]]*"upload"[^\]]*"fewshot"[^\]]*\]/);
   });
@@ -247,27 +254,30 @@ describe("the run ends with a scoring choice, not a dead end", () => {
   const w = read("src/lib/components/AppearanceWindow.svelte");
   const r = read("src/lib/appearanceRun.svelte.js");
 
-  it("per-keypoint gets a second step, gated on the run having finished", () => {
+  it("BOTH granularities get the score step, gated on the run having finished", () => {
     expect(w).toContain('id: "score"');
-    expect(w).toMatch(/locked: !appRun\.nodeDone/);
+    expect(w).toMatch(/locked: !done/);
     expect(r).toMatch(/TABS = \[[^\]]*"score"[^\]]*\]/);
+    // whole instance used to be a single "Embed & score" step because the bundled SVM was all it had
+    expect(w).not.toMatch(/if \(appRun\.gran !== "node"\) return embed;/);
+    expect(w).not.toMatch(/label: appRun\.gran === "node" \? "Embed" : "Embed & score"/);
   });
 
-  it("whole-instance does NOT — the bundled model is its only scorer", () => {
-    expect(w).toMatch(/if \(appRun\.gran !== "node"\) return embed;/);
+  it("and a third step for USING it — arming the check is not the same act as choosing a scorer", () => {
+    expect(w).toContain('id: "use"');
+    expect(r).toMatch(/TABS = \[[^\]]*"use"[^\]]*\]/);
   });
 
-  it("names both techniques and reports which is live", () => {
-    for (const t of ["kNN · unsupervised", "SVM · supervised"]) expect(w, t).toContain(t);
-    expect(w).toContain("es.scoringOf(ni)");
-    expect(w).toContain("SCORE_LABEL[scoredMode]");
+  it("names the live technique on the step, from the one label table", () => {
+    expect(w).toContain("SCORE_LABEL[appRun.scoreChoice]");
+    expect(w).toMatch(/SCORE_LABEL = \{[^}]*knn:[^}]*anomalyDino:[^}]*svm:/);
   });
 
   it("few-shot falls back to a nudge on faulty labels alone; the SVM needs both classes", () => {
-    // t.enough is pos>0 && neg>0. The fit button appears only then; below it, the prototype nudge —
+    // enough is pos>0 && neg>0. The fit button appears only then; below it, the prototype nudge —
     // which needs only the faulty side — is offered instead of nothing.
-    expect(w).toMatch(/\{#if t\.enough\}[\s\S]*?fit the SVM[\s\S]*?\{:else\}[\s\S]*?disabled=\{!t\.pos\}[\s\S]*?nudge instead/);
-    expect(w).toContain("nudge(ni)");
+    expect(w).toMatch(/\{#if sTrainable\?\.enough\}[\s\S]*?fit the SVM[\s\S]*?\{:else\}[\s\S]*?disabled=\{!sTrainable\?\.pos\}[\s\S]*?nudge instead/);
+    expect(w).toContain("nudge(sNode)");
   });
 
   it("says plainly that a foreign .bin cannot score these patches", () => {
@@ -304,8 +314,9 @@ describe("route-scoped getters follow the route, not one tab name", () => {
   it("but only the compute tab can launch — score reads a finished run", async () => {
     const { appRun } = await import("./appearanceRun.svelte.js");
     const s = read("src/lib/appearanceRun.svelte.js");
-    expect(s).toMatch(/if \(this\.anyRunning \|\| this\.tab !== "compute"\) return;/);
-    const before = appRun.tab;
+    expect(s).toMatch(/if \(this\.anyRunning \|\| this\.tab !== "compute" \|\| this\.gran == null\) return;/);
+    const before = { tab: appRun.tab, gran: appRun.gran };
+    appRun.gran = "node";
     appRun.tab = "score";
     let launched = false;
     const st = appRun.store;
@@ -313,7 +324,7 @@ describe("route-scoped getters follow the route, not one tab name", () => {
     st.run = () => { launched = true; };
     appRun.run();
     st.run = real;
-    appRun.tab = before;
+    Object.assign(appRun, before);
     expect(launched, "the score tab restarted the run").toBe(false);
   });
 });
@@ -324,9 +335,9 @@ describe("finishing the run asks the question", () => {
     expect(w).toContain("let wasDone = $state(false);");
     expect(w).toMatch(/if \(done && !wasDone && appRun\.tab === "compute" && !appRun\.anyRunning\) appRun\.setTab\("score"\)/);
   });
-  it("the step ticks on scores existing — kNN is an answer, not a skipped step", () => {
-    expect(w).toMatch(/done: appRun\.nodeDone, locked: !appRun\.nodeDone/);
-    expect(w).toContain("SCORE_LABEL[scoredMode]");
+  it("the step ticks on a scorer having been CHOSEN, which is the thing the step is for", () => {
+    expect(w).toMatch(/done: !!appRun\.scoreChoice, locked: !done/);
+    expect(w).toContain("SCORE_LABEL[appRun.scoreChoice]");
   });
 });
 
@@ -336,33 +347,60 @@ describe("the scoring question asks itself and branches", () => {
   const w = read("src/lib/components/AppearanceWindow.svelte");
   const r = read("src/lib/appearanceRun.svelte.js");
 
-  it("holds two levels of answer, each null until answered", () => {
-    expect(r).toContain("scoreChoice = $state(null);");
+  it("holds each answer in its own field, null until answered", () => {
+    expect(r).toContain("scoreKind = $state(null);");
+    expect(r).toContain("unsupChoice = $state(null);");
+    expect(r).toContain("scoreNode = $state(null);");
     expect(r).toContain("svmSource = $state(null);");
+    // ...and the old three-way answer is DERIVED from them, so there is no fourth field to disagree
+    expect(r).toMatch(/get scoreChoice\(\) \{/);
+    expect(r).not.toMatch(/scoreChoice = \$state/);
   });
 
-  it("Q1 is the technique; Q2 only exists under SVM", () => {
-    expect(w).toContain("Which detection technique");
-    expect(w).toMatch(/appRun\.setScoreChoice\("knn"\)/);
-    expect(w).toMatch(/appRun\.setScoreChoice\("svm"\)/);
-    // Q2 renders only after "svm" — it sits in the {:else if} chain past the knn branch
-    expect(w.indexOf('appRun.scoreChoice === "knn"')).toBeLessThan(w.indexOf("Where does the boundary come from"));
-    expect(w).toMatch(/appRun\.setSvmSource\("upload"\)/);
-    expect(w).toMatch(/appRun\.setSvmSource\("fewshot"\)/);
+  it("the technique is asked in two halves, so neither page carries three cards", () => {
+    // Three techniques on one screen is three actions. Unsupervised-or-supervised, THEN which one.
+    expect(w).toContain("appRun.setScoreKind(");
+    expect(w).toContain("appRun.setUnsupChoice(");
+    expect(w).toContain("appRun.setSvmSource(");
+    const flow = read("src/lib/qc/alFlow.js");
+    expect(flow).toContain('id: "score.kind"');
+    expect(flow).toContain('id: "score.unsup"');
+    expect(flow).toContain('id: "score.source"');
   });
 
-  it("abandoning the SVM branch drops its answer, so re-entering asks again", async () => {
+  it("abandoning the supervised branch drops its answers, so re-entering asks again", async () => {
     const { appRun } = await import("./appearanceRun.svelte.js");
-    appRun.setScoreChoice("svm");
+    appRun.setGran("node");
+    appRun.setScoreKind("sup");
+    appRun.setScoreNode(1);
     appRun.setSvmSource("fewshot");
-    appRun.setScoreChoice("knn");
+    appRun.setScoreKind("unsup");
     expect(appRun.svmSource).toBeNull();
-    appRun.setScoreChoice(null);
+    expect(appRun.scoreNode).toBeNull();
+    appRun.setScoreKind(null);
   });
 
-  it("every branch has a way back — none is a dead end", () => {
+  it("every branch has a way back — none is a dead end", async () => {
+    const { appRun } = await import("./appearanceRun.svelte.js");
+    const { allComputeStates, flowPage } = await import("./qc/alFlow.js");
     expect(r).toContain("unaskScore()");
-    expect(w.match(/appRun\.unaskScore\(\)/g).length).toBeGreaterThanOrEqual(4);
+    // Not "there is a back button somewhere" — replay every reachable page and demand that back
+    // actually MOVES, and lands somewhere the model recognises.
+    for (const st of allComputeStates()) {
+      appRun.setRoute("compute");
+      appRun.gran = st.gran; appRun.tab = st.step === "embed" ? "compute" : st.step;
+      appRun.scoreKind = st.scoreKind; appRun.unsupChoice = st.unsupChoice;
+      appRun.scoreNode = st.scoreNode; appRun.svmSource = st.svmSource;
+      const from = appRun.flow.id;
+      expect(appRun.canBack, from).toBe(true);
+      appRun.back();
+      // The first page's back leaves the route entirely — that is the fork, not a flow page.
+      if (from === "scope") { expect(appRun.route, "scope did not step out to the fork").toBeNull(); continue; }
+      expect(appRun.flow.id, `back from ${from} went nowhere`).not.toBe(from);
+      expect(flowPage({ ...st, gran: appRun.gran, step: appRun.step, scoreKind: appRun.scoreKind,
+        unsupChoice: appRun.unsupChoice, scoreNode: appRun.scoreNode, svmSource: appRun.svmSource }).id).toBeTruthy();
+    }
+    appRun.clearRoute();
   });
 
   it("few-shot opens the proofreader that produces the labels it needs", () => {
@@ -380,7 +418,7 @@ describe("the scoring question asks itself and branches", () => {
   });
 
   it("a new run re-asks — the answers described the patches it replaced", () => {
-    expect(r).toMatch(/this\.scoreChoice = null; this\.svmSource = null;\s*\n\s*this\.store\?\.run\(\);/);
+    expect(r).toMatch(/this\.scoreKind = null; this\.unsupChoice = null; this\.scoreNode = null; this\.svmSource = null;\s*\n\s*this\.store\?\.run\(\);/);
   });
 });
 
@@ -390,20 +428,23 @@ describe("the scoring question asks itself and branches", () => {
 describe("the question is the pane, and it can arm the check itself", () => {
   const w = read("src/lib/components/AppearanceWindow.svelte");
 
-  it("the score pane is its own tab branch — no embed config above it", () => {
-    expect(w).toContain('{:else if appRun.tab === "score" && appRun.gran === "node"}');
-    // ...and it comes BEFORE the config section in the chain, so it is the first thing rendered
-    expect(w.indexOf('appRun.tab === "score"')).toBeLessThan(w.indexOf("1 — WHAT TO EMBED"));
+  it("every pane is selected by the flow model's page id — not by re-deriving the state in markup", () => {
+    // Two places deciding "which pane" is how the score pane once reported the bundle route's store.
+    expect(w).toContain("{@const page = appRun.flow}");
+    for (const id of ["scope", "embed", "score.kind", "score.unsup", "score.source",
+                      "score.node", "score.done", "score.upload", "score.label", "score.keep", "use"]) {
+      expect(w, id).toContain(`page.id === "${id}"`);
+    }
   });
 
-  it("no answer to the technique question is ever un-pickable", () => {
-    // AnomalyDINO was rendered `disabled` when the run carried no patch features — which is exactly
-    // the state a warm cache from before patch features puts you in. The only way to GET them is the
-    // recompute toggle, and that lives in the panel behind this button: a locked door whose key is
-    // inside the room. Answering a question is always allowed; cost is explained after.
-    const q1 = w.slice(w.indexOf("Which detection technique"), w.indexOf('setScoreChoice("svm")'));
-    expect(q1).toContain('setScoreChoice("anomalyDino")');
-    expect(q1, "an option in the technique fork was disabled").not.toMatch(/<button[^>]*\bdisabled=/);
+  it("no answer to a question is ever un-pickable", () => {
+    // AnomalyDINO was rendered `disabled` when the run carried no patch features — which is exactly the
+    // state a warm cache from before patch features puts you in, and the only way to GET them is the
+    // recompute toggle behind that button: a locked door whose key is in the room. Answering is always
+    // allowed; cost is explained after. The choice snippet has no disabled path at all now.
+    const snip = w.slice(w.indexOf("{#snippet choice("), w.indexOf("{/snippet}"));
+    expect(snip).toContain("class=\"sopt\"");
+    expect(snip, "an option card was disabled").not.toMatch(/<button[^>]*\bdisabled=/);
   });
 
   it("the zero-patch-features state names itself and offers the recompute", () => {
@@ -414,9 +455,12 @@ describe("the question is the pane, and it can arm the check itself", () => {
     expect(w).toContain("bind:checked={es.requirePatches}");
   });
 
-  it("picking the keypoint happens in the question, not in the graph below it", () => {
-    expect(w).toContain('<span class="kp-l">Keypoint</span>');
-    expect(w).toContain("(es.selectedNode = ch.node)");
+  it("picking the keypoint is its own page — it was a second question sharing one screen", () => {
+    const flow = read("src/lib/qc/alFlow.js");
+    expect(flow).toContain('id: "score.node"');
+    expect(w).toContain("onclick={() => pickScoreNode(ch.node)}");
+    // and the graph follows the keypoint being trained, so the inspector is not showing another one
+    expect(w).toMatch(/function pickScoreNode\(ni\) \{[\s\S]{0,200}?es\.selectedNode = ni;/);
     expect(w).not.toContain("Pick a keypoint in the graph below");
     // a keypoint already scored by something other than the default kNN says so on its chip
     expect(w).toContain("SCORE_BADGE[ch.mode]");
@@ -425,12 +469,15 @@ describe("the question is the pane, and it can arm the check itself", () => {
     expect(w).not.toMatch(/SCORE_BADGE = \{[^}]*\bknn:/); // kNN is the default: no badge
   });
 
-  it("a settled answer offers the check itself", () => {
-    expect(w).toContain("Use as a detection check");
-    expect(w).toContain('qc.toggleCheck("nodeDino")');
-    expect(w).toContain("checked={qc.checks.nodeDino}");
-    // shown once a technique is chosen — not before there is anything to arm
-    expect(w).toMatch(/\{#if appRun\.scoreChoice\}[\s\S]{0,400}Use as a detection check/);
+  it("arming the check is its own terminal step, and appears exactly once", () => {
+    // It used to be repeated at the foot of every scoring sub-page, which is what made each of those
+    // pages three actions instead of two.
+    expect(read("src/lib/qc/alFlow.js")).toContain("Use it as a detection check");
+    expect(w).toContain("qc.toggleCheck(appRun.checkKey)");
+    expect(w.match(/qc\.toggleCheck\(appRun\.checkKey\)/g)).toHaveLength(1);
+    expect(w).toMatch(/page\.id === "use"[\s\S]{0,900}?checked=\{armed\}/);
+    // and it arms the check for whichever granularity is loaded, rather than naming one
+    expect(w).not.toContain('qc.toggleCheck("nodeDino")');
   });
 
   it("toggleCheck really flips that check", async () => {
@@ -608,54 +655,60 @@ describe("a fitted model can be taken back off", () => {
 
   it("offers the revert wherever a model is applied", () => {
     const w = win();
-    // both routes that apply one: fitting here, and uploading a bundle
-    expect((w.match(/revert\(ni, nodeName\)/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    // both routes that apply one: fitting here, and uploading a model
+    expect((w.match(/revert\(sNode, sName\)/g) ?? []).length).toBeGreaterThanOrEqual(2);
     expect(w).toContain("es.clearTrainedModel(ni)");
   });
 
   it("names the baseline it returns to, rather than saying 'revert'", () => {
-    expect(win()).toMatch(/revert to \{es\.scorer === "anomalyDino" \? "AnomalyDINO" : "kNN"\}/);
+    const w = win();
+    expect(w).toMatch(/revert to \{baselineLabel\}/);
+    // and the label is derived from whichever unsupervised scorer is live, at either granularity
+    expect(w).toMatch(/const baselineLabel = \$derived\([\s\S]{0,200}?"AnomalyDINO" : "kNN"\)/);
   });
 
   it("says the labels survive — reverting is not un-judging", () => {
     expect(win()).toMatch(/the model is gone, the labels are not/);
   });
 
-  it("only shows it when there IS a model", () => {
-    const w = win();
-    // the BUTTONS, not the function definition above them
-    const calls = [...w.matchAll(/onclick=\{\(\) => revert\(ni, nodeName\)\}/g)];
-    expect(calls.length, "no revert buttons found").toBeGreaterThanOrEqual(2);
-    // The GUARD form specifically. A 500-char lookbehind also matched the re-fit label's ternary
-    // (`scoredMode === "svm" ? "re-fit"`), so removing the guard still passed.
-    for (const btn of [...w.matchAll(/class="fs-undo"/g)]) {
-      expect(w.slice(Math.max(0, btn.index - 320), btn.index), "a revert button with no model to revert")
-        .toMatch(/\{#if scoredMode === "svm"\}/);
+  it("only shows it when there IS a model", async () => {
+    // Now a property of the flow model rather than of a lookbehind in the markup: the revert action is
+    // listed only on pages whose state has a model applied. An earlier version of this test matched a
+    // nearby ternary instead of the guard, and passed with the guard deleted.
+    const { allComputeStates, flowPage } = await import("./qc/alFlow.js");
+    let withModel = 0;
+    for (const st of allComputeStates()) {
+      const ids = flowPage(st).actions.map((a) => a.id);
+      if (ids.includes("revert")) { expect(st.trained, `revert offered on ${flowPage(st).id}`).toBe(true); withModel++; }
     }
+    expect(withModel, "no page offers a revert at all").toBeGreaterThanOrEqual(2);
   });
 });
 
 describe("unsupervised and supervised compose", () => {
   const win = () => read("src/lib/components/AppearanceWindow.svelte");
 
-  it('the Fit step is done only when an SVM was FITTED, not whenever the scorer is not kNN', () => {
-    const w = win();
+  it("'trained' means a model was FITTED, not merely that the scorer is not kNN", () => {
     // `scoredMode !== "knn"` was true the moment a third unsupervised scorer existed, so choosing
-    // AnomalyDINO ticked Fit as complete and the supervised route read as closed.
-    expect(w, "the Fit step still keys off 'not kNN'").not.toMatch(/class:done=\{scoredMode !== "knn"\}/);
-    expect(w).toContain('class:done={scoredMode === "svm"}');
+    // AnomalyDINO read as "trained" and the supervised route looked closed. The store answers now.
+    const r = read("src/lib/appearanceRun.svelte.js");
+    expect(r).toMatch(/return m === "svm" \|\| m === "fewshot";/);
+    expect(r, "still deciding 'trained' by exclusion").not.toMatch(/!== "knn"/);
   });
 
-  it("the unsupervised confirm panel offers the supervised layer directly", () => {
-    const w = win();
-    expect(w).toContain('+ add a trained boundary (SVM)');
-    expect(w).toContain('appRun.setScoreChoice("svm")');
-    // and states that the baseline survives it
-    expect(w).toMatch(/stays the baseline for the rest/);
+  it("the unsupervised confirmation offers the supervised layer directly", async () => {
+    // Choosing kNN or AnomalyDINO settles the BASELINE, not the question: a trained boundary is a
+    // per-keypoint override on top, so it stays one action away rather than a back-and-re-answer.
+    const { flowPage } = await import("./qc/alFlow.js");
+    const done = flowPage({ route: "compute", gran: "node", step: "score", scoreKind: "unsup",
+      unsupChoice: "knn", scoreNode: null, svmSource: null, trained: false });
+    expect(done.id).toBe("score.done");
+    expect(done.actions.map((a) => a.id)).toContain("addSvm");
+    expect(win()).toMatch(/stays the baseline for every keypoint you do not train/);
   });
 
   it("the SVM branch says it overrides one keypoint, not the file", () => {
-    expect(win()).toMatch(/overrides <b>\{nodeName\}<\/b> only/);
+    expect(win()).toMatch(/overrides <b>\{sName\}<\/b> only/);
   });
 });
 
@@ -724,7 +777,7 @@ describe("drag across the keypoint chips", () => {
   });
 
   it("dragging paints instead of scrolling on touch", () => {
-    expect(win()).toMatch(/class="chips" style:touch-action="none"/);
+    expect(win()).toMatch(/class="chips"[^>]*style:touch-action="none"/);
   });
 
   it("the chips are big enough to aim at", () => {

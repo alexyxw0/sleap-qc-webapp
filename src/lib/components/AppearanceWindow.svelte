@@ -34,12 +34,6 @@
   const es = $derived(appRun.store); // null for the pretrained (upload-only) route
   const SCORE_LABEL = { knn: "unsupervised kNN", anomalyDino: "AnomalyDINO", svm: "trained SVM", fewshot: "few-shot" };
   const SCORE_BADGE = { anomalyDino: "AD", svm: "SVM", fewshot: "FS" };
-  /** What is scoring the inspected keypoint right now — kNN unless the user chose otherwise. */
-  const scoredMode = $derived.by(() => {
-    void es?.resultRev;
-    const ni = es?.selectedNode;
-    return ni == null || !es?.scoringOf ? "knn" : es.scoringOf(ni);
-  });
   // ---- the scoring branch's actions. Each one reports its own outcome in the pane: a fit that silently
   // did nothing, or an upload that silently failed, is the failure mode this whole flow exists to remove.
   // The keypoint picker lives IN the question now. Scoring is chosen per keypoint, so sending the user
@@ -153,9 +147,34 @@
     URL.revokeObjectURL(a.href);
   }
 
+  // ---- the supervised branch's target. `appRun.scoreNode` is the flow's ANSWER; es.selectedNode is
+  // the graph's cursor. They are kept in step so the inspector shows the keypoint you are training.
+  const sNode = $derived(appRun.scoreNode);
+  const sName = $derived(sNode == null ? "" : (store.skeleton?.nodeNames?.[sNode] ?? `node ${sNode}`));
+  const sMode = $derived.by(() => {
+    void es?.resultRev;
+    return sNode == null || !es?.scoringOf ? null : es.scoringOf(sNode);
+  });
+  const sTrainable = $derived.by(() => {
+    void es?.resultRev;
+    return sNode == null || !es?.trainableFor ? null : es.trainableFor(sNode);
+  });
+  function pickScoreNode(ni) {
+    appRun.setScoreNode(ni);
+    if (es) es.selectedNode = ni; // the graph in ④ follows the keypoint being trained
+  }
+  /** What the unsupervised baseline is called right now — the thing a revert goes back to. */
+  const baselineLabel = $derived(
+    (appRun.gran === "instance" ? es?.method : es?.scorer) === "anomalyDino" ? "AnomalyDINO" : "kNN");
+  /** What is scoring the current selection, for the confirmation page. */
+  const appliedLabel = $derived(
+    appRun.scoreKind === "sup" && appRun.gran === "instance" ? "the bundled SVM"
+      : appRun.unsupChoice === "anomalyDino" ? "AnomalyDINO" : "kNN");
+
   const running = $derived(appRun.running);
   const busy = $derived(appRun.anyRunning); // the two stores share one worker
-  const ready = $derived(qc.checkReady(appRun.checkKey));
+  const ready = $derived(appRun.checkKey ? qc.checkReady(appRun.checkKey) : false);
+  const armed = $derived(appRun.checkKey ? !!qc.checks[appRun.checkKey] : false);
 
   // Every instance, always. Subsampling left frames unexamined, which is the same "not looked at vs
   // clean" ambiguity the keypoint coverage work exists to kill — and embeddings are cached, so the full
@@ -294,29 +313,30 @@
                 : pair ? "choose" : null },
       ];
     }
-    // Per keypoint gets a SECOND step: once the embeddings exist there is a real choice about how to
-    // score them, and burying it in the results panel meant the run just ended with no "what now".
-    // Whole instance has no such choice — the bundled SVM is the only scorer — so it stays one step.
-    const embed = [
-      { id: "compute", label: appRun.gran === "node" ? "Embed" : "Embed & score", done: appRun.computeDone, locked: false,
-        hint: "Pick granularity and coverage, then run the DINOv2 pass over this file.",
+    // THREE steps on both granularities now. Whole instance used to be one — "Embed & score" — because
+    // the bundled SVM was its only scorer; it has the same unsupervised pair as per-keypoint now, so it
+    // has the same question to answer and the same commitment to make.
+    const done = appRun.computeDone;
+    return [
+      { id: "compute", label: "Embed", done, locked: false,
+        hint: "Choose what to embed, then run the DINOv2 pass over this file.",
         // A bare ✓ after the settings moved describes a run that no longer matches the controls above it.
-        note: !appRun.computeDone ? null
+        note: !done ? null
           : es?.configDirty ? "settings changed — re-run"
             : noneSelected ? "selection empty"
               : (covNote ?? "ready") },
+      { id: "score", label: "Score",
+        // Ticked when a scorer has been CHOSEN, not merely when scores exist: the whole point of the
+        // step is that the default is now an answer someone gave.
+        done: !!appRun.scoreChoice, locked: !done,
+        why: "Embed first — there is nothing to score yet.",
+        hint: "Unsupervised (kNN or AnomalyDINO), or a trained boundary.",
+        note: appRun.scoreChoice ? SCORE_LABEL[appRun.scoreChoice] : null },
+      { id: "use", label: "Use", done: armed, locked: !done,
+        why: "Embed first — a check with nothing behind it flags nothing.",
+        hint: "Arm the detection check, and inspect the scores it will flag on.",
+        note: armed ? "armed" : ready ? "not armed" : null },
     ];
-    if (appRun.gran !== "node") return embed;
-    return [...embed, {
-      id: "score", label: "Score",
-      // Ticked as soon as scores EXIST: kNN is a real answer, not a skipped step, and a ✓ withheld
-      // until you train something would nag about a choice the default already made. The note carries
-      // which one is live, which is the part that actually varies.
-      done: appRun.nodeDone, locked: !appRun.nodeDone,
-      why: "Embed the patches first — there is nothing to score yet.",
-      hint: "Unsupervised by default — kNN, or AnomalyDINO for locally-wrong keypoints. Or fit an SVM on your labels.",
-      note: appRun.nodeDone ? SCORE_LABEL[scoredMode] : null,
-    }];
   });
   // The reason the CURRENT selection is unavailable, if it is — shown once, near the strip.
   const lockedNow = $derived(steps.find((x) => x.id === appRun.tab && x.locked)?.why ?? null);
@@ -326,7 +346,7 @@
   // clicking back to Embed to re-run does not get bounced forward again.
   let wasDone = $state(false);
   $effect(() => {
-    const done = appRun.gran === "node" && appRun.nodeDone;
+    const done = appRun.computeDone;
     if (done && !wasDone && appRun.tab === "compute" && !appRun.anyRunning) appRun.setTab("score");
     wasDone = done;
   });
@@ -356,22 +376,24 @@
     }
   });
 
-  const GRAN = [
-    ["instance", "Whole instance", "One crop per animal — gross appearance problems"],
-    ["node", "Per keypoint", "A patch per keypoint — names the keypoint responsible"],
-  ];
-  const _TABS_UNUSED = $derived([
-    { id: "compute", label: "Compute", hint: "Embed this file's crops with DINOv2 in the browser" },
-    { id: "upload", label: "Upload", hint: "Load precomputed keypoint bundles (embeddings + trained model)",
-      badge: keypointModels.active.length || null },
-    { id: "fewshot", label: "Few-shot", hint: "Adapt a transferred model to this project with a handful of your own labels",
-      badge: keypointLabels.count || null },
-  ]);
-  void _TABS_UNUSED; // the peer-tab strip is replaced by the ordered flow below
 </script>
 
 <!-- A drag can end anywhere: releasing outside the chips must still stop painting. -->
 <svelte:window onpointerup={paintEnd} onpointercancel={paintEnd} />
+
+<!-- EVERY pure choice in the flow renders through here, straight from the model's action list. That is
+     what makes the two-action rule structural: a page cannot draw a third card this markup was not
+     handed, and the model is where the test counts them. -->
+{#snippet choice(actions, pick)}
+  <div class="s-opts">
+    {#each actions as a (a.id)}
+      <button class="sopt" onclick={() => pick(a.id)}>
+        <span class="so-t">{a.label}</span>
+        <span class="so-d">{a.desc}</span>
+      </button>
+    {/each}
+  </div>
+{/snippet}
 
 {#if appRun.open}
   <PopoutWindow title="Appearance · DINOv2" width="820px" onclose={() => appRun.close()}>
@@ -509,355 +531,296 @@
             </label>
           {/if}
         </section>
-      {:else if appRun.tab === "score" && appRun.gran === "node"}
-        <!-- The run used to just end. This is the rest of the workflow, asked as questions rather than
-             left as tabs to discover: technique, then where the boundary comes from, then how to get the
-             labels that boundary needs. One question on screen at a time, each answer routing the next. -->
-        <section class="score">
-          <!-- Which keypoint, then what to do about it — the two halves of one decision, together. -->
-          <div class="kp">
-            <span class="kp-l">Keypoint</span>
-            <div class="kp-chips">
-              {#each nodeChips as ch (ch.node)}
-                <button class="kp-c" class:sel={es.selectedNode === ch.node} class:absent={ch.state === "absent"}
-                        disabled={ch.state !== "scored"} onclick={() => (es.selectedNode = ch.node)}
-                        title={ch.state === "scored" ? `scored by ${SCORE_LABEL[ch.mode]}`
-                          : ch.state === "few" ? "embedded, too few patches to score"
-                            : "not embedded in this run — nothing is known about it"}>
-                  {ch.name}{#if ch.state === "scored" && SCORE_BADGE[ch.mode]}<span class="kp-b">{SCORE_BADGE[ch.mode]}</span>{/if}
-                </button>
-              {/each}
-            </div>
-          </div>
-          {#if es?.selectedNode == null}
-            <p class="s-q">How should these patches be scored?</p>
-            <p class="dim">Pick a keypoint above — scoring is chosen per keypoint.</p>
-          {:else}
-            {@const ni = es.selectedNode}
-            {@const t = es.trainableFor(ni)}
-            {@const nodeName = store.skeleton?.nodeNames?.[ni] ?? `node ${ni}`}
-
-            <!-- Q1 ------------------------------------------------------------------------------ -->
-            {#if !appRun.scoreChoice}
-              <p class="s-q">Which detection technique for <b>{nodeName}</b>?</p>
-              <div class="s-opts">
-                <button class="sopt" onclick={() => appRun.setScoreChoice("knn")}>
-                  <span class="so-t">kNN · unsupervised</span>
-                  <span class="so-d">Each patch against the k most similar patches of this keypoint elsewhere in the file. No labels, already applied — choose this to keep it.</span>
-                </button>
-                <button class="sopt" onclick={() => appRun.setScoreChoice("anomalyDino")}>
-                  <span class="so-t">AnomalyDINO · unsupervised, patch-level</span>
-                  <span class="so-d">
-                    Same embeddings, read differently: the patch's own DINOv2 <i>patch tokens</i> against a memory
-                    bank of normal ones, scored by its worst quarter. Catches a keypoint that is only <i>locally</i>
-                    wrong — where kNN sees one averaged vector that still looks like a {nodeName}.
-                    {#if es.canAnomalyDino}No labels, and no re-embedding: it re-scores what is already here.
-                    {:else}<b>Needs patch features this run doesn't have</b> — its embeddings were reused from a
-                      cache written before they existed. Pick this to see what recomputing them costs.{/if}
-                  </span>
-                </button>
-                <button class="sopt" onclick={() => appRun.setScoreChoice("svm")}>
-                  <span class="so-t">SVM · supervised</span>
-                  <span class="so-d">A fitted boundary between faulty and clean appearance. Needs labels — bring a model you fitted before, or make them here.</span>
-                </button>
-              </div>
-
-            <!-- Either unsupervised scorer: applied on selection, so this confirms rather than acts -->
-            {:else if appRun.scoreChoice === "knn" || appRun.scoreChoice === "anomalyDino"}
-              {@const cov = es.patchCoverage}
-              {@const ad = appRun.scoreChoice === "anomalyDino"}
-              <p class="s-q">✓ Scoring <b>{nodeName}</b> with {ad ? "AnomalyDINO" : "kNN"}</p>
-              <p class="s-note dim">
-                Applied to all {es.patchCount(ni).toLocaleString()} patches — the graph below is it.
-                Threshold and per-frame verdicts are live in the <b>{APPEARANCE_LABELS.nodeDino.full}</b> check.
-                {#if ad}Each patch is {cov.tokens} pooled DINOv2 patch tokens ({cov.dim}-d) against a memory bank
-                  drawn from this keypoint's reference patches.{/if}
-              </p>
-              <!-- Partial coverage is the one thing that must not be quiet: those patches score 0, i.e.
-                   perfectly clean, for a bookkeeping reason and not an appearance one. -->
-              {#if ad && cov.have === 0}
-                <!-- Nothing to score. Say so plainly and price the fix, rather than letting the panel
-                     imply AnomalyDINO is running when every group has quietly fallen back to kNN. -->
-                <p class="s-warn">
-                  <b>No patch features in this run — every keypoint is still scored by kNN.</b>
-                  These embeddings came from a cache written before patch features existed, so there are
-                  no patch tokens to compare. Computing them means embedding
-                  {cov.total.toLocaleString()} patches again.
-                  <label class="s-req"><input type="checkbox" bind:checked={es.requirePatches} /> recompute them on the next run</label>
-                  {#if es.requirePatches}<span class="s-go">Now go back to <b>‹ start</b> and run the pass again.</span>{/if}
-                </p>
-              {:else if ad && !cov.full}
-                <p class="s-warn">
-                  {(cov.total - cov.have).toLocaleString()} of {cov.total.toLocaleString()} patches came from a
-                  cache written before patch features existed. <b>They score 0 — clean — because nothing is
-                  known about them</b>, not because they look right.
-                  <label class="s-req"><input type="checkbox" bind:checked={es.requirePatches} /> re-embed those on the next run</label>
-                </p>
-              {/if}
-              <!-- Choosing an unsupervised scorer settles the BASELINE, not the question. A trained
-                   boundary is a per-keypoint override on top of it, so it stays one click away rather
-                   than something you reach by backing out and re-answering. -->
-              <p class="s-add">
-                Scoring every keypoint. You can still fit a boundary on top for individual keypoints —
-                {ad ? "AnomalyDINO" : "kNN"} stays the baseline for the rest.
-                {#if trainedNodes.length}<br /><span class="dim">already trained: {trainedNodes.join(", ")}</span>{/if}
-              </p>
-              <div class="s-row">
-                <button class="sopt-sm" onclick={() => appRun.setScoreChoice("svm")}>+ add a trained boundary (SVM)</button>
-                <button class="back" onclick={() => appRun.unaskScore()}>‹ use a different technique</button>
-              </div>
-
-            <!-- Q2 ------------------------------------------------------------------------------ -->
-            {:else if !appRun.svmSource}
-              <p class="s-q">Where does the boundary come from?</p>
-              <p class="s-note dim">
-                This overrides <b>{nodeName}</b> only. Every other keypoint keeps
-                {es.scorer === "anomalyDino" ? "AnomalyDINO" : "kNN"}, and so does this one if you remove the model.
-              </p>
-              <div class="s-opts">
-                <button class="sopt" onclick={() => appRun.setSvmSource("upload")}>
-                  <span class="so-t">Upload a fitted model</span>
-                  <span class="so-d">A <code>.json</code> exported from this app in an earlier session — label once, apply to every file after.</span>
-                </button>
-                <button class="sopt" onclick={() => appRun.setSvmSource("fewshot")}>
-                  <span class="so-t">Few-shot — label some frames here</span>
-                  <span class="so-d">
-                    Proofread the frames the detectors already rank as suspect, then fit on what you marked.
-                    {t.n ? `${t.n} patches of ${nodeName} judged so far.` : "Nothing judged yet."}
-                  </span>
-                </button>
-              </div>
-              <button class="back" onclick={() => appRun.unaskScore()}>‹ back</button>
-
-            <!-- Upload --------------------------------------------------------------------------- -->
-            {:else if appRun.svmSource === "upload"}
-              <p class="s-q">Upload a boundary for <b>{nodeName}</b></p>
-              <label class="drop">
-                <input type="file" accept=".json,application/json" onchange={(e) => onUpload(e, ni, nodeName)} />
-                <span>Choose a <code>keypoint-svm_*.json</code></span>
-              </label>
-              {#if upErr}<p class="s-err">{upErr}</p>{/if}
-              {#if upWarn}<p class="s-warn">⚠ {upWarn}</p>{/if}
-              {#if scoredMode === "svm"}
-                <p class="s-note">
-                  ✓ applied — {es.patchCount(ni).toLocaleString()} patches re-scored by the model.
-                  <button class="fs-undo" onclick={() => revert(ni, nodeName)}
-                          title="Drop this model and score {nodeName} with the unsupervised baseline again">
-                    revert to {es.scorer === "anomalyDino" ? "AnomalyDINO" : "kNN"}
-                  </button>
-                </p>
-              {/if}
-              <p class="s-note dim">
-                Only a model exported here fits: this pass crops a fraction of each instance's bbox, while the
-                bundled models (<code>export_nose.py</code>) crop a fixed pixel box. Those load under
-                <b>‹ start → precomputed bundles</b>, with their own embeddings.
-              </p>
-              <button class="back" onclick={() => appRun.unaskScore()}>‹ back</button>
-
-            <!-- Few-shot: label here, then fit --------------------------------------------------- -->
-            {:else}
-              <p class="s-q">Label ground truth for <b>{nodeName}</b></p>
-              <ol class="fs-steps">
-                <li class:done={t.n > 0}>
-                  <span class="fs-n">1</span>
-                  <span class="fs-b">
-                    <b>Proofread.</b> The queue is already ranked by how faulty every detector thinks each
-                    instance is, so the labels land where they are worth most.
-                    {#if t.n}<br /><span class="dim">{t.n} judged · {t.pos} faulty / {t.neg} clean</span>{/if}
-                    <!-- The queue IS the QC output, so with no QC run there is nothing to proofread. Say
-                         it here rather than letting the button open an empty window. -->
-                    {#if !qc.proofreadReady}<br /><span class="warn">Run the automatic QC first — the queue is its ranking.</span>{/if}
-                  </span>
-                  <button class="fs-go" disabled={!qc.proofreadReady} onclick={() => openProofreader()}>
-                    {t.n ? "keep labelling" : "open proofreader"}
-                  </button>
-                </li>
-                <li class:done={scoredMode === "svm"} class:locked={!t.pos}>
-                  <span class="fs-n">2</span>
-                  <span class="fs-b">
-                    <b>Fit.</b>
-                    {#if t.enough}
-                      A cross-validated RBF-SVM on all {t.n} labelled patches.
-                      {#if t.pos < t.floor}<br /><span class="warn">Only {t.pos} faulty — below {t.floor}, the CV score is noise, not a measurement.</span>{/if}
-                    {:else if t.pos}
-                      An SVM needs both classes; you have {t.pos} faulty and no clean ones yet. The few-shot
-                      nudge works from the faulty side alone in the meantime.
-                    {:else}
-                      Nothing marked faulty yet.
-                    {/if}
-                    {#if fitMsg}<br /><span class="fs-msg">{fitMsg}</span>{/if}
-                  </span>
-                  {#if t.enough}
-                    <span class="fs-acts">
-                      <button class="fs-go" disabled={fitting} onclick={() => doFit(ni, nodeName)}>
-                        {fitting ? "fitting…" : scoredMode === "svm" ? "re-fit" : "fit the SVM"}
-                      </button>
-                      <!-- Fitting used to be a one-way door: the only way off a model you decided was
-                           worse than the baseline was re-embedding the whole file. -->
-                      {#if scoredMode === "svm"}
-                        <button class="fs-undo" onclick={() => revert(ni, nodeName)}
-                                title="Drop this model and score {nodeName} with {es.scorer === 'anomalyDino' ? 'AnomalyDINO' : 'kNN'} again. Your labels stay.">
-                          revert to {es.scorer === "anomalyDino" ? "AnomalyDINO" : "kNN"}
-                        </button>
-                      {/if}
-                    </span>
-                  {:else}
-                    <button class="fs-go" disabled={!t.pos} onclick={() => nudge(ni)}>
-                      {scoredMode === "fewshot" ? "re-nudge" : "nudge instead"}
-                    </button>
-                  {/if}
-                </li>
-                <li class:done={scoredMode === "svm"} class:locked={scoredMode !== "svm"}>
-                  <span class="fs-n">3</span>
-                  <span class="fs-b">
-                    <b>Keep it.</b> Export the boundary and upload it on the next file instead of labelling again.
-                  </span>
-                  <button class="fs-go" disabled={scoredMode !== "svm"} onclick={() => doExport(ni, nodeName)}>export</button>
-                </li>
-              </ol>
-              {#if es.fewShotInfoFor(ni)}
-                {@const fs = es.fewShotInfoFor(ni)}
-                <p class="s-note">✓ few-shot applied · prototype from <b>{fs.nPos}</b> faulty{fs.usedGlobal ? " vs the file mean" : ` / ${fs.nNeg} clean`}</p>
-              {/if}
-              <button class="back" onclick={() => appRun.unaskScore()}>‹ back</button>
-            {/if}
-
-            <!-- Fitting a model and USING it are different acts, and the second one had no control here:
-                 the only way to arm the detector was to leave the window for the Appearance tab. -->
-            {#if appRun.scoreChoice}
-              <label class="arm-row" class:on={qc.checks.nodeDino}>
-                <input type="checkbox" checked={qc.checks.nodeDino} onchange={() => qc.toggleCheck("nodeDino")} />
-                <span class="ar-b">
-                  <b>Use as a detection check</b> — <b>{APPEARANCE_LABELS.nodeDino.full}</b>
-                  {#if qc.checks.nodeDino}<span class="ar-on">on</span>{/if}
-                  <br />
-                  <span class="dim">
-                    Flags every embedded keypoint, each by whatever is scoring it —
-                    {#each nodeChips.filter((c) => c.state === "scored") as c, i (c.node)}{i ? ", " : ""}<b>{c.name}</b> {SCORE_LABEL[c.mode]}{:else}nothing scored yet{/each}.
-                    Its threshold and per-frame counts live in the graph below.
-                  </span>
-                </span>
-              </label>
-            {/if}
-          {/if}
-        </section>
       {:else}
-      <!-- 1 — WHAT TO EMBED ------------------------------------------------------------------ -->
-      <section class="cfg">
-        <div class="row">
-          <span class="lbl">Granularity</span>
-          <div class="seg">
-            {#each GRAN as [k, label, hint] (k)}
-              <button type="button" class:on={appRun.gran === k} disabled={busy}
-                      onclick={() => appRun.setGran(k)} title={hint}>{label}</button>
-            {/each}
-          </div>
-        </div>
+      <!-- THE COMPUTE ROUTE, one page at a time. Every page below renders `page.actions` and nothing
+           else that acts, so the two-action rule is a property of qc/alFlow.js rather than of this
+           markup's discipline — a third action has to be added to the MODEL, where the test sees it. -->
+      {@const page = appRun.flow}
 
-        <div class="row">
-          <span class="lbl">Scorer</span>
-          <!-- One scorer per granularity, so this states what will happen rather than asking. Whole
-               instance is the trained SVM (kNN was ~chance on a whole-animal crop); per keypoint is
-               unsupervised kNN, where the patch is small enough for it to discriminate. -->
-          <span class="fixed" title={appRun.gran === "instance"
-              ? "Bundled RBF-SVM trained on proofread labels. Unsupervised kNN at this granularity scored ~chance, so it is not offered."
-              : "Each patch vs the k nearest patches of the SAME keypoint (robust-z). No labels needed."}>
-            {appRun.scorer}{#if appRun.gran === "instance" && clf}<small> · cv roc {clf.cv_roc.toFixed(2)}</small>{/if}
-          </span>
-          {#if appRun.gran === "node"}
-            <!-- The SVM is now trained HERE, from these embeddings and your labels — so this must not
-                 send anyone to the upload route, which is only for models fitted elsewhere. -->
-            <span class="xnote" title="Run this pass, judge some keypoints in the proofreading window, then fit an SVM on them under the keypoint's graph below. It trains on the patches this run computed, so no upload and no crop-geometry mismatch.">
-              or fit an SVM on your labels — under the graph, after the run
-            </span>
-          {/if}
-        </div>
-
-        {#if es}
-        {/if}
-
-        {#if es && appRun.gran === "node" && allNodes.length}
-          <div class="row kprow">
-            <span class="lbl">Keypoints</span>
-            <!-- touch-action: none so a drag across the chips paints instead of scrolling the pane. -->
-            <div class="chips" style:touch-action="none" bind:this={chipRow}
-                 onpointermove={paintMove} onlostpointercapture={paintEnd}>
-              {#each allNodes as nm, ni (nm)}
-                {@const on = picked == null || picked.includes(ni)}
-                <button type="button" class="kchip" class:on disabled={busy} data-ni={ni}
-                        onpointerdown={(e) => paintStart(ni, on, e)}
-                        onkeydown={(e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggleNode(ni); } }}
-                        aria-pressed={on}
-                        title={on ? `${nm} will be embedded — click to skip it, or drag across to skip several` : `${nm} will NOT be embedded, so nothing will be known about it`}>{nm}</button>
-              {/each}
-            </div>
-            <span class="ksum" title="Click a keypoint to toggle it, or drag across several">{nSel} of {allNodes.length}</span>
-          </div>
-        {/if}
-
-        <Explain>
-          {#if appRun.gran === "instance"}
-            <p class="note">One whole-instance crop per animal, embedded with DINOv2 ViT-S/14 (384-d) and scored by an RBF-SVM trained on proofread labels{#if clf} — <b>{clf.dataset}</b>, CV ROC {clf.cv_roc.toFixed(3)} / PR {clf.cv_pr.toFixed(3)}{/if}. Flags by SVM decision (0 = the boundary).</p>
-            <p class="note">Catches occlusion and appearance errors geometry misses, but not <i>which</i> keypoint is wrong — that is the per-keypoint granularity.</p>
-          {:else}
-            <p class="note">A patch around each keypoint, embedded with DINOv2 ViT-S/14 and scored <b>unsupervised</b>. Two ways, both label-free and both on the same robust-z scale: <b>kNN</b> — distance to the k nearest patches of that <i>same</i> keypoint, which asks whether the whole patch is wrong; or <b>AnomalyDINO</b> (Damm et al., WACV 2025) — the patch's own DINOv2 patch tokens against a memory bank of normal ones, averaged over its worst quarter, which asks whether any <i>part</i> of it is. Either way a flag names the keypoint responsible.</p>
-            <p class="note">One forward pass per keypoint per instance — many more crops than whole-instance, so expect minutes at full coverage. Cached after the first run. For a <i>supervised</i> per-keypoint score, judge some keypoints and fit an SVM on them under the graph below — it trains on these same patches. Bringing a bundle fitted elsewhere is the other option, back at <b>‹ start</b>.</p>
-          {/if}
-        </Explain>
-      </section>
-
-      <!-- 2 — LAUNCH + WATCH ------------------------------------------------------------------ -->
-      {#if es}
-        <section class="launch">
-          <div class="go">
-            {#if running}
-              <button class="big stop" onclick={() => appRun.abort()}>■ Stop</button>
-            {:else}
-              <button class="big" disabled={busy || !store.ready || noneSelected} onclick={() => appRun.run()}>
-                {es.hasResults ? "Re-run" : "Run"} DINO
-              </button>
-            {/if}
-            <div class="cost">
-              {#if running}
-                <RunProgress store={es} />
-              {:else if busy}
-                <span class="dim">The other granularity is running — they share one worker.</span>
-              {:else if noneSelected}
-                <span class="dim">Select at least one keypoint — an empty selection embeds nothing.</span>
-              {:else if workload}
-                <span class="dim">{workload.label}{workload.units ? ` · ${workload.units.toLocaleString()} forward passes` : ""}</span>
-              {:else}
-                <span class="dim">Load a file to see the workload.</span>
-              {/if}
-            </div>
-          </div>
-
-          {#if !running && es.status === "error"}
-            <p class="err">{es.message}</p>
-          {:else if !running && es.status === "aborted"}
-            <p class="dim">{es.message} {es.hasResults ? "Partial results are shown below." : ""}</p>
-          {:else if !running && !es.hasResults}
-            <p class="dim">
-              {#if !modelReady}The DINOv2 weights (~90 MB) download once, then embed.{:else}Weights already loaded.{/if}
-              {#if cached}<b>{cached.toLocaleString()} patches already cached</b> — reused, not re-embedded.{/if}
-              Results appear here.
-            </p>
-          {/if}
-
-          {#if es?.cacheNote}
-            <p class="cachewarn">⚠ {es.cacheNote}</p>
-          {/if}
-          <p class="armed" class:on={ready}>
-            {ready ? "✓" : "○"} the <b>{APPEARANCE_LABELS[appRun.checkKey].full}</b> check
-            {ready ? "is armed" : "unlocks once this has results"}{#if ready && covNote} · <b>{covNote}</b>{/if}{ready ? " — tick it in the Appearance tab" : ""}
+      {#if page.id === "scope"}
+        <!-- ① What to embed. Promoted out of an inline segmented control on the old settings page: it
+             decides the store, the cost, the check and which scorers exist, so it is the first question,
+             not a toggle sitting above the run button. -->
+        <section class="score">
+          <p class="s-q">{page.question}</p>
+          {@render choice(page.actions, (id) => appRun.setGran(id.slice(5)))}
+          <p class="s-note dim">
+            Both granularities offer the same unsupervised pair (kNN and AnomalyDINO) and a supervised
+            boundary. They differ in what a flag can name.
           </p>
         </section>
-      {/if}
 
-      <!-- 3 — INSPECT -------------------------------------------------------------------------- -->
-      <section class="results">
-        {#if appRun.gran === "instance"}<EmbeddingCheck />{:else}<NodeEmbeddingCheck />{/if}
-      </section>
+      {:else if page.id === "embed"}
+        <!-- ② The pass itself: pick keypoints (one selection, however many chips), then run. -->
+        <section class="cfg">
+          <p class="s-q">{page.question}</p>
+          {#if es && appRun.gran === "node" && allNodes.length}
+            <div class="row kprow">
+              <span class="lbl">Keypoints</span>
+              <!-- touch-action: none so a drag across the chips selects instead of scrolling the pane. -->
+              <!-- data-action-group: this row is ONE selection however many chips it draws, the way a
+                   multi-select is one control. The two-action test reads this rather than guessing. -->
+              <div class="chips" role="group" data-action-group="keypoints" style:touch-action="none"
+                   bind:this={chipRow} onpointermove={paintMove} onlostpointercapture={paintEnd}>
+                {#each allNodes as nm, ni (nm)}
+                  {@const on = picked == null || picked.includes(ni)}
+                  <button type="button" class="kchip" class:on disabled={busy} data-ni={ni}
+                          onpointerdown={(e) => paintStart(ni, on, e)}
+                          onkeydown={(e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggleNode(ni); } }}
+                          aria-pressed={on}
+                          title={on ? `${nm} will be embedded — click to skip it, or drag across to skip several` : `${nm} will NOT be embedded, so nothing will be known about it`}>{nm}</button>
+                {/each}
+              </div>
+              <span class="ksum" title="Click a keypoint to toggle it, or drag across several">{nSel} of {allNodes.length}</span>
+            </div>
+          {/if}
+
+          {#if es}
+            <div class="go">
+              {#if running}
+                <button class="big stop" onclick={() => appRun.abort()}>■ Stop</button>
+              {:else}
+                <button class="big" disabled={busy || !store.ready || noneSelected} onclick={() => appRun.run()}>
+                  {es.hasResults ? "Re-run" : "Run"} DINO
+                </button>
+              {/if}
+              <div class="cost">
+                {#if running}
+                  <RunProgress store={es} />
+                {:else if busy}
+                  <span class="dim">The other granularity is running — they share one worker.</span>
+                {:else if noneSelected}
+                  <span class="dim">Select at least one keypoint — an empty selection embeds nothing.</span>
+                {:else if workload}
+                  <span class="dim">{workload.label}{workload.units ? ` · ${workload.units.toLocaleString()} forward passes` : ""}</span>
+                {:else}
+                  <span class="dim">Load a file to see the workload.</span>
+                {/if}
+              </div>
+            </div>
+
+            {#if !running && es.status === "error"}
+              <p class="err">{es.message}</p>
+            {:else if !running && es.status === "aborted"}
+              <p class="dim">{es.message} {es.hasResults ? "Partial results are kept — go to ③ Score." : ""}</p>
+            {:else if !running && !es.hasResults}
+              <p class="dim">
+                {#if !modelReady}The DINOv2 weights (~90 MB) download once, then embed.{:else}Weights already loaded.{/if}
+                {#if cached}<b>{cached.toLocaleString()} crops already cached</b> — reused, not re-embedded.{/if}
+              </p>
+            {/if}
+            {#if es?.cacheNote}<p class="cachewarn">⚠ {es.cacheNote}</p>{/if}
+          {/if}
+
+          <Explain>
+            {#if appRun.gran === "instance"}
+              <p class="note">One whole-instance crop per animal, embedded with DINOv2 ViT-S/14 (384-d). Scored either <b>unsupervised</b> — kNN on the crop vector, or AnomalyDINO on its patch tokens — or by the bundled RBF-SVM{#if clf} (<b>{clf.dataset}</b>, CV ROC {clf.cv_roc.toFixed(3)} / PR {clf.cv_pr.toFixed(3)}){/if}. Catches occlusion and appearance errors geometry misses, but not <i>which</i> keypoint is wrong.</p>
+            {:else}
+              <p class="note">A patch around each selected keypoint, embedded with DINOv2 ViT-S/14. One forward pass per keypoint per instance — many more crops than whole-instance, so expect minutes at full coverage. Cached after the first run, so choosing a scorer afterwards never re-embeds.</p>
+            {/if}
+          </Explain>
+        </section>
+
+      {:else if page.id === "score.kind" || page.id === "score.unsup" || page.id === "score.source"}
+        <!-- The three pure choices. Two cards each, rendered from the model. -->
+        <section class="score">
+          <p class="s-q">{page.question}</p>
+          {#if page.id === "score.kind"}
+            <p class="s-note dim">
+              {#if appRun.gran === "instance"}
+                Whole-animal crops: the bundled SVM was fitted on proofread ones and scores {clf ? `CV ROC ${clf.cv_roc.toFixed(2)}` : "well"} on that
+                dataset, while unsupervised kNN scored about chance there. AnomalyDINO reads the same
+                crops patch-by-patch and is the unsupervised option worth trying at this granularity.
+              {:else}
+                Unsupervised applies to every embedded keypoint at once. Supervised overrides ONE
+                keypoint and leaves the rest on the unsupervised baseline.
+              {/if}
+            </p>
+          {:else if page.id === "score.unsup" && appRun.gran === "node"}
+            <p class="s-note dim">Applies to every embedded keypoint. Either can be overridden per keypoint later.</p>
+          {:else if page.id === "score.source"}
+            <p class="s-note dim">
+              This overrides <b>{sName}</b> only.
+              {#if sTrainable}{sTrainable.n} patches of {sName} judged so far.{/if}
+            </p>
+          {/if}
+          {@render choice(page.actions, (id) =>
+            page.id === "score.kind" ? appRun.setScoreKind(id.slice(5))
+              : page.id === "score.unsup" ? appRun.setUnsupChoice(id.slice(6))
+                : appRun.setSvmSource(id.slice(4)))}
+        </section>
+
+      {:else if page.id === "score.node"}
+        <!-- Which keypoint the trained boundary is for. Its own page: picking a keypoint and picking a
+             technique were two questions sharing one screen, and the keypoint one only exists here. -->
+        <section class="score">
+          <p class="s-q">{page.question}</p>
+          <div class="kp-chips" role="group" data-action-group="keypoint">
+            {#each nodeChips as ch (ch.node)}
+              <button class="kp-c" class:sel={appRun.scoreNode === ch.node} class:absent={ch.state === "absent"}
+                      disabled={ch.state !== "scored"} onclick={() => pickScoreNode(ch.node)}
+                      title={ch.state === "scored" ? `scored by ${SCORE_LABEL[ch.mode]}`
+                        : ch.state === "few" ? "embedded, too few patches to score"
+                          : "not embedded in this run — nothing is known about it"}>
+                {ch.name}{#if ch.state === "scored" && SCORE_BADGE[ch.mode]}<span class="kp-b">{SCORE_BADGE[ch.mode]}</span>{/if}
+              </button>
+            {/each}
+          </div>
+          <p class="s-note dim">
+            Only a scored keypoint can be answered about. Every other keypoint keeps the unsupervised
+            baseline{#if trainedNodes.length}; already trained: {trainedNodes.join(", ")}{/if}.
+          </p>
+        </section>
+
+      {:else if page.id === "score.done"}
+        <!-- The confirmation. Choosing an unsupervised scorer APPLIED it, so this reports rather than asks. -->
+        {@const ad = appRun.unsupChoice === "anomalyDino"}
+        {@const cov = es?.patchCoverage}
+        <section class="score">
+          <p class="s-q">✓ Scoring {appRun.gran === "node" ? "every embedded keypoint" : "every instance"} with <b>{appliedLabel}</b></p>
+          <p class="s-note dim">
+            {#if ad}Each crop is {cov?.tokens} pooled DINOv2 patch tokens ({cov?.dim}-d) against a memory bank drawn
+              from this file's reference crops, scored by its worst quarter.
+            {:else if appRun.scoreKind === "sup"}The bundled boundary, unchanged{#if clf} — fitted on <b>{clf.dataset}</b>{/if}.
+            {:else}Distance to the k most similar crops of the same kind in this file, as a robust z.
+            {/if}
+            The graph and the threshold are in <b>④ Use</b>.
+          </p>
+          <!-- Partial coverage is the one thing that must not be quiet: those crops score 0 — perfectly
+               clean — for a bookkeeping reason and not an appearance one. -->
+          {#if ad && cov && cov.have === 0}
+            <p class="s-warn">
+              <b>No patch features in this run — everything fell back to kNN.</b>
+              These embeddings came from a cache written before patch features existed. Computing them
+              means embedding {cov.total.toLocaleString()} crops again.
+              <label class="s-req"><input type="checkbox" bind:checked={es.requirePatches} /> recompute them on the next run</label>
+            </p>
+          {:else if ad && cov && !cov.full}
+            <p class="s-warn">
+              {(cov.total - cov.have).toLocaleString()} of {cov.total.toLocaleString()} crops came from a cache
+              written before patch features existed. <b>They score 0 — clean — because nothing is known
+              about them</b>, not because they look right.
+              <label class="s-req"><input type="checkbox" bind:checked={es.requirePatches} /> re-embed those on the next run</label>
+            </p>
+          {/if}
+          {#if page.actions.length}
+            <div class="s-row">
+              {#each page.actions as a (a.id)}
+                <button class="sopt-sm" onclick={() => appRun.setScoreKind("sup")}>+ {a.label}</button>
+              {/each}
+            </div>
+            <p class="s-note dim">{appliedLabel} stays the baseline for every keypoint you do not train.</p>
+          {/if}
+        </section>
+
+      {:else if page.id === "score.upload"}
+        <section class="score">
+          <p class="s-q">{page.question} for <b>{sName}</b></p>
+          <label class="drop">
+            <input type="file" accept=".json,application/json" onchange={(e) => onUpload(e, sNode, sName)} />
+            <span>Choose a <code>keypoint-svm_*.json</code></span>
+          </label>
+          {#if upErr}<p class="s-err">{upErr}</p>{/if}
+          {#if upWarn}<p class="s-warn">⚠ {upWarn}</p>{/if}
+          {#if sMode === "svm"}
+            <p class="s-note">✓ applied — {es.patchCount(sNode).toLocaleString()} patches re-scored by the model.</p>
+            <button class="fs-undo" onclick={() => revert(sNode, sName)}
+                    title="Drop this model and score {sName} with the unsupervised baseline again">
+              revert to {baselineLabel}
+            </button>
+          {/if}
+          <p class="s-note dim">
+            Only a model exported here fits: this pass crops a fraction of each instance's bbox, while the
+            bundled models (<code>export_nose.py</code>) crop a fixed pixel box. Those load under
+            <b>‹ start → precomputed bundles</b>, with their own embeddings.
+          </p>
+        </section>
+
+      {:else if page.id === "score.label"}
+        <!-- Label, then fit. Two actions, and the export moved to its own page so this one is not three. -->
+        <section class="score">
+          <p class="s-q">{page.question} for <b>{sName}</b></p>
+          <p class="s-note dim">
+            The queue is ranked by how faulty every detector thinks each instance is, so the labels land
+            where they are worth most.
+            {#if sTrainable}<br />{sTrainable.n} judged · {sTrainable.pos} faulty / {sTrainable.neg} clean.{/if}
+            {#if !qc.proofreadReady}<br /><span class="warn">Run the automatic QC first — the queue is its ranking.</span>{/if}
+            {#if sTrainable && !sTrainable.enough && sTrainable.pos}
+              <br />An SVM needs both classes; you have {sTrainable.pos} faulty and no clean ones yet. The
+              few-shot nudge works from the faulty side alone in the meantime.
+            {/if}
+            {#if sTrainable?.enough && sTrainable.pos < sTrainable.floor}
+              <br /><span class="warn">Only {sTrainable.pos} faulty — below {sTrainable.floor}, the CV score is noise, not a measurement.</span>
+            {/if}
+            {#if fitMsg}<br /><span class="fs-msg">{fitMsg}</span>{/if}
+          </p>
+          <div class="s-row">
+            <button class="fs-go" disabled={!qc.proofreadReady} onclick={() => openProofreader()}>
+              {sTrainable?.n ? "keep labelling" : "open proofreader"}
+            </button>
+            {#if sTrainable?.enough}
+              <button class="fs-go" disabled={fitting} onclick={() => doFit(sNode, sName)}>
+                {fitting ? "fitting…" : "fit the SVM"}
+              </button>
+            {:else}
+              <button class="fs-go" disabled={!sTrainable?.pos} onclick={() => nudge(sNode)}>
+                {sMode === "fewshot" ? "re-nudge" : "nudge instead"}
+              </button>
+            {/if}
+          </div>
+        </section>
+
+      {:else if page.id === "score.keep"}
+        <section class="score">
+          <p class="s-q">✓ <b>{sName}</b> is scored by your boundary</p>
+          <p class="s-note dim">
+            Export it and upload it on the next file instead of labelling again. Reverting drops the
+            model and puts {sName} back on {baselineLabel} — your labels stay either way.
+            {#if fitMsg}<br /><span class="fs-msg">{fitMsg}</span>{/if}
+            {#if es?.fewShotInfoFor?.(sNode)}
+              {@const fs = es.fewShotInfoFor(sNode)}
+              <br />few-shot applied · prototype from <b>{fs.nPos}</b> faulty{fs.usedGlobal ? " vs the file mean" : ` / ${fs.nNeg} clean`}
+            {/if}
+          </p>
+          <div class="s-row">
+            <button class="fs-go" onclick={() => doExport(sNode, sName)}>export the boundary</button>
+            <button class="fs-undo" onclick={() => revert(sNode, sName)}>revert to {baselineLabel}</button>
+          </div>
+        </section>
+
+      {:else if page.id === "use"}
+        <!-- ④ The commitment, and the only page the inspector lives on. Fitting or choosing a scorer is
+             not USING it: the detector still has to be armed, and that used to be a checkbox repeated at
+             the foot of every scoring sub-page. -->
+        <section class="score">
+          <p class="s-q">{page.question}</p>
+          <label class="arm-row" class:on={armed}>
+            <input type="checkbox" checked={armed} disabled={!appRun.checkKey}
+                   onchange={() => appRun.checkKey && qc.toggleCheck(appRun.checkKey)} />
+            <span class="ar-b">
+              <b>{appRun.checkKey ? APPEARANCE_LABELS[appRun.checkKey].full : "—"}</b>
+              {#if armed}<span class="ar-on">on</span>{/if}
+              <br />
+              <span class="dim">
+                {#if appRun.gran === "node"}
+                  Flags every embedded keypoint, each by whatever is scoring it —
+                  {#each nodeChips.filter((c) => c.state === "scored") as c, i (c.node)}{i ? ", " : ""}<b>{c.name}</b> {SCORE_LABEL[c.mode]}{:else}nothing scored yet{/each}.
+                {:else}
+                  Flags every instance by {appliedLabel}.
+                {/if}
+                {#if covNote} · <b>{covNote}</b>{/if}
+              </span>
+            </span>
+          </label>
+          {#if !ready}<p class="dim">This unlocks once the pass has results.</p>{/if}
+        </section>
+
+        <!-- THE INSPECTOR. Deliberately not on a question page: its threshold and graph read the run,
+             they do not answer anything, and mixing them into a step made every page look like five. -->
+        <section class="results">
+          {#if appRun.gran === "instance"}<EmbeddingCheck />{:else}<NodeEmbeddingCheck />{/if}
+        </section>
+      {/if}
       {/if}
       {/if}
     </div>
@@ -938,8 +901,6 @@
   .so-d { font-size: 0.7rem; color: var(--dim); line-height: 1.55; }
 
   /* Which keypoint — the other half of the same decision, so it sits inside the panel, above it. */
-  .kp { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
-  .kp-l { font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); }
   .kp-chips { display: flex; flex-wrap: wrap; gap: 0.25rem; }
   .kp-c {
     display: inline-flex; align-items: center; gap: 0.25rem;
@@ -985,17 +946,6 @@
     font-size: 0.76rem;
     line-height: 1.5;
   }
-  .s-go {
-    display: block;
-    margin-top: 0.35rem;
-    color: var(--accent);
-  }
-  .s-add {
-    margin: 0.5rem 0 0.4rem;
-    font-size: 0.78rem;
-    color: var(--muted);
-    line-height: 1.5;
-  }
   .s-row {
     display: flex;
     align-items: center;
@@ -1014,7 +964,6 @@
   .sopt-sm:hover {
     background: color-mix(in srgb, var(--accent) 14%, transparent);
   }
-  .fs-acts { display: inline-flex; align-items: center; gap: 0.35rem; }
   .fs-undo {
     padding: 0.16rem 0.5rem;
     border: 1px solid var(--border);
@@ -1037,22 +986,7 @@
   .s-err { margin: 0; font-size: 0.65rem; color: #ff6b6b; line-height: 1.5; }
   .s-warn { margin: 0; font-size: 0.65rem; color: #f0b47a; line-height: 1.5; }
   .warn { color: #f0b47a; }
-  .fs-msg { color: var(--accent); }
   /* The three moves of the few-shot branch, numbered — the order is the point. */
-  .fs-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
-  .fs-steps li {
-    display: grid; grid-template-columns: auto 1fr auto; align-items: start; gap: 0.6rem;
-    padding: 0.65rem 0.75rem; border: 1px solid var(--border); border-radius: 8px;
-  }
-  .fs-steps li.locked { opacity: 0.5; }
-  .fs-steps li.done { border-color: color-mix(in srgb, #6ee7a8 45%, var(--border)); }
-  .fs-n {
-    display: grid; place-items: center; width: 1.35rem; height: 1.35rem; border-radius: 50%;
-    background: var(--border); color: var(--dim); font-size: 0.68rem; font-weight: 700;
-  }
-  .fs-steps li.done .fs-n { background: #6ee7a8; color: #06281a; }
-  .fs-b { font-size: 0.7rem; color: var(--dim); line-height: 1.55; }
-  .fs-b b { color: var(--text); }
   .fs-go {
     background: transparent; border: 1px solid var(--accent); border-radius: var(--r-xs);
     color: var(--accent); font-size: 0.68rem; padding: 0.28rem 0.7rem; cursor: pointer; white-space: nowrap;
@@ -1068,28 +1002,6 @@
     letter-spacing: 0.05em;
     color: var(--dim);
   }
-  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-xs); overflow: hidden; }
-  .seg button {
-    font-size: 0.68rem;
-    color: var(--muted);
-    background: transparent;
-    border: none;
-    border-right: 1px solid var(--border);
-    padding: 0.25rem 0.6rem;
-    cursor: pointer;
-  }
-  .seg button:last-child { border-right: none; }
-  .seg button.on { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
-  .seg button:disabled { cursor: default; opacity: 0.5; }
-  .fixed {
-    font-size: 0.66rem;
-    color: var(--muted);
-    padding: 0.2rem 0.5rem;
-    border-radius: var(--r-xs);
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
-  }
-  .fixed small { color: var(--dim); font-size: 0.55rem; }
-  .xnote { font-size: 0.62rem; color: var(--dim); cursor: help; }
   .note { margin: 0; font-size: 0.62rem; color: var(--dim); line-height: 1.4; }
   .kprow { align-items: flex-start; }
   .ksum { flex: none; font-size: 0.66rem; color: var(--dim); font-variant-numeric: tabular-nums; }
@@ -1109,15 +1021,6 @@
   .kchip:disabled { opacity: 0.5; cursor: default; }
   .note b { color: var(--muted); font-weight: 600; }
 
-  .launch {
-    display: flex;
-    flex-direction: column;
-    gap: 0.45rem;
-    padding: 0.65rem 0.7rem;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.02);
-  }
   .go { display: flex; align-items: center; gap: 0.75rem; }
   .big {
     flex: none;
@@ -1137,9 +1040,6 @@
   .cost { flex: 1 1 auto; min-width: 0; }
   .dim { font-size: 0.62rem; color: var(--dim); }
   .err { margin: 0; font-size: 0.66rem; color: #fca5a5; }
-  .armed { margin: 0; font-size: 0.6rem; color: var(--dim); }
-  .armed.on { color: #6ee7a8; }
-  .armed b { color: var(--muted); font-weight: 600; }
 
   .results { border-top: 1px solid var(--border); padding-top: 0.7rem; }
   .pane { display: flex; flex-direction: column; gap: 0.5rem; }
